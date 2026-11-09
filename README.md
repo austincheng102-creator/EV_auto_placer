@@ -62,7 +62,8 @@ If the extension's files changed, Chrome reloads it on its own.
 The repo is private, so each computer needs a read-only GitHub token once:
 1. Create a fine-grained token at https://github.com/settings/personal-access-tokens/new
    with access to only `EV_auto_placer` and **Contents: Read-only**.
-2. Save it in a file named `github-token.txt` next to the app.
+2. Save it in a file named `github-token.txt` next to the app. On a Mac the easy way: copy the token, then run
+   `pbpaste > ~/path/to/ev-placer-mac-arm64/github-token.txt` in Terminal.
 
 ## Chrome extension
 1. chrome://extensions → turn on Developer mode → Load unpacked → pick the `extension/` folder next to the app.

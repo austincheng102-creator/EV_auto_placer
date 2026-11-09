@@ -19,11 +19,18 @@ export function isNewer(latest, current) {
 }
 
 /** GitHub token for a private repo: env, github-token.txt next to the app, or config.update.githubToken. */
+// Pull the token out of whatever is in the file (TextEdit may save rich text, quotes, etc.).
+const TOKEN_RE = /github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9]+/;
+export function cleanToken(raw) {
+  if (!raw) return null;
+  const m = String(raw).match(TOKEN_RE);
+  return m ? m[0] : null;
+}
 export function readToken(cfg) {
-  if (process.env.EV_PLACER_TOKEN) return process.env.EV_PLACER_TOKEN.trim();
+  if (process.env.EV_PLACER_TOKEN) return cleanToken(process.env.EV_PLACER_TOKEN);
   const f = path.join(appDir, 'github-token.txt');
-  if (fs.existsSync(f)) return fs.readFileSync(f, 'utf8').trim();
-  return cfg?.update?.githubToken || null;
+  if (fs.existsSync(f)) return cleanToken(fs.readFileSync(f, 'utf8'));
+  return cleanToken(cfg?.update?.githubToken);
 }
 
 const gh = (token, accept = 'application/vnd.github+json') => ({
@@ -45,6 +52,10 @@ export async function checkForUpdate({ cfg, log, force = false }) {
   if (!isPackaged && !force) return false;              // running from source: use git pull instead
   if (cfg?.update?.enabled === false) return false;
   const token = readToken(cfg);
+  if (!token && fs.existsSync(path.join(appDir, 'github-token.txt'))) {
+    log.info('Update check skipped: github-token.txt has no GitHub token in it (it should start with github_pat_)');
+    return false;
+  }
   try {
     const res = await fetch(`${process.env.EV_PLACER_API || 'https://api.github.com'}/repos/${UPDATE_REPO}/releases/latest`,
       { headers: gh(token), signal: AbortSignal.timeout(8000) });
