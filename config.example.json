@@ -1,0 +1,51 @@
+{
+  "books": ["betrivers"],
+  "region": "ON",
+  "minEvPct": 10,
+  "stake": { "mode": "flat", "amount": 5, "capAtMaxStake": true },
+  "pollSeconds": 6,
+  "betsAtOnce": 1,
+  "maxBetsPerEvent": 1,
+  "dailyStakeLimit": 200,
+  "bridgePort": 8765,
+  "novig": {
+    "required": true,
+    "minEvPct": 2,
+    "mode": "gambit",
+    "url": "PASTE_NOVIG_ODDS_REQUEST_URL (only for mode feed)",
+    "method": "GET",
+    "headers": {},
+    "body": null,
+    "rowsPath": "data",
+    "fields": {
+      "event": "event",
+      "market": "market",
+      "selection": "selection",
+      "line": "line",
+      "odds": "odds",
+      "oppOdds": "opposite_odds"
+    }
+  },
+  "gambit": {
+    "url": "PASTE_GAMBIT_ODDS_REQUEST_URL",
+    "method": "GET",
+    "headers": {},
+    "body": null,
+    "rowsPath": "data",
+    "fields": {
+      "id": "id",
+      "book": "book",
+      "event": "event",
+      "market": "market",
+      "selection": "selection",
+      "line": "line",
+      "odds": "odds",
+      "fairOdds": "fair_odds",
+      "fairBooks": "fair_books",
+      "ev": "ev",
+      "bookRef": "outcome_id",
+      "novigOdds": "novig_odds",
+      "novigOppOdds": "novig_opposite_odds"
+    }
+  }
+}

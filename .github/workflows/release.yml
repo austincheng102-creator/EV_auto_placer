@@ -1,0 +1,29 @@
+# Every push to main builds the Windows and Mac apps and publishes them as a GitHub
+# release. Installed apps pick the new version up the next time they start.
+name: release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency: release
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: npm ci
+      - name: Pick version (major.minor from package.json + build number)
+        run: echo "EV_VERSION=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')").${{ github.run_number }}" >> "$GITHUB_ENV"
+      - run: node scripts/build.mjs
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v$EV_VERSION" dist/* --title "v$EV_VERSION" --notes "$(git log -1 --pretty=%s)"

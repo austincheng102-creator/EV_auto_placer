@@ -1,0 +1,7 @@
+node_modules/
+dist/
+config.json
+state.json
+state.dry.json
+test.config.json
+github-token.txt

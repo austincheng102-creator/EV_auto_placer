@@ -1,0 +1,28 @@
+{
+  "name": "ev-placer",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Polls Gambit odds and auto-places +EV bets through a Chrome extension bridge",
+  "scripts": {
+    "start": "node src/index.js",
+    "dry": "node src/index.js dry",
+    "init": "node src/index.js init",
+    "build": "node scripts/build.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "bin": {
+    "ev-placer": "src/index.js"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "config.example.json",
+    "extension"
+  ]
+}
