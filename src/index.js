@@ -192,6 +192,9 @@ async function tick() {
 }
 
 log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}% novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} stake=$${cfg.stake.amount} poll=${cfg.pollSeconds}s`);
+// Give the Chrome extension a few seconds to connect before the first scan.
+if (bridge) for (let i = 0; i < 20 && !bridge.connected(); i++) await new Promise((r) => setTimeout(r, 250));
+if (bridge && !bridge.connected()) log.warn('Chrome extension not connected yet: is Chrome open with the EV Placer extension loaded?');
 const loop = async () => { await tick(); setTimeout(loop, (cfg.pollSeconds || 6) * 1000); };
 loop();
 process.on('SIGINT', () => { save(); console.log(); process.exit(0); });
