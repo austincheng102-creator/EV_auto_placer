@@ -5,7 +5,18 @@ const PORT = 8765;
 const BOOK_HOSTS = {
   betrivers: [/\.betrivers\.(ca|com)$/],
   fanduel: [/sportsbook\.fanduel\.(com|ca)$/],
+  gambit: [/(^|\.)gambitodds\.com$/],
 };
+
+// Gambit's login token expires about hourly and the site refreshes it on its own. We
+// watch the requests your open Gambit tab makes and reuse its current token, so the
+// engine never needs a copied one.
+let gambitAuth = null;
+chrome.storage.session?.get('gambitAuth').then((v) => { if (v?.gambitAuth && !gambitAuth) gambitAuth = v.gambitAuth; });
+chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
+  const h = (d.requestHeaders || []).find((x) => x.name.toLowerCase() === 'authorization');
+  if (h?.value && h.value !== gambitAuth) { gambitAuth = h.value; chrome.storage.session?.set({ gambitAuth }); }
+}, { urls: ['https://api-sports.gambitodds.com/*'] }, ['requestHeaders', 'extraHeaders']);
 
 let ws = null;
 let status = 'disconnected';
@@ -53,7 +64,11 @@ async function handle(msg) {
     const { armed = false } = await chrome.storage.local.get('armed');
     if (msg.request.kind === 'place' && !armed) return reply({ error: 'extension is DISARMED (open the popup to arm)' });
     const tab = (await bookTabs()).find((t) => t.book === msg.book);
-    if (!tab) return reply({ error: `no open ${msg.book} tab` });
+    if (!tab) return reply({ error: msg.book === 'gambit' ? 'no open Gambit tab (open gambitodds.com and log in)' : `no open ${msg.book} tab` });
+    if (msg.request.useGambitAuth) {
+      if (!gambitAuth) return reply({ error: 'no Gambit login seen yet: refresh your Gambit tab' });
+      msg.request.headers = { ...(msg.request.headers || {}), authorization: gambitAuth };
+    }
     const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: 'MAIN', func: pageFetch, args: [msg.request] });
     if (r?.error) return reply({ error: String(r.error.message || r.error) });
     reply(r.result);
@@ -75,7 +90,7 @@ function connect() {
 chrome.tabs.onUpdated.addListener(sendTabs);
 chrome.tabs.onRemoved.addListener(sendTabs);
 chrome.runtime.onMessage.addListener((m, _s, respond) => {
-  if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs })); return true; }
+  if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth })); return true; }
 });
 // Keep the service worker alive while the engine runs.
 chrome.alarms?.create('keepalive', { periodInMinutes: 0.5 });

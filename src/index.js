@@ -11,6 +11,7 @@ import { makeBooks, BOOK_LABELS } from './books/index.js';
 import { appDir } from './paths.js';
 import { ensureConfig, writeExtension, extensionChanged } from './setup.js';
 import { VERSION } from './version.js';
+import embedded from './embedded.js';
 import { checkForUpdate, cleanupOld } from './update.js';
 import { makeNovig } from './novig.js';
 
@@ -52,6 +53,12 @@ if (args[0] === 'init' || created) {
   if (args[0] === 'init') process.exit(0);
 }
 const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+// Sections still holding placeholders get the built-in defaults, so updates that add
+// real defaults (e.g. the Gambit request) reach configs created by older versions.
+{
+  const example = JSON.parse(embedded['config.example.json']);
+  if (!cfg.gambit || (!cfg.gambit.urls && String(cfg.gambit.url || '').startsWith('PASTE_'))) cfg.gambit = example.gambit;
+}
 const dryRun = flag('--dry-run');
 if (opt('--min-ev')) cfg.minEvPct = Number(opt('--min-ev'));
 if (opt('--books')) cfg.books = opt('--books').split(',');
@@ -68,8 +75,11 @@ else if (args[0] === 'update' || !flag('--no-update')) {
   if (args[0] === 'update') process.exit(0);
 }
 
-const source = opt('--source', 'gambit') === 'mock' ? makeMockSource(cfg) : makeGambitSource(cfg);
-const bridge = dryRun ? null : startBridge(cfg.bridgePort || 8765, { reloadExtension: extensionChanged });
+const useMock = opt('--source', 'gambit') === 'mock';
+// The extension is needed to place bets, and also to read Gambit through your logged-in tab.
+const needBridge = !dryRun || (!useMock && (cfg.gambit?.via || 'extension') === 'extension');
+const bridge = needBridge ? startBridge(cfg.bridgePort || 8765, { reloadExtension: extensionChanged }) : null;
+const source = useMock ? makeMockSource(cfg) : makeGambitSource(cfg, bridge);
 const books = makeBooks(cfg, bridge, dryRun);
 const novig = makeNovig(cfg); // null = Novig check turned off
 

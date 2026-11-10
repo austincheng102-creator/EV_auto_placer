@@ -4,6 +4,7 @@ async function render() {
   const s = await chrome.runtime.sendMessage('status');
   $('status').textContent = s.status; $('status').className = s.status === 'connected' ? 'on' : 'off';
   $('tabs').textContent = s.tabs.map((t) => t.book).join(', ') || 'none open';
+  $('gambit').textContent = s.gambitLogin ? 'seen' : 'not yet (refresh Gambit tab)'; $('gambit').className = s.gambitLogin ? 'on' : 'off';
   $('armed').textContent = armed ? 'ARMED' : 'disarmed (re-checks only)'; $('armed').className = armed ? 'on' : 'off';
   $('toggle').textContent = armed ? 'Disarm' : 'Arm (allow real bets)';
 }

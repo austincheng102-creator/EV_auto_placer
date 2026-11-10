@@ -27,7 +27,11 @@
     }
   },
   "gambit": {
-    "url": "PASTE_GAMBIT_ODDS_REQUEST_URL",
+    "via": "extension",
+    "urls": [
+      "https://api-sports.gambitodds.com/api/evs.json?isLive=true&sportsbooks_id=200,194,100,400,365,500,1004,999&leagues=MLB,NBA,NCAAB,NHL,WNBA,NCAABaseball,NFL,NCAAF,LaLiga,EnglishPremier,MLS,UEFAChampions,UEFAEuropa,ItalianSerieA,FrenchLigue1,GermanBundesliga,CopaAmerica,UEFAEuro,ENGLANDLEAGUE1,BRAZILSERIEA,FIFAWORLDCUP",
+      "https://api-sports.gambitodds.com/api/evs.json?isLive=false&sportsbooks_id=200,194,100,400,365,500,1004,999&leagues=MLB,NBA,NCAAB,NHL,WNBA,NCAABaseball,NFL,NCAAF,LaLiga,EnglishPremier,MLS,UEFAChampions,UEFAEuropa,ItalianSerieA,FrenchLigue1,GermanBundesliga,CopaAmerica,UEFAEuro,ENGLANDLEAGUE1,BRAZILSERIEA,FIFAWORLDCUP"
+    ],
     "method": "GET",
     "headers": {},
     "body": null,
