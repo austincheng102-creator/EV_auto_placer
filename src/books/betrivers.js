@@ -4,6 +4,8 @@
 //  - place:       POST coupon.json on Kambi's player API, sent from inside your logged-in
 //                 BetRivers tab by the extension, so your session and location check apply
 //  - live bets come back LIVE_DELAY_PENDING; we poll coupon/history until accepted or rejected
+//  - auth: Kambi's player API needs the Authorization header the site sends; the extension
+//    picks it up from your BetRivers tab's own requests
 // Kambi units: odds and stake are x1000 (odds 1630 = 1.63 decimal, stake 1000 = $1), lines x1000.
 
 const STATE = (cfg) => String(cfg.region || 'CO').toLowerCase();
@@ -31,7 +33,7 @@ export function makeBetRivers(name, label, cfg, bridge) {
   const json = { accept: 'application/json, text/javascript, */*; q=0.01', 'content-type': 'application/json' };
 
   async function inTab(kind, url, method = 'GET', body) {
-    const res = await bridge.send(name, { kind, url, method, headers: json, body }, 20000);
+    const res = await bridge.send(name, { kind, url, method, headers: json, body, useKambiAuth: true }, 20000);
     return res;
   }
 
@@ -64,7 +66,7 @@ export function makeBetRivers(name, label, cfg, bridge) {
       // Same pre-check the bet slip does; also tells us if the BetRivers session is still valid.
       const v = await inTab('validate', `${k.authHost}/player/api/v2019/${k.offering}/coupon/validate.json?${qs()}`, 'POST',
         { couponRows: rows, bets, isUserLoggedIn: true });
-      if (v.json?.validSession === false) throw new Error('BetRivers session expired: log in again in the BetRivers tab');
+      if (v.status === 401 || v.json?.validSession === false) throw new Error('BetRivers didn\'t accept the login token: click any odds in the BetRivers tab once, then remove it from the slip');
       if (v.status >= 400 || (v.json?.status && v.json.status !== 'SUCCESS')) throw new Error(`validate: ${JSON.stringify(v.json || v.text).slice(0, 200)}`);
 
       const requestId = crypto.randomUUID();

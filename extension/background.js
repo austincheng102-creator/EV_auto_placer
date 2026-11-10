@@ -18,6 +18,15 @@ chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
   if (h?.value && h.value !== gambitAuth) { gambitAuth = h.value; chrome.storage.session?.set({ gambitAuth }); }
 }, { urls: ['https://api-sports.gambitodds.com/*'] }, ['requestHeaders', 'extraHeaders']);
 
+// BetRivers (Kambi) works the same way: its bet-slip requests carry a login token in an
+// Authorization header. We keep the latest one your BetRivers tab sent.
+let kambiAuth = null;
+chrome.storage.session?.get('kambiAuth').then((v) => { if (v?.kambiAuth && !kambiAuth) kambiAuth = v.kambiAuth; });
+chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
+  const h = (d.requestHeaders || []).find((x) => x.name.toLowerCase() === 'authorization');
+  if (h?.value && h.value !== kambiAuth) { kambiAuth = h.value; chrome.storage.session?.set({ kambiAuth }); }
+}, { urls: ['https://*.kambicdn.org/*', 'https://*.kambicdn.com/*'] }, ['requestHeaders', 'extraHeaders']);
+
 let ws = null;
 let status = 'disconnected';
 
@@ -88,6 +97,10 @@ async function handle(msg) {
     const matches = (await bookTabs()).filter((t) => t.book === msg.book);
     const tab = matches.find((t) => /^https:\/\/(www\.)?[^/]+\/?/.test(t.url || '') && !/api/.test(new URL(t.url).hostname)) || matches[0];
     if (!tab) return reply({ error: msg.book === 'gambit' ? 'no open Gambit tab (open gambitodds.com and log in)' : `no open ${msg.book} tab` });
+    if (msg.request.useKambiAuth) {
+      if (!kambiAuth) return reply({ error: 'BetRivers login token not seen yet: in the BetRivers tab, click any odds once (adds it to the slip), then remove it' });
+      msg.request.headers = { ...(msg.request.headers || {}), authorization: kambiAuth };
+    }
     if (msg.request.useGambitAuth) {
       if (!gambitAuth) return reply({ error: 'no Gambit login seen yet: refresh your Gambit tab' });
       msg.request.headers = { ...(msg.request.headers || {}), authorization: gambitAuth };
@@ -121,7 +134,7 @@ function connect() {
 chrome.tabs.onUpdated.addListener(sendTabs);
 chrome.tabs.onRemoved.addListener(sendTabs);
 chrome.runtime.onMessage.addListener((m, _s, respond) => {
-  if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth })); return true; }
+  if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth, betriversLogin: !!kambiAuth })); return true; }
 });
 // Keep the service worker alive while the engine runs.
 chrome.alarms?.create('keepalive', { periodInMinutes: 0.5 });
