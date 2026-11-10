@@ -57,7 +57,10 @@ const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
 // real defaults (e.g. the Gambit request) reach configs created by older versions.
 {
   const example = JSON.parse(embedded['config.example.json']);
-  if (!cfg.gambit || (!cfg.gambit.urls && String(cfg.gambit.url || '').startsWith('PASTE_'))) cfg.gambit = example.gambit;
+  if (!cfg.gambit || (!cfg.gambit.urls && String(cfg.gambit.url || '').startsWith('PASTE_'))) {
+    cfg.gambit = example.gambit;
+    cfg.region = example.region;   // early configs guessed Ontario; it's Colorado
+  }
 }
 const dryRun = flag('--dry-run');
 if (opt('--min-ev')) cfg.minEvPct = Number(opt('--min-ev'));
