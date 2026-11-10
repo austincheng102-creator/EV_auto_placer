@@ -2,6 +2,7 @@
 // The exact endpoint and field names come from the request Gambit's own site makes
 // (DevTools > Network > Copy as cURL). Put the URL/headers in config.json -> gambit.
 import { evPct } from '../ev.js';
+import { evsToRows } from './gambit-evs.js';
 
 const get = (obj, path) => path.split('.').reduce((o, k) => (o == null ? o : o[k]), obj);
 
@@ -53,6 +54,7 @@ export function makeGambitSource(cfg, bridge) {
       const out = [];
       for (const url of list) {
         const json = await fetchOne(url);
+        if (Array.isArray(json?.evs)) { out.push(...evsToRows(json, g)); continue; }   // Gambit's evs.json
         const rows = g.rowsPath ? get(json, g.rowsPath) : json;
         if (!Array.isArray(rows)) throw new Error(`Gambit: rowsPath "${g.rowsPath}" is not an array`);
         out.push(...rows.map((r) => normalizeRow(r, g.fields)));
