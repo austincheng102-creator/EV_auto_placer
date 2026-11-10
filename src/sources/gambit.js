@@ -34,7 +34,7 @@ export function makeGambitSource(cfg, bridge) {
       const res = await bridge.send('gambit', { kind: 'gambit', url: withCacheBuster(url), method: 'GET',
         headers: { accept: 'application/json, text/plain, */*', ...(g.headers || {}) }, useGambitAuth: true });
       if (res.status === 401 || res.status === 403) throw new Error(`Gambit HTTP ${res.status}: log in again in the Gambit tab`);
-      if (res.status >= 400 || !res.json) throw new Error(`Gambit HTTP ${res.status}`);
+      if (res.status >= 400 || !res.json) throw new Error(`Gambit HTTP ${res.status}${res.text ? `: ${String(res.text).slice(0, 120)}` : ''}`);
       return res.json;
     }
     const res = await fetch(withCacheBuster(url), {

@@ -39,6 +39,7 @@ async function sendTabs() {
 
 // Runs in the page (MAIN world). Must be self-contained.
 async function pageFetch(req) {
+  try {
   const headers = { ...(req.headers || {}) };
   // Optional: copy auth headers the site keeps in localStorage/sessionStorage.
   for (const [h, spec] of Object.entries(req.storageHeaders || {})) {
@@ -56,6 +57,27 @@ async function pageFetch(req) {
   const text = await res.text();
   let json = null; try { json = JSON.parse(text); } catch {}
   return { status: res.status, json, text: json ? undefined : text.slice(0, 2000) };
+  } catch (e) { return { status: 0, error: `in-tab request failed: ${e?.message || e}` }; }
+}
+
+// Same request made by the extension itself (it has permission for these sites, so the
+// browser's cross-site rules don't block it). Used for Gambit, and as a fallback.
+async function extFetch(req) {
+  try {
+    const res = await fetch(req.url, {
+      method: req.method || 'GET', headers: req.headers || {}, credentials: 'include',
+      body: req.body == null ? undefined : typeof req.body === 'string' ? req.body : JSON.stringify(req.body),
+    });
+    const text = await res.text();
+    let json = null; try { json = JSON.parse(text); } catch {}
+    return { status: res.status, json, text: json ? undefined : text.slice(0, 2000) };
+  } catch (e) { return { status: 0, error: `extension request failed: ${e?.message || e}` }; }
+}
+
+async function runInTab(tabId, request) {
+  const [r] = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: pageFetch, args: [request] });
+  if (!r || r.result === undefined) return { error: 'could not run in that tab (reload the tab and try again)' };
+  return r.result;
 }
 
 async function handle(msg) {
@@ -63,15 +85,24 @@ async function handle(msg) {
   try {
     const { armed = false } = await chrome.storage.local.get('armed');
     if (msg.request.kind === 'place' && !armed) return reply({ error: 'extension is DISARMED (open the popup to arm)' });
-    const tab = (await bookTabs()).find((t) => t.book === msg.book);
+    const matches = (await bookTabs()).filter((t) => t.book === msg.book);
+    const tab = matches.find((t) => /^https:\/\/(www\.)?[^/]+\/?/.test(t.url || '') && !/api/.test(new URL(t.url).hostname)) || matches[0];
     if (!tab) return reply({ error: msg.book === 'gambit' ? 'no open Gambit tab (open gambitodds.com and log in)' : `no open ${msg.book} tab` });
     if (msg.request.useGambitAuth) {
       if (!gambitAuth) return reply({ error: 'no Gambit login seen yet: refresh your Gambit tab' });
       msg.request.headers = { ...(msg.request.headers || {}), authorization: gambitAuth };
     }
-    const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: 'MAIN', func: pageFetch, args: [msg.request] });
-    if (r?.error) return reply({ error: String(r.error.message || r.error) });
-    reply(r.result);
+    // Gambit: fetch from the extension first (no page involved), then from inside the tab.
+    if (msg.book === 'gambit') {
+      const a = await extFetch(msg.request);
+      if (!a.error && a.status && a.status < 400) return reply(a);
+      const b = await runInTab(tab.id, msg.request);
+      if (!b.error && b.status) return reply(b);
+      return reply({ error: `Gambit: ${a.error || `HTTP ${a.status}`}; ${b.error || `HTTP ${b.status}`}` });
+    }
+    const r = await runInTab(tab.id, msg.request);
+    if (r.error) return reply({ error: r.error });
+    reply(r);
   } catch (e) { reply({ error: String(e?.message || e) }); }
 }
 
