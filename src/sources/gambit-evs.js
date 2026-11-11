@@ -6,6 +6,24 @@ import { americanToDecimal, decimalToAmerican } from '../ev.js';
 
 // Gambit sportsbook ids -> our book names.
 export const DEFAULT_BOOK_IDS = { betrivers: 1004, fanduel: 100 };
+// Books whose Gambit id we don't know yet: found from their bet links' web address
+// (gambit.bookIds in config.json overrides this).
+const LINK_HOSTS = { hardrock: /hardrock\.bet|hardrocksportsbook/i };
+
+/** Gambit sportsbook ids for LINK_HOSTS books, read from the links in this response. */
+export function detectBookIds(json) {
+  const found = {};
+  for (const ev of json?.evs || []) for (const op of ev.evOpportunities || []) {
+    const b = op.bet || {};
+    for (const c of [b, ...(b.comparableBets || []), ...(b.opposingBets || [])]) {
+      const link = c.desktop_link || c.mobile_link || '';
+      for (const [name, re] of Object.entries(LINK_HOSTS)) {
+        if (!found[name] && c.sportsbook_id != null && re.test(link)) found[name] = c.sportsbook_id;
+      }
+    }
+  }
+  return found;
+}
 const NOVIG_ID = 192;
 const SOURCE_NAMES = { 0: 'market', 1014: 'PS3838' };
 
@@ -42,8 +60,8 @@ export function fairProb(devig, method = 'worst') {
 }
 
 export function evsToRows(json, g = {}) {
-  const ids = { ...DEFAULT_BOOK_IDS, ...(g.bookIds || {}) };
-  const nameById = Object.fromEntries(Object.entries(ids).map(([n, id]) => [id, n]));
+  const ids = { ...DEFAULT_BOOK_IDS, ...detectBookIds(json), ...(g.bookIds || {}) };
+  const nameById = Object.fromEntries(Object.entries(ids).filter(([, id]) => id != null).map(([n, id]) => [id, n]));
   const rows = [];
   for (const ev of json?.evs || []) {
     for (const op of ev.evOpportunities || []) {

@@ -5,6 +5,7 @@ const PORT = 8765;
 const BOOK_HOSTS = {
   betrivers: [/\.betrivers\.(ca|com)$/],
   fanduel: [/sportsbook\.fanduel\.(com|ca)$/],
+  hardrock: [/(^|\.)hardrock\.bet$/, /(^|\.)hardrocksportsbook\.com$/],
   gambit: [/(^|\.)gambitodds\.com$/],
 };
 

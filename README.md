@@ -32,8 +32,23 @@ From a terminal, the app takes commands:
 ev-placer            live run
 ev-placer dry        demo run
 ev-placer init       create config.json and extension/, then exit
-ev-placer --help     all options (--min-ev 12, --books betrivers,fanduel, --config other.json)
+ev-placer --book hardrock   bet Hard Rock this run (or betrivers)
+ev-placer --help     all options (--min-ev 12, --books betrivers,hardrock, --config other.json)
 ```
+
+## Picking the book (BetRivers or Hard Rock Bet)
+One app runs either book; the Gambit feed, Novig check, EV math and limits are shared.
+- Double-click **Start BetRivers** or **Start Hard Rock** to bet that book for the day.
+  **Start EV Placer** uses `"books"` from `config.json`.
+- Set `"books": "ask"` in `config.json` to be asked which book each time it starts.
+- From a terminal: `ev-placer --book hardrock`, or `--books betrivers,hardrock` for both at once.
+- `state.json` and the daily stake limit are shared across books.
+
+**Hard Rock Bet status:** the book picker, the extension (app.hardrock.bet tabs) and dry runs
+(`ev-placer dry --book hardrock`) work. Live placement isn't wired yet: it needs a HAR recording
+of one bet placed on Hard Rock's site, and until then a live Hard Rock run stops at startup with
+that message. Hard Rock's Gambit sportsbook id is read from its bet links automatically; set
+`gambit.bookIds.hardrock` in `config.json` to override it.
 
 ## Novig has to agree (on by default)
 A bet is only placed when Novig's price also shows it at **2% EV or more**, on top of Gambit's
