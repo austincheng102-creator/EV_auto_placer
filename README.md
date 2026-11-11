@@ -54,8 +54,9 @@ One app runs either book; the Gambit feed, Novig check, EV math and limits are s
 - Hard Rock's Gambit sportsbook id is read from its bet links; set `gambit.bookIds.hardrock` to
   override. If the log says Gambit has no Hard Rock rows, tick Hard Rock in Gambit's sportsbook
   filter and copy the new evs.json link into `config.json`.
-- Straight bets match a recorded $1 straight bet. Not yet confirmed: what Gambit's Hard Rock links
-  look like (where the selection id comes from), and how long Hard Rock accepts the location token.
+- Straight bets match a recorded $1 straight bet. The selection id comes from Gambit's Hard Rock
+  link (`app.hardrock.bet/?deep_link_value=betslip/<id>`). Not yet known: how long Hard Rock
+  accepts the location token.
 
 ## Novig has to agree (on by default)
 A bet is only placed when Novig's price also shows it at **2% EV or more**, on top of Gambit's
