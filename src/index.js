@@ -114,6 +114,7 @@ const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, '
 const save = () => fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
 const cooldown = new Map(); // row.id -> retry-after ms
 const COOLDOWN_MS = 5 * 60 * 1000;
+const warnedNoRows = new Set();
 
 const selKey = (r) => `${r.book}|${r.event}|${r.market}|${r.selection}`;
 const desc = (r) => `${BOOK_LABELS[r.book] || r.book} ${r.market} ${r.selection === r.market ? '' : r.selection + ' '}${r.line ?? ''}`.replace(/\s+/g, ' ').trim();
@@ -185,6 +186,12 @@ async function tick() {
   }
 
   rows = rows.filter((r) => books[r.book]);
+  for (const b of Object.keys(books)) {
+    if (!warnedNoRows.has(b) && !rows.some((r) => r.book === b)) {
+      warnedNoRows.add(b);
+      log.warn(`Gambit's feed has no ${BOOK_LABELS[b] || b} rows yet. If this stays, tick ${BOOK_LABELS[b] || b} in Gambit's sportsbook filter and copy the new evs.json link into config.json`);
+    }
+  }
   const placedKeys = new Set(state.placed.map((p) => p.key));
   const perEvent = {};
   for (const p of state.placed) perEvent[p.event] = (perEvent[p.event] || 0) + 1;

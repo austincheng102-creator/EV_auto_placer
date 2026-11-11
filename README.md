@@ -44,11 +44,18 @@ One app runs either book; the Gambit feed, Novig check, EV math and limits are s
 - From a terminal: `ev-placer --book hardrock`, or `--books betrivers,hardrock` for both at once.
 - `state.json` and the daily stake limit are shared across books.
 
-**Hard Rock Bet status:** the book picker, the extension (app.hardrock.bet tabs) and dry runs
-(`ev-placer dry --book hardrock`) work. Live placement isn't wired yet: it needs a HAR recording
-of one bet placed on Hard Rock's site, and until then a live Hard Rock run stops at startup with
-that message. Hard Rock's Gambit sportsbook id is read from its bet links automatically; set
-`gambit.bookIds.hardrock` in `config.json` to override it.
+**Hard Rock Bet (Colorado)** is wired from a recording of a real bet on app.hardrock.bet:
+- Before each bet it checks Hard Rock's stake limit for that selection (no bet is made, so it
+  also runs while the extension is disarmed). The price check is the bet itself: it's sent at
+  Gambit's price with price changes refused, so Hard Rock turns it down if the price moved.
+- The extension copies your login and location-check tokens from your Hard Rock tab's own
+  requests. The location token is only sent when you place a bet, so **after logging in, place
+  one small bet by hand**. The popup shows "Hard Rock location: from your bet N min ago".
+- Hard Rock's Gambit sportsbook id is read from its bet links; set `gambit.bookIds.hardrock` to
+  override. If the log says Gambit has no Hard Rock rows, tick Hard Rock in Gambit's sportsbook
+  filter and copy the new evs.json link into `config.json`.
+- Not yet confirmed on the real site: straight bets are sent as `SINGLE` (the recording was a
+  parlay), and how long Hard Rock accepts the location token.
 
 ## Novig has to agree (on by default)
 A bet is only placed when Novig's price also shows it at **2% EV or more**, on top of Gambit's
