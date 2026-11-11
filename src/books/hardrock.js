@@ -20,7 +20,8 @@ const toDecimal = (am) => Math.round((am > 0 ? 1 + am / 100 : 1 + 100 / -am) * 1
 /** Hard Rock selection id from the bet link Gambit gives for the row. */
 export function hardrockSelectionId(row) {
   if (row.bookRef) return String(row.bookRef);
-  const m = /selection(?:s|Id|Ids)?[=/:]+(\d{12,})/i.exec(decodeURIComponent(row.link || ''));
+  // Gambit links look like https://app.hardrock.bet/?deep_link_value=betslip/6119998714307281291
+  const m = /(?:betslip|selection(?:s|Id|Ids)?)[=/:]+(\d{12,})/i.exec(decodeURIComponent(row.link || ''));
   return m ? m[1] : null;
 }
 
