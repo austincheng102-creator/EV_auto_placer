@@ -7,8 +7,8 @@
 //  - auth: no headers. The login token and the location-check token go in the form body.
 //    The extension copies the latest ones from your Hard Rock tab's own requests and fills
 //    in the {{hrSessionToken}} / {{hrGeo}} / {{hrAccountId}} placeholders.
-// The captured bet was a 3-leg parlay ("MULTIPLE"). A straight bet is sent as one leg with
-// type "SINGLE". That part is inferred: the first armed bet confirms it.
+// The straight-bet body matches a captured $1 SINGLE (accepted). Hard Rock's max stake comes
+// back in a field named "Double" (it's a number type, not a bet type).
 
 export const HARDROCK_HOSTS = /(^|\.)hardrock\.bet$|(^|\.)hardrocksportsbook\.com$/;
 
@@ -37,7 +37,7 @@ export function makeHardRock(name, label, cfg, bridge) {
     PlaceBetsRequest: {
       accountId: '{{hrAccountId}}',   // the extension fills this in from the login token
       bets: { bet: [{
-        type: 'SINGLE', winType: 'WIN', source: crypto.randomUUID(),
+        type: 'SINGLE', winType: 'WIN',
         stake: { amount: stake, currency: 'USD' },
         parts: { betPart: [{ partNo: 1, selectionId: hardrockSelectionId(row), oddsType: 'MONEYLINE', odds: { decimal } }] },
       }] },
@@ -65,7 +65,7 @@ export function makeHardRock(name, label, cfg, bridge) {
       const j = res.json || {};
       if (res.status === 401 || res.status === 403 || loginError(j)) throw new Error('Hard Rock didn\'t accept the login: refresh the Hard Rock tab and stay logged in');
       if (res.status >= 400) throw new Error(`stake check HTTP ${res.status}: ${JSON.stringify(j || res.text).slice(0, 200)}`);
-      const max = Number(j.Single ?? j.SINGLE ?? j.single);
+      const max = Number(j.Double ?? j.Single);
       return { odds: row.odds, line: row.line, maxStake: Number.isFinite(max) && max > 0 ? max : null, suspended: false };
     },
 
