@@ -7,7 +7,8 @@ import { log } from './log.js';
 import { makeGambitSource } from './sources/gambit.js';
 import { makeMockSource } from './sources/mock.js';
 import { startBridge } from './books/bridge.js';
-import { makeBooks, BOOK_LABELS } from './books/index.js';
+import { makeBooks, parseBooks, BOOK_LABELS } from './books/index.js';
+import readline from 'node:readline/promises';
 import { appDir } from './paths.js';
 import { ensureConfig, writeExtension, extensionChanged } from './setup.js';
 import { VERSION } from './version.js';
@@ -33,7 +34,8 @@ if (flag('--help') || flag('-h') || args[0] === 'help') {
   --min-ev 12            override minimum EV %
   --novig-min-ev 2       Novig must also show at least this EV % (default 2)
   --no-novig             don't require Novig to agree
-  --books betrivers,fanduel
+  --book hardrock        which book to bet today: betrivers or hardrock
+  --books betrivers,hardrock   more than one at once
   --config other.json    use a different config file
   --dry-run              simulate the book, never place
   --source mock          use the fake Gambit feed
@@ -64,7 +66,6 @@ const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
 }
 const dryRun = flag('--dry-run');
 if (opt('--min-ev')) cfg.minEvPct = Number(opt('--min-ev'));
-if (opt('--books')) cfg.books = opt('--books').split(',');
 if (!cfg.novig) cfg.novig = { required: true, minEvPct: 2, mode: 'gambit' };
 if (flag('--no-novig')) cfg.novig.required = false;
 if (opt('--novig-min-ev')) cfg.novig.minEvPct = Number(opt('--novig-min-ev'));
@@ -78,12 +79,32 @@ else if (args[0] === 'update' || !flag('--no-update')) {
   if (args[0] === 'update') process.exit(0);
 }
 
+// Which book(s) this run bets: --book / --books win over config.json "books".
+// "books": "ask" in config asks at startup.
+async function askBook() {
+  const names = Object.keys(BOOK_LABELS).filter((b) => b !== 'fanduel');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  console.log('Which book today?');
+  names.forEach((b, i) => console.log(`  ${i + 1}) ${BOOK_LABELS[b]}`));
+  const a = (await rl.question('> ')).trim();
+  rl.close();
+  return names[Number(a) - 1] || a;
+}
+try {
+  const pick = opt('--book') || opt('--books');
+  cfg.books = parseBooks(pick || (cfg.books === 'ask' ? await askBook() : cfg.books || 'betrivers'));
+  if (!cfg.books.length) throw new Error('no book picked');
+} catch (e) { log.err(e.message); process.exit(1); }
+
 const useMock = opt('--source', 'gambit') === 'mock';
 // The extension is needed to place bets, and also to read Gambit through your logged-in tab.
 const needBridge = !dryRun || (!useMock && (cfg.gambit?.via || 'extension') === 'extension');
 const bridge = needBridge ? startBridge(cfg.bridgePort || 8765, { reloadExtension: extensionChanged }) : null;
 const source = useMock ? makeMockSource(cfg) : makeGambitSource(cfg, bridge);
 const books = makeBooks(cfg, bridge, dryRun);
+for (const b of Object.values(books)) {
+  if (b.ready === false) { log.err(`${b.label}: ${b.notReadyReason}`); process.exit(1); }
+}
 const novig = makeNovig(cfg); // null = Novig check turned off
 
 // Persistent state: what we've already bet and how much today.
@@ -93,6 +114,7 @@ const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, '
 const save = () => fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
 const cooldown = new Map(); // row.id -> retry-after ms
 const COOLDOWN_MS = 5 * 60 * 1000;
+const warnedNoRows = new Set();
 
 const selKey = (r) => `${r.book}|${r.event}|${r.market}|${r.selection}`;
 const desc = (r) => `${BOOK_LABELS[r.book] || r.book} ${r.market} ${r.selection === r.market ? '' : r.selection + ' '}${r.line ?? ''}`.replace(/\s+/g, ' ').trim();
@@ -164,6 +186,12 @@ async function tick() {
   }
 
   rows = rows.filter((r) => books[r.book]);
+  for (const b of Object.keys(books)) {
+    if (!warnedNoRows.has(b) && !rows.some((r) => r.book === b)) {
+      warnedNoRows.add(b);
+      log.warn(`Gambit's feed has no ${BOOK_LABELS[b] || b} rows yet. If this stays, tick ${BOOK_LABELS[b] || b} in Gambit's sportsbook filter and copy the new evs.json link into config.json`);
+    }
+  }
   const placedKeys = new Set(state.placed.map((p) => p.key));
   const perEvent = {};
   for (const p of state.placed) perEvent[p.event] = (perEvent[p.event] || 0) + 1;

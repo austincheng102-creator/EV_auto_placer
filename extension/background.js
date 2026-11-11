@@ -5,6 +5,7 @@ const PORT = 8765;
 const BOOK_HOSTS = {
   betrivers: [/\.betrivers\.(ca|com)$/],
   fanduel: [/sportsbook\.fanduel\.(com|ca)$/],
+  hardrock: [/(^|\.)hardrock\.bet$/, /(^|\.)hardrocksportsbook\.com$/],
   gambit: [/(^|\.)gambitodds\.com$/],
 };
 
@@ -26,6 +27,27 @@ chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
   const h = (d.requestHeaders || []).find((x) => x.name.toLowerCase() === 'authorization');
   if (h?.value && h.value !== kambiAuth) { kambiAuth = h.value; chrome.storage.session?.set({ kambiAuth }); }
 }, { urls: ['https://*.kambicdn.org/*', 'https://*.kambicdn.com/*'] }, ['requestHeaders', 'extraHeaders']);
+
+// Hard Rock Bet sends no auth headers: its login token (sessionToken) and location-check
+// token (geolocationDetails) ride in the form body of its own requests. We keep the latest
+// ones your Hard Rock tab sent. The login token refreshes every few seconds; the location
+// token is only sent when you place a bet, so place one bet by hand after logging in.
+let hrAuth = { session: null, geo: null, geoAt: 0 };
+chrome.storage.session?.get('hrAuth').then((v) => { if (v?.hrAuth && !hrAuth.session) hrAuth = v.hrAuth; });
+chrome.webRequest.onBeforeRequest.addListener((d) => {
+  const f = d.requestBody?.formData;
+  if (!f) return;
+  const session = f.sessionToken?.[0], geo = f.geolocationDetails?.[0];
+  if ((session && session !== hrAuth.session) || geo) {
+    hrAuth = { ...hrAuth, ...(session ? { session } : {}), ...(geo ? { geo, geoAt: Date.now() } : {}) };
+    chrome.storage.session?.set({ hrAuth });
+  }
+}, { urls: ['https://*.hardrocksportsbook.com/*'] }, ['requestBody']);
+
+// Read as text: the id is a number too big for JSON.parse to keep exact.
+const hrAccountId = (tok) => {
+  try { return (/"accountId"\s*:\s*"?(\d+)/.exec(atob(tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))) || [])[1] || ''; } catch { return ''; }
+};
 
 let ws = null;
 let status = 'disconnected';
@@ -101,6 +123,18 @@ async function handle(msg) {
       if (!kambiAuth) return reply({ error: 'BetRivers login token not seen yet: in the BetRivers tab, click any odds once (adds it to the slip), then remove it' });
       msg.request.headers = { ...(msg.request.headers || {}), authorization: kambiAuth };
     }
+    if (msg.request.useHardRockAuth) {
+      if (!hrAuth.session) return reply({ error: 'Hard Rock login not seen yet: refresh the Hard Rock tab (stay logged in)' });
+      const needsGeo = String(msg.request.body).includes('{{hrGeo}}');
+      if (needsGeo && !hrAuth.geo) return reply({ error: 'Hard Rock location check not seen yet: place one small bet by hand in the Hard Rock tab first' });
+      const acct = hrAccountId(hrAuth.session);
+      if (!acct) return reply({ error: 'Hard Rock login token unreadable: refresh the Hard Rock tab' });
+      const enc = encodeURIComponent;
+      msg.request.body = String(msg.request.body)
+        .replaceAll('{{hrSessionToken}}', enc(hrAuth.session))
+        .replaceAll('{{hrGeo}}', enc(hrAuth.geo || ''))
+        .replaceAll(enc('{{hrAccountId}}'), acct);
+    }
     if (msg.request.useGambitAuth) {
       if (!gambitAuth) return reply({ error: 'no Gambit login seen yet: refresh your Gambit tab' });
       msg.request.headers = { ...(msg.request.headers || {}), authorization: gambitAuth };
@@ -134,7 +168,7 @@ function connect() {
 chrome.tabs.onUpdated.addListener(sendTabs);
 chrome.tabs.onRemoved.addListener(sendTabs);
 chrome.runtime.onMessage.addListener((m, _s, respond) => {
-  if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth, betriversLogin: !!kambiAuth })); return true; }
+  if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth, betriversLogin: !!kambiAuth, hardrockLogin: !!hrAuth.session, hardrockGeo: hrAuth.geoAt || 0 })); return true; }
 });
 // Keep the service worker alive while the engine runs.
 chrome.alarms?.create('keepalive', { periodInMinutes: 0.5 });

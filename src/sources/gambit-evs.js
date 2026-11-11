@@ -6,6 +6,24 @@ import { americanToDecimal, decimalToAmerican } from '../ev.js';
 
 // Gambit sportsbook ids -> our book names.
 export const DEFAULT_BOOK_IDS = { betrivers: 1004, fanduel: 100 };
+// Books whose Gambit id we don't know yet: found from their bet links' web address
+// (gambit.bookIds in config.json overrides this).
+const LINK_HOSTS = { hardrock: /hardrock\.bet|hardrocksportsbook/i };
+
+/** Gambit sportsbook ids for LINK_HOSTS books, read from the links in this response. */
+export function detectBookIds(json) {
+  const found = {};
+  for (const ev of json?.evs || []) for (const op of ev.evOpportunities || []) {
+    const b = op.bet || {};
+    for (const c of [b, ...(b.comparableBets || []), ...(b.opposingBets || [])]) {
+      const link = c.desktop_link || c.mobile_link || '';
+      for (const [name, re] of Object.entries(LINK_HOSTS)) {
+        if (!found[name] && c.sportsbook_id != null && re.test(link)) found[name] = c.sportsbook_id;
+      }
+    }
+  }
+  return found;
+}
 const NOVIG_ID = 192;
 const SOURCE_NAMES = { 0: 'market', 1014: 'PS3838' };
 
@@ -28,6 +46,12 @@ function fanduelRef(link) {
   return m ? { marketRef: m[1], bookRef: m[2] } : {};
 }
 
+/** Hard Rock link: app.hardrock.bet/?deep_link_value=betslip/<selectionId> */
+function hardrockRef(link) {
+  const m = /betslip\/(\d+)/.exec(decodeURIComponent(link || ''));
+  return m ? { bookRef: m[1] } : {};
+}
+
 /**
  * Fair win probability from Gambit's de-vig methods. "worst" (default) takes the lowest,
  * so a bet only counts as +EV if every method agrees; or name one: Power, Multiplicative,
@@ -42,8 +66,8 @@ export function fairProb(devig, method = 'worst') {
 }
 
 export function evsToRows(json, g = {}) {
-  const ids = { ...DEFAULT_BOOK_IDS, ...(g.bookIds || {}) };
-  const nameById = Object.fromEntries(Object.entries(ids).map(([n, id]) => [id, n]));
+  const ids = { ...DEFAULT_BOOK_IDS, ...detectBookIds(json), ...(g.bookIds || {}) };
+  const nameById = Object.fromEntries(Object.entries(ids).filter(([, id]) => id != null).map(([n, id]) => [id, n]));
   const rows = [];
   for (const ev of json?.evs || []) {
     for (const op of ev.evOpportunities || []) {
@@ -55,7 +79,7 @@ export function evsToRows(json, g = {}) {
       const fairOdds = decimalToAmerican(1 / p);
       const own = (b.comparableBets || []).find((c) => c.sportsbook_id === b.sportsbook_id);
       const link = own?.desktop_link || '';
-      const refs = book === 'betrivers' ? kambiRef(link) : book === 'fanduel' ? fanduelRef(link) : {};
+      const refs = book === 'betrivers' ? kambiRef(link) : book === 'fanduel' ? fanduelRef(link) : book === 'hardrock' ? hardrockRef(link) : {};
       const novig = (b.comparableBets || []).find((c) => c.sportsbook_id === NOVIG_ID);
       const novigOpp = (b.opposingBets || []).find((c) => c.sportsbook_id === NOVIG_ID);
       const isTotal = /total|PLAYER_PROP/i.test(op.marketName);
