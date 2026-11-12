@@ -10,10 +10,14 @@ const norm = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9.+-]/g, '');
 export const novigKey = (r) => `${norm(r.event)}|${norm(r.market)}|${norm(r.selection)}|${r.line ?? ''}`;
 
 /** Fair win probability from Novig: de-vig both sides if we have them, else Novig's own price. */
-export function novigFairProb(odds, oppOdds) {
+// Both sides of one real market add up to a little over 100%. Far outside that (e.g.
+// -2281/-4445 = 194%) means Gambit matched Novig prices from different lines: no usable price.
+export const OVERROUND_RANGE = [0.97, 1.15];
+export function novigFairProb(odds, oppOdds, range = OVERROUND_RANGE) {
   if (odds == null) return null;
   if (oppOdds == null) return impliedProb(odds);
   const p = impliedProb(odds), q = impliedProb(oppOdds);
+  if (p + q < range[0] || p + q > range[1]) return null;
   return p / (p + q);
 }
 
@@ -57,7 +61,8 @@ export function makeNovig(cfg) {
   function lookup(row) {
     const p = mode === 'feed' ? index.get(novigKey(row)) : { odds: num(row.novigOdds), oppOdds: num(row.novigOppOdds) };
     if (!p || p.odds == null) return null;
-    return { ...p, prob: novigFairProb(p.odds, p.oppOdds) };
+    const prob = novigFairProb(p.odds, p.oppOdds, n.overroundRange || OVERROUND_RANGE);
+    return prob == null ? null : { ...p, prob };
   }
 
   /** Does Novig agree that `bookOdds` is at least minEvPct? */

@@ -5,7 +5,9 @@
 import { americanToDecimal, decimalToAmerican } from '../ev.js';
 
 // Gambit sportsbook ids -> our book names.
-export const DEFAULT_BOOK_IDS = { betrivers: 1004, fanduel: 100 };
+// Hard Rock: Gambit lists it as 850, 851, 1008 and 1016. 851 is Colorado (its bets were accepted
+// in CO; 850/1008 came back UNAVAILABLE), so that's the default.
+export const DEFAULT_BOOK_IDS = { betrivers: 1004, fanduel: 100, hardrock: 851 };
 // Books whose Gambit id we don't know yet: found from their bet links' web address
 // (gambit.bookIds in config.json overrides this).
 // Gambit's Hard Rock links may be app redirect links (AppsFlyer, ...deep_link_value=betslip/<id>),
@@ -37,7 +39,7 @@ export function bookIdLists(g = {}) {
   const out = {};
   const add = (n, v) => { if (v == null) return; out[n] = [...new Set([...(out[n] || []), ...[].concat(v)])]; };
   for (const [n, v] of Object.entries(DEFAULT_BOOK_IDS)) add(n, v);
-  for (const [n, set] of Object.entries(detectedIds)) if (g.bookIds?.[n] == null) add(n, [...set]);
+  for (const [n, set] of Object.entries(detectedIds)) if (g.bookIds?.[n] == null && DEFAULT_BOOK_IDS[n] == null) add(n, [...set]);
   for (const [n, v] of Object.entries(g.bookIds || {})) { if (v != null) out[n] = [].concat(v); }
   return out;
 }

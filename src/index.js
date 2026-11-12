@@ -154,7 +154,7 @@ async function tryBet(row) {
     const nc = novig.check(row, quote.odds);
     if (!nc.ok) {
       log.warn(nc.nv ? `Novig FAIL: ${fmtAmerican(quote.odds)} vs Novig ${fmtNovig(nc.nv)} -> ${fmtPct(nc.ev)} EV (need ${novig.minEvPct}%) — skipped, nothing placed`
-        : 'Novig FAIL: Novig has no price for this selection — skipped, nothing placed');
+        : 'Novig FAIL: Novig has no usable price for this selection (missing, or its two sides are from different lines) — skipped, nothing placed');
       return false;
     }
     novigEvPct = nc.ev;
