@@ -15,21 +15,33 @@ const LINK_HOSTS = { hardrock: /hard\W?rock|deep_link_value=betslip/i };
 /** Every sportsbook id seen in the last Gambit response, with a sample link (for the log). */
 export const seenBooks = new Map();
 
-/** Gambit sportsbook ids for LINK_HOSTS books, read from the links in this response. */
+/** Gambit sportsbook ids for LINK_HOSTS books, read from the links in this response.
+ *  Gambit lists Hard Rock under several ids (850, 851, 1008, 1016 seen), so collect them all. */
+export const detectedIds = {};   // name -> Set of ids, kept across responses
 export function detectBookIds(json) {
-  const found = {};
   for (const ev of json?.evs || []) for (const op of ev.evOpportunities || []) {
     const b = op.bet || {};
     for (const c of [b, ...(b.comparableBets || []), ...(b.opposingBets || [])]) {
       const link = c.desktop_link || c.mobile_link || '';
       if (c.sportsbook_id != null && !seenBooks.get(c.sportsbook_id)) seenBooks.set(c.sportsbook_id, link);
       for (const [name, re] of Object.entries(LINK_HOSTS)) {
-        if (!found[name] && c.sportsbook_id != null && re.test(link)) found[name] = c.sportsbook_id;
+        if (c.sportsbook_id != null && re.test(link)) (detectedIds[name] ||= new Set()).add(c.sportsbook_id);
       }
     }
   }
-  return found;
+  return Object.fromEntries(Object.entries(detectedIds).map(([n, set]) => [n, [...set]]));
 }
+
+/** All Gambit ids for each book: defaults, then detected, then config (number or list). */
+export function bookIdLists(g = {}) {
+  const out = {};
+  const add = (n, v) => { if (v == null) return; out[n] = [...new Set([...(out[n] || []), ...[].concat(v)])]; };
+  for (const [n, v] of Object.entries(DEFAULT_BOOK_IDS)) add(n, v);
+  for (const [n, set] of Object.entries(detectedIds)) if (g.bookIds?.[n] == null) add(n, [...set]);
+  for (const [n, v] of Object.entries(g.bookIds || {})) { if (v != null) out[n] = [].concat(v); }
+  return out;
+}
+
 const NOVIG_ID = 192;
 const SOURCE_NAMES = { 0: 'market', 1014: 'PS3838' };
 
@@ -72,8 +84,9 @@ export function fairProb(devig, method = 'worst') {
 }
 
 export function evsToRows(json, g = {}) {
-  const ids = { ...DEFAULT_BOOK_IDS, ...detectBookIds(json), ...(g.bookIds || {}) };
-  const nameById = Object.fromEntries(Object.entries(ids).filter(([, id]) => id != null).map(([n, id]) => [id, n]));
+  detectBookIds(json);
+  const nameById = {};
+  for (const [n, list] of Object.entries(bookIdLists(g))) for (const id of list) nameById[id] = n;
   const rows = [];
   for (const ev of json?.evs || []) {
     for (const op of ev.evOpportunities || []) {
@@ -93,7 +106,7 @@ export function evsToRows(json, g = {}) {
       const selection = b.player_name ? `${b.player_name} ${side}`.trim() : isTotal ? side : b.selection;
       const line = /money_line/.test(op.marketName) ? null : Number(b.points ?? b.selection_points);
       rows.push({
-        id: b.id, book, event: ev.event_name, league: ev.league, isLive: !!ev.isLive, startDate: ev.startDate,
+        id: b.id, book, gambitBookId: b.sportsbook_id, event: ev.event_name, league: ev.league, isLive: !!ev.isLive, startDate: ev.startDate,
         market: prettyMarket(op.marketName), marketKey: op.marketName, selection, line,
         odds: Number(b.odds), fairOdds, fairProb: p, ev: (p * americanToDecimal(Number(b.odds)) - 1) * 100,
         fairBooks: (b.comparableBets || []).length + (b.opposingBets || []).length,
