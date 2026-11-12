@@ -51,8 +51,8 @@ One app runs either book; the Gambit feed, Novig check, EV math and limits are s
 - The extension copies your login and location-check tokens from your Hard Rock tab's own
   requests. The location token is only sent when you place a bet, so **after logging in, place
   one small bet by hand**. The popup shows "Hard Rock location: from your bet N min ago".
-- Hard Rock's Gambit sportsbook id is read from its bet links; set `gambit.bookIds.hardrock` to
-  override. If the log says Gambit has no Hard Rock rows, tick Hard Rock in Gambit's sportsbook
+- Gambit lists Hard Rock under several ids; 851 is Colorado and is the default. Set
+  `gambit.bookIds.hardrock` (a number or a list) to override. If the log says Gambit has no Hard Rock rows, tick Hard Rock in Gambit's sportsbook
   filter and copy the new evs.json link into `config.json`.
 - Straight bets match a recorded $1 straight bet. The selection id comes from Gambit's Hard Rock
   link (`app.hardrock.bet/?deep_link_value=betslip/<id>`). Not yet known: how long Hard Rock
@@ -66,6 +66,8 @@ book re-check. If Novig has no price for that selection, the bet is skipped. Log
 
 EV vs Novig = Novig's win probability x the book's decimal odds - 1. If both Novig sides are
 known they are de-vigged; with one side, Novig's price is used as-is (it's a no-vig exchange).
+If the two sides add up to under 97% or over 115% they can't be the same line (e.g. -2281/-4445),
+so that counts as no Novig price and the bet is skipped (`novig.overroundRange` to change).
 
 Set it in `config.json` -> `novig`:
 - `minEvPct`: the Novig threshold (default 2). `required: false` turns the check off.
