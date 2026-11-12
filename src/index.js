@@ -114,6 +114,7 @@ const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, '
 const save = () => fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
 const cooldown = new Map(); // row.id -> retry-after ms
 const COOLDOWN_MS = 5 * 60 * 1000;
+const stoppedBooks = new Set(); // books that refused the account this run
 const warnedNoRows = new Set();
 
 const selKey = (r) => `${r.book}|${r.event}|${r.market}|${r.selection}`;
@@ -172,7 +173,15 @@ async function tryBet(row) {
     state.staked += stake; save();
     log.ok(`${BOOK_LABELS[row.book]} PLACED $${stake} @ ${fmtAmerican(quote.odds)} (${fmtPct(ev)} EV) bet_id=${betId}${dryRun ? ' [DRY RUN]' : ''}`);
     return true;
-  } catch (e) { log.err(`${book.label}: place failed: ${e.message}`); return false; }
+  } catch (e) {
+    log.err(`${book.label}: place failed: ${e.message}`);
+    // The book refused the account itself: stop betting there this run instead of retrying.
+    if (/account[\s_-]*(is\s*)?(blocked|suspended|restricted|closed|locked)|self[\s_-]*excl/i.test(e.message)) {
+      stoppedBooks.add(row.book);
+      log.err(`${book.label}: the book says this account can't bet right now. No more bets go to ${BOOK_LABELS[row.book] || row.book} this run; check the account on their site.`);
+    }
+    return false;
+  }
 }
 
 async function tick() {
@@ -185,9 +194,9 @@ async function tick() {
     catch (e) { log.err(`Novig fetch failed: ${e.message} — not placing`); return; }
   }
 
-  rows = rows.filter((r) => books[r.book]);
+  rows = rows.filter((r) => books[r.book] && !stoppedBooks.has(r.book));
   for (const b of Object.keys(books)) {
-    if (!warnedNoRows.has(b) && !rows.some((r) => r.book === b)) {
+    if (!stoppedBooks.has(b) && !warnedNoRows.has(b) && !rows.some((r) => r.book === b)) {
       warnedNoRows.add(b);
       log.warn(`Gambit's feed has no ${BOOK_LABELS[b] || b} rows yet. If this stays, tick ${BOOK_LABELS[b] || b} in Gambit's sportsbook filter and copy the new evs.json link into config.json`);
     }
