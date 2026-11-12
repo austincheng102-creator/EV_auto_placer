@@ -8,7 +8,12 @@ import { americanToDecimal, decimalToAmerican } from '../ev.js';
 export const DEFAULT_BOOK_IDS = { betrivers: 1004, fanduel: 100 };
 // Books whose Gambit id we don't know yet: found from their bet links' web address
 // (gambit.bookIds in config.json overrides this).
-const LINK_HOSTS = { hardrock: /hardrock\.bet|hardrocksportsbook/i };
+// Gambit's Hard Rock links may be app redirect links (AppsFlyer, ...deep_link_value=betslip/<id>),
+// so match "hardrock" anywhere in the link, not just the app.hardrock.bet host.
+const LINK_HOSTS = { hardrock: /hard\W?rock|deep_link_value=betslip/i };
+
+/** Every sportsbook id seen in the last Gambit response, with a sample link (for the log). */
+export const seenBooks = new Map();
 
 /** Gambit sportsbook ids for LINK_HOSTS books, read from the links in this response. */
 export function detectBookIds(json) {
@@ -17,6 +22,7 @@ export function detectBookIds(json) {
     const b = op.bet || {};
     for (const c of [b, ...(b.comparableBets || []), ...(b.opposingBets || [])]) {
       const link = c.desktop_link || c.mobile_link || '';
+      if (c.sportsbook_id != null && !seenBooks.get(c.sportsbook_id)) seenBooks.set(c.sportsbook_id, link);
       for (const [name, re] of Object.entries(LINK_HOSTS)) {
         if (!found[name] && c.sportsbook_id != null && re.test(link)) found[name] = c.sportsbook_id;
       }
@@ -78,7 +84,7 @@ export function evsToRows(json, g = {}) {
       if (p == null || p >= 1) continue;
       const fairOdds = decimalToAmerican(1 / p);
       const own = (b.comparableBets || []).find((c) => c.sportsbook_id === b.sportsbook_id);
-      const link = own?.desktop_link || '';
+      const link = own?.desktop_link || own?.mobile_link || '';
       const refs = book === 'betrivers' ? kambiRef(link) : book === 'fanduel' ? fanduelRef(link) : book === 'hardrock' ? hardrockRef(link) : {};
       const novig = (b.comparableBets || []).find((c) => c.sportsbook_id === NOVIG_ID);
       const novigOpp = (b.opposingBets || []).find((c) => c.sportsbook_id === NOVIG_ID);
