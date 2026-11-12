@@ -15,6 +15,7 @@ import { VERSION } from './version.js';
 import embedded from './embedded.js';
 import { checkForUpdate, cleanupOld } from './update.js';
 import { makeNovig } from './novig.js';
+import { seenBooks } from './sources/gambit-evs.js';
 
 const root = appDir;
 let args = process.argv.slice(2);
@@ -190,6 +191,10 @@ async function tick() {
     if (!warnedNoRows.has(b) && !rows.some((r) => r.book === b)) {
       warnedNoRows.add(b);
       log.warn(`Gambit's feed has no ${BOOK_LABELS[b] || b} rows yet. If this stays, tick ${BOOK_LABELS[b] || b} in Gambit's sportsbook filter and copy the new evs.json link into config.json`);
+      if (seenBooks.size) {
+        const host = (l) => { try { return new URL(l).hostname; } catch { return String(l).slice(0, 40) || 'no link'; } };
+        log.warn(`Gambit sportsbook ids in the feed: ${[...seenBooks].map(([id, l]) => `${id} (${host(l)})`).join(', ')}`);
+      }
     }
   }
   const placedKeys = new Set(state.placed.map((p) => p.key));
