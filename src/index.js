@@ -130,7 +130,7 @@ function stakeFor(quote) {
 
 async function tryBet(row) {
   const book = books[row.book];
-  log.header(`${desc(row)} ${fmtAmerican(row.odds)} (${fmtPct(row.ev)} EV) — ${row.event}`);
+  log.header(`${desc(row)} ${fmtAmerican(row.odds)} (${fmtPct(row.ev)} EV) — ${row.event}${row.book === 'hardrock' && row.gambitBookId ? ` [Gambit book ${row.gambitBookId}]` : ''}`);
 
   let quote;
   try { quote = await book.recheck(row); }
@@ -169,7 +169,7 @@ async function tryBet(row) {
   try {
     const { betId } = await book.place(row, stake, quote);
     state.placed.push({ at: new Date().toISOString(), key: selKey(row), event: row.event, book: row.book,
-      market: row.market, selection: row.selection, line: row.line, odds: quote.odds, fair: row.fairOdds, ev, novigEv: novigEvPct, stake, betId });
+      market: row.market, gambitBookId: row.gambitBookId, selection: row.selection, line: row.line, odds: quote.odds, fair: row.fairOdds, ev, novigEv: novigEvPct, stake, betId });
     state.staked += stake; save();
     log.ok(`${BOOK_LABELS[row.book]} PLACED $${stake} @ ${fmtAmerican(quote.odds)} (${fmtPct(ev)} EV) bet_id=${betId}${dryRun ? ' [DRY RUN]' : ''}`);
     return true;

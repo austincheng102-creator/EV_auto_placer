@@ -2,7 +2,7 @@
 // The exact endpoint and field names come from the request Gambit's own site makes
 // (DevTools > Network > Copy as cURL). Put the URL/headers in config.json -> gambit.
 import { evPct } from '../ev.js';
-import { evsToRows } from './gambit-evs.js';
+import { evsToRows, bookIdLists } from './gambit-evs.js';
 
 const get = (obj, path) => path.split('.').reduce((o, k) => (o == null ? o : o[k]), obj);
 
@@ -27,6 +27,17 @@ export function makeGambitSource(cfg, bridge) {
   const via = g.via || 'extension';
   const withCacheBuster = (u) => `${u}${u.includes('?') ? '&' : '?'}_t=${Date.now()}`;
   const urls = () => (Array.isArray(g.urls) ? g.urls : [g.url]).filter(Boolean); // live + pre-game
+
+  // Gambit only returns bets for the sportsbooks named in sportsbooks_id, so make sure the
+  // books this run bets (e.g. Hard Rock, once its ids are seen in Gambit's links) are in it.
+  function withBookIds(url) {
+    const m = /([?&]sportsbooks_id=)([^&]*)/.exec(url);
+    if (!m) return url;
+    const have = new Set(decodeURIComponent(m[2]).split(',').filter(Boolean));
+    const lists = bookIdLists(g);
+    for (const b of cfg.books || []) for (const id of lists[b] || []) have.add(String(id));
+    return url.replace(m[0], m[1] + [...have].join(','));
+  }
 
   async function fetchOne(url) {
     if (via === 'extension') {
@@ -53,7 +64,7 @@ export function makeGambitSource(cfg, bridge) {
       if (!list.length || list.some((u) => u.startsWith('PASTE_'))) throw new Error('gambit.url not set in config.json');
       const out = [];
       for (const url of list) {
-        const json = await fetchOne(url);
+        const json = await fetchOne(withBookIds(url));
         if (Array.isArray(json?.evs)) { out.push(...evsToRows(json, g)); continue; }   // Gambit's evs.json
         const rows = g.rowsPath ? get(json, g.rowsPath) : json;
         if (!Array.isArray(rows)) throw new Error(`Gambit: rowsPath "${g.rowsPath}" is not an array`);
