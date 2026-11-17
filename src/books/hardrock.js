@@ -41,6 +41,30 @@ export function hardrockSelectionId(row) {
   return m ? m[1] : null;
 }
 
+// One settled bet from Hard Rock's My Bets > Settled list (POST api.../mybets/closed) as a result
+// for results.json. Bet ids are the same as placeBets' betId. Total return = payout + refund
+// (a loss has neither), so profit = total return - stake whatever the result type.
+export function settledResult(b) {
+  const st = String(b?.displayStatus || b?.parts?.betPart?.[0]?.resultType || '').toUpperCase();
+  const result = /CASH/.test(st) ? 'cashout'
+    : /HALF/.test(st) ? (/WIN|WON/.test(st) ? 'half-won' : 'half-lost')
+    : /WIN|WON/.test(st) ? 'won' : /LOS/.test(st) ? 'lost'
+    : /PUSH/.test(st) ? 'push' : /VOID|CANCEL|REFUND/.test(st) ? 'void' : null;
+  if (!b?.id || !result || String(b.betStatus || 'SETTLED').toUpperCase() !== 'SETTLED') return null;
+  const ml = Number(b.parts?.betPart?.length === 1 ? b.parts.betPart[0].odds?.moneyline : NaN);
+  return {
+    betId: String(b.id), result, status: st,
+    payout: Math.round(((Number(b.payout) || 0) + (Number(b.refund) || 0)) * 100) / 100,
+    stake: Number(b.stake?.amount) || null,
+    odds: Number.isFinite(ml) && ml !== 0 ? ml : null,
+    settledAt: Number.isFinite(Number(b.settlementTime)) ? new Date(Number(b.settlementTime)).toISOString() : null,
+  };
+}
+
+// Hard Rock wants local time without a zone, like the site sends: 2026-10-16T21:00:42
+const localStamp = (t) => { const d = new Date(t), z = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}T${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`; };
+
 export function makeHardRock(name, label, cfg, bridge) {
   const h = cfg.hardrock || {};
   const st = String(cfg.region || 'CO').toUpperCase();
@@ -84,6 +108,20 @@ export function makeHardRock(name, label, cfg, bridge) {
       if (res.status >= 400) throw new Error(`stake check HTTP ${res.status}: ${JSON.stringify(j || res.text).slice(0, 200)}`);
       const max = Number(j.Double ?? j.Single);
       return { odds: row.odds, line: row.line, maxStake: Number.isFinite(max) && max > 0 ? max : null, suspended: false };
+    },
+
+    // Settled bets between two times (ms), from the same list as My Bets > Settled.
+    // Read-only, so it works while the extension is disarmed.
+    async settled(from, to = Date.now()) {
+      const res = await bridge.send(name, {
+        kind: 'history', url: `${apiHost}/mybets/closed`, method: 'POST', useHardRockAuth: true,
+        headers: { accept: 'application/json', 'content-type': 'application/json', sessiontoken: SESSION },
+        body: JSON.stringify({ from: localStamp(from), locale, sessionToken: SESSION, to: localStamp(to + 864e5) }),
+      }, 30000);
+      const j = res.json || {};
+      if (res.status === 401 || res.status === 403 || loginError(j)) throw new Error('Hard Rock didn\'t accept the login: refresh the Hard Rock tab and stay logged in');
+      if (res.status >= 400 || !Array.isArray(j.bet)) throw new Error(`settled bets HTTP ${res.status}: ${JSON.stringify(j || res.text).slice(0, 200)}`);
+      return j.bet.map(settledResult).filter(Boolean);
     },
 
     async place(row, stake, quote) {

@@ -134,6 +134,10 @@ async function handle(msg) {
         .replaceAll('{{hrSessionToken}}', enc(hrAuth.session))
         .replaceAll('{{hrGeo}}', enc(hrAuth.geo || ''))
         .replaceAll(enc('{{hrAccountId}}'), acct);
+      // Some Hard Rock requests (My Bets) also carry the login token as a header.
+      for (const [h, v] of Object.entries(msg.request.headers || {})) {
+        if (typeof v === 'string' && v.includes('{{hrSessionToken}}')) msg.request.headers[h] = v.replaceAll('{{hrSessionToken}}', hrAuth.session);
+      }
     }
     if (msg.request.useGambitAuth) {
       if (!gambitAuth) return reply({ error: 'no Gambit login seen yet: refresh your Gambit tab' });

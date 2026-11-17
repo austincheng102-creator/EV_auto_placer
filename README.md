@@ -107,6 +107,28 @@ the edge is real; that's the standard check, and it doesn't need hundreds of res
 - The terminal shows a `CLV:` line for each close and the running average. **Show bets**
   (`ev-placer bets`) prints the last 25 bets and the totals.
 
+## Bets and P&L chart
+**Show bets** (`ev-placer bets`) also opens a chart page in your browser:
+- **Profit and loss**: running total of settled bets, next to the expected profit (stake x EV of
+  every bet). Over many bets the two should track each other; a short gap is normal luck.
+- **Bets placed per day**, split by book.
+- Tiles: bets and $ staked, settled profit and ROI, expected profit, average CLV, bets still waiting.
+- **All books** is the default view; click **Hard Rock Bet** or **BetRivers** to see one book.
+  Also 30 days / 7 days.
+
+**Results.** Hard Rock results fill in by themselves. While the placer runs (and a Hard Rock tab is
+open, even on BetRivers days), it reads Hard Rock's **My Bets > Settled** list every 10 minutes and
+saves the result, payout and odds of each logged bet to `results.json`. The terminal shows a
+`Results:` line when bets settle. Change the timing with `"results": {"everyMinutes": 10}` in
+`config.json` (0 turns it off). It's read-only, so it works while the extension is disarmed.
+
+Anything else (BetRivers for now) can be marked in the table at the bottom of the page: won, lost,
+push, void, half won, half lost. A result you mark by hand is never overwritten. Results live in
+`results.json`, apart from `bets.json`, so the running placer never overwrites them.
+- Keep the Show bets window open while you mark results; closing it stops the page.
+- A read-only copy is saved as `bets.html` and opens on its own later.
+- Bets placed before the bet log existed (from `state.json`) are included.
+
 ## Updates (automatic)
 Every change pushed to `main` is built by GitHub Actions and published as a release. Each time the
 app starts it checks for a newer release, downloads the build for your computer, replaces itself
