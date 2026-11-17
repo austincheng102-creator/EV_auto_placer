@@ -4,6 +4,7 @@
   ],
   "region": "CO",
   "minEvPct": 10,
+  "maxOdds": 250,
   "stake": {
     "mode": "flat",
     "amount": 5,

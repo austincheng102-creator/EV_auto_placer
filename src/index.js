@@ -33,6 +33,7 @@ if (flag('--help') || flag('-h') || args[0] === 'help') {
   ev-placer update       check for a new version now, then exit
 
   --min-ev 12            override minimum EV %
+  --max-odds 250         skip bets with odds above this (default +250)
   --novig-min-ev 2       Novig must also show at least this EV % (default 2)
   --no-novig             don't require Novig to agree
   --book hardrock        which book to bet today: betrivers or hardrock
@@ -67,6 +68,11 @@ const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
 }
 const dryRun = flag('--dry-run');
 if (opt('--min-ev')) cfg.minEvPct = Number(opt('--min-ev'));
+// Longest odds we'll bet: anything above this (e.g. +260 when it's 250) is skipped.
+// Not set in config.json -> +250. "maxOdds": null turns the cap off.
+if (opt('--max-odds')) cfg.maxOdds = Number(opt('--max-odds'));
+if (cfg.maxOdds === undefined) cfg.maxOdds = 250;
+const tooLong = (odds) => cfg.maxOdds != null && odds > cfg.maxOdds;
 if (!cfg.novig) cfg.novig = { required: true, minEvPct: 2, mode: 'gambit' };
 if (flag('--no-novig')) cfg.novig.required = false;
 if (opt('--novig-min-ev')) cfg.novig.minEvPct = Number(opt('--novig-min-ev'));
@@ -148,6 +154,7 @@ async function tryBet(row) {
 // EV, Novig, stake limits, then place. If the book says the price changed and tells us the new
 // one, everything is checked again at that price and the bet is sent once more.
 async function placeAt(row, book, quote, retried = false) {
+  if (tooLong(quote.odds)) { log.warn(`${book.label}: ${fmtAmerican(quote.odds)} is above the ${fmtAmerican(cfg.maxOdds)} cap — skipped, nothing placed`); return false; }
   const ev = evPct(quote.odds, row.fairOdds);
   const tail = `${fmtAmerican(quote.odds)} vs fair ${fmtAmerican(row.fairOdds)} from ${row.fairBooks ?? '?'} book(s) -> ${fmtPct(ev)} EV` +
     (quote.maxStake ? ` (max stake $${quote.maxStake})` : '');
@@ -223,7 +230,7 @@ async function tick() {
   for (const p of state.placed) perEvent[p.event] = (perEvent[p.event] || 0) + 1;
   const now = Date.now();
   let ev = rows
-    .filter((r) => Number.isFinite(r.ev) && r.ev >= cfg.minEvPct)
+    .filter((r) => Number.isFinite(r.ev) && r.ev >= cfg.minEvPct && !tooLong(r.odds))
     .filter((r) => !placedKeys.has(selKey(r)) && (cooldown.get(r.id) || 0) < now)
     .filter((r) => (perEvent[r.event] || 0) < (cfg.maxBetsPerEvent ?? Infinity))
     .filter((r) => dryRun || bridge.hasTab(r.book))
@@ -245,7 +252,7 @@ async function tick() {
   }
 }
 
-log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}% novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} stake=$${cfg.stake.amount} poll=${cfg.pollSeconds}s`);
+log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}% novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} maxOdds=${cfg.maxOdds == null ? 'off' : fmtAmerican(cfg.maxOdds)} stake=$${cfg.stake.amount} poll=${cfg.pollSeconds}s`);
 // Give the Chrome extension a few seconds to connect before the first scan.
 if (bridge) for (let i = 0; i < 20 && !bridge.connected(); i++) await new Promise((r) => setTimeout(r, 250));
 if (bridge && !bridge.connected()) log.warn('Chrome extension not connected yet: is Chrome open with the EV Placer extension loaded?');

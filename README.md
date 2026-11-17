@@ -58,6 +58,10 @@ One app runs either book; the Gambit feed, Novig check, EV math and limits are s
   link (`app.hardrock.bet/?deep_link_value=betslip/<id>`). Not yet known: how long Hard Rock
   accepts the location token.
 
+## Longest odds: +250
+Bets with odds above +250 are skipped, both when scanning and at the live or new price. Change it
+with `"maxOdds"` in `config.json` (`null` turns it off) or `--max-odds 300`.
+
 ## Novig has to agree (on by default)
 A bet is only placed when Novig's price also shows it at **2% EV or more**, on top of Gambit's
 `minEvPct`. It's checked twice: when scanning Gambit's rows, and again at the live price after the
