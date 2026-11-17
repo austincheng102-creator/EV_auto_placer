@@ -399,7 +399,7 @@ async function setResult(key, result, sel) {
 function table(list) {
   const tb = document.getElementById('table');
   document.getElementById('tableNote').textContent = LIVE
-    ? 'Hard Rock results fill in by themselves while the placer runs. Pick a result for anything else; it saves to results.json and the charts update.'
+    ? 'Results fill in by themselves from Hard Rock and BetRivers while the placer runs. You can also pick one by hand; it saves to results.json and the charts update.'
     : 'Read-only copy. Run Show bets to mark results.';
   const head = '<tr><th>Placed</th><th>Book</th><th>Bet</th><th class="num">Odds</th><th class="num">Stake</th><th class="num">EV</th><th class="num">CLV</th><th>Result</th><th class="num">Profit</th></tr>';
   tb.innerHTML = head;

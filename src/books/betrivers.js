@@ -29,6 +29,29 @@ const kambiToAmerican = (k) => {
   return d >= 2 ? Math.round((d - 1) * 100) : Math.round(-100 / (d - 1));
 };
 
+// One coupon from BetRivers' bet history (My Bets) as a result for results.json, or null if it
+// isn't settled. Matches our bet log by couponRef (logged as "coupon:<ref>"). Units here are
+// the site's, not Kambi's: stake and payout in cents, odds decimal x 1000. payout is the total
+// return (0 for a loss), so profit = payout - stake whatever the status.
+export function settledCoupon(c) {
+  const b = c?.bets?.[0];
+  if (!c?.couponRef || !b || (c.bets.length !== 1)) return null;
+  const st = String(b.betStatus || '').toUpperCase();
+  const result = /CASH/.test(st) ? 'cashout'
+    : /HALF/.test(st) ? (/WON|WIN/.test(st) ? 'half-won' : 'half-lost')
+    : /WON|WIN/.test(st) ? 'won' : /LOST|LOSE/.test(st) ? 'lost'
+    : /PUSH/.test(st) ? 'push' : /VOID|CANCEL|REFUND/.test(st) ? 'void' : null;
+  if (!result) return null;
+  const ko = Number(b.playedOdds);
+  return {
+    betId: String(c.couponRef), result, status: st,
+    payout: Math.round(Number(b.payout) || 0) / 100,
+    stake: Number.isFinite(Number(b.stake)) ? Number(b.stake) / 100 : null,
+    odds: Number.isFinite(ko) && ko > 1000 ? decimalToAmerican(ko / 1000) : null,
+    settledAt: null, placedAt: c.placedDate || null,
+  };
+}
+
 export function makeBetRivers(name, label, cfg, bridge) {
   const k = kambiSettings(cfg);
   const qs = (extra = '') => `lang=en_US&market=${k.market}&client_id=${k.clientId}&channel_id=1${extra}`;
@@ -59,6 +82,29 @@ export function makeBetRivers(name, label, cfg, bridge) {
         maxStake: null,
         betOfferId: bo.id, eventId: bo.eventId,
       };
+    },
+
+    // Settled bets placed since `from` (ms), from the list behind My Bets > Settled on
+    // co.betrivers.com. Read-only, so it works while the extension is disarmed. Needs the
+    // site's x-auth-token, which the extension picks up from the BetRivers tab.
+    async settled(from) {
+      const site = cfg.betrivers?.siteHost || `https://${STATE(cfg)}.betrivers.com`;
+      const cage = cfg.betrivers?.cageCode || '720';
+      const out = [];
+      for (let start = 0, page = 0; page < 20; page++, start += 50) {
+        const res = await bridge.send(name, {
+          kind: 'history', method: 'GET', useRsiAuth: true, headers: { accept: 'application/json, text/plain, */*' },
+          url: `${site}/api/service/sportsbook/bethistory/coupons?status=SETTLED&rangeStart=${start}&rangeSize=50&cageCode=${cage}`,
+        }, 20000);
+        if (res.status === 401 || res.status === 403) throw new Error('BetRivers didn\'t accept the login: refresh the BetRivers tab and stay logged in');
+        const items = res.json?.items;
+        if (res.status >= 400 || !Array.isArray(items)) throw new Error(`bet history HTTP ${res.status}: ${JSON.stringify(res.json || res.text).slice(0, 200)}`);
+        for (const c of items) { const r = settledCoupon(c); if (r) out.push(r); }
+        // Newest first: stop once we're past the oldest bet we're waiting on.
+        const oldest = Math.min(...items.map((c) => Date.parse(c.placedDate)).filter(Number.isFinite));
+        if (!res.json?.range?.more || !items.length || oldest < from) break;
+      }
+      return out;
     },
 
     async place(row, stake, quote) {

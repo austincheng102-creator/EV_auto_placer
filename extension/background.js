@@ -28,6 +28,14 @@ chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
   if (h?.value && h.value !== kambiAuth) { kambiAuth = h.value; chrome.storage.session?.set({ kambiAuth }); }
 }, { urls: ['https://*.kambicdn.org/*', 'https://*.kambicdn.com/*'] }, ['requestHeaders', 'extraHeaders']);
 
+// BetRivers' own site API (bet history) wants the x-auth-token header the site sends.
+let rsiAuth = null;
+chrome.storage.session?.get('rsiAuth').then((v) => { if (v?.rsiAuth && !rsiAuth) rsiAuth = v.rsiAuth; });
+chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
+  const h = (d.requestHeaders || []).find((x) => x.name.toLowerCase() === 'x-auth-token');
+  if (h?.value && h.value !== rsiAuth) { rsiAuth = h.value; chrome.storage.session?.set({ rsiAuth }); }
+}, { urls: ['https://*.betrivers.com/api/*'] }, ['requestHeaders', 'extraHeaders']);
+
 // Hard Rock Bet sends no auth headers: its login token (sessionToken) and location-check
 // token (geolocationDetails) ride in the form body of its own requests. We keep the latest
 // ones your Hard Rock tab sent. The login token refreshes every few seconds; the location
@@ -122,6 +130,10 @@ async function handle(msg) {
     if (msg.request.useKambiAuth) {
       if (!kambiAuth) return reply({ error: 'BetRivers login token not seen yet: in the BetRivers tab, click any odds once (adds it to the slip), then remove it' });
       msg.request.headers = { ...(msg.request.headers || {}), authorization: kambiAuth };
+    }
+    if (msg.request.useRsiAuth) {
+      if (!rsiAuth) return reply({ error: 'BetRivers login not seen yet: refresh the BetRivers tab (stay logged in)' });
+      msg.request.headers = { ...(msg.request.headers || {}), 'x-auth-token': rsiAuth };
     }
     if (msg.request.useHardRockAuth) {
       if (!hrAuth.session) return reply({ error: 'Hard Rock login not seen yet: refresh the Hard Rock tab (stay logged in)' });
