@@ -4,14 +4,14 @@
 // kept apart from bets.json on purpose: the running placer rewrites bets.json from memory
 // on every bet, so a result written into bets.json by `ev-placer bets` would be lost.
 //
-// Where results come from today: you mark them on the chart page (`ev-placer bets`).
-// Hard Rock and BetRivers both have a settled-bets list on their sites; once that request
-// is captured the placer can fill results.json by itself (source: "book").
+// Where results come from: the running placer reads Hard Rock's settled bets (My Bets >
+// Settled) every few minutes and fills them in (source "book", with the book's payout and
+// odds). Anything else, e.g. BetRivers, can be marked by hand on the chart page.
 import fs from 'node:fs';
 import path from 'node:path';
 import { americanToDecimal } from './ev.js';
 
-export const RESULTS = ['won', 'lost', 'push', 'void', 'half-won', 'half-lost'];
+export const RESULTS = ['won', 'lost', 'push', 'void', 'half-won', 'half-lost', 'cashout'];
 
 /** Stable id for a bet: the book's bet id, or when there is none the time it was placed. */
 export const betKey = (b) => String(b.betId || `placed:${b.placedAt}`);
@@ -30,6 +30,7 @@ export function profitOf({ result, stake, odds, payout }) {
     case 'half-won': return win / 2;
     case 'half-lost': return -s / 2;
     case 'push': case 'void': return 0;
+    case 'cashout': return null;   // needs the book's payout
     default: return null;
   }
 }
@@ -38,17 +39,29 @@ export function makeResults(dir, { dryRun = false } = {}) {
   const file = path.join(dir, dryRun ? 'results.dry.json' : 'results.json');
   // Always read fresh: the placer and the chart page can both write it.
   const read = () => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return {}; } };
-  function set(key, result, { source = 'manual', payout = null } = {}) {
+  function set(key, result, { source = 'manual', payout = null, odds = null, settledAt = null } = {}) {
     const all = read();
     if (!result) delete all[key];
     else {
       if (!RESULTS.includes(result)) throw new Error(`unknown result "${result}"`);
-      all[key] = { result, payout, source, settledAt: new Date().toISOString() };
+      all[key] = { result, payout, odds, source, settledAt: settledAt || new Date().toISOString() };
     }
     fs.writeFileSync(file, JSON.stringify(all, null, 2));
     return all[key] || null;
   }
-  return { file, read, set };
+  /** Save several book results at once. Never overwrites a result you marked by hand. */
+  function setMany(list) {
+    const all = read();
+    let n = 0;
+    for (const { key, result, payout = null, odds = null, settledAt = null } of list) {
+      if (all[key]?.source === 'manual' || (all[key] && all[key].result === result && all[key].payout === payout)) continue;
+      all[key] = { result, payout, odds, source: 'book', settledAt: settledAt || new Date().toISOString() };
+      n++;
+    }
+    if (n) fs.writeFileSync(file, JSON.stringify(all, null, 2));
+    return n;
+  }
+  return { file, read, set, setMany };
 }
 
 /**
@@ -73,7 +86,8 @@ export function loadBets(dir, { dryRun = false } = {}) {
     .map((b) => {
       const key = betKey(b);
       const r = results[key];
-      const odds = b.confirmedOdds ?? b.sentOdds;
+      // The book's own record of the price wins over what placeBets said.
+      const odds = r?.odds ?? b.confirmedOdds ?? b.sentOdds;
       const stake = Number(b.stake) || 0;
       return {
         key, placedAt: b.placedAt, book: b.book, event: b.event, market: b.market, selection: b.selection, line: b.line,
