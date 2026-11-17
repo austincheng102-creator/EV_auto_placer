@@ -69,7 +69,11 @@ export function makeBetRivers(name, label, cfg, bridge) {
       const v = await inTab('validate', `${k.authHost}/player/api/v2019/${k.offering}/coupon/validate.json?${qs()}`, 'POST',
         { couponRows: rows, bets, isUserLoggedIn: true });
       if (v.status === 401 || v.json?.validSession === false) throw new Error('BetRivers didn\'t accept the login token: click any odds in the BetRivers tab once, then remove it from the slip');
-      if (v.status >= 400 || (v.json?.status && v.json.status !== 'SUCCESS')) throw new Error(`validate: ${JSON.stringify(v.json || v.text).slice(0, 200)}`);
+      if (v.status >= 400 || (v.json?.status && v.json.status !== 'SUCCESS')) {
+        const err = new Error(`validate: ${JSON.stringify(v.json || v.text).slice(0, 200)}`);
+        err.detail = `Kambi validate response (HTTP ${v.status}): ${JSON.stringify(v.json ?? v.text)}`;
+        throw err;
+      }
 
       const requestId = crypto.randomUUID();
       const res = await inTab('place', `${k.authHost}/player/api/v2019/${k.offering}/coupon.json?${qs()}`, 'POST', {
@@ -87,7 +91,9 @@ export function makeBetRivers(name, label, cfg, bridge) {
       const j = res.json || {};
       const ref = j.couponRef ?? j.coupon?.couponRef;
       if (!ref || !['SUCCESS', 'LIVE_DELAY_PENDING'].includes(j.status)) {
-        throw new Error(`rejected: ${j.status || `HTTP ${res.status}`} ${JSON.stringify(j.generalErrors || j.couponRowErrors || j.betErrors || j).slice(0, 200)}`);
+        const err = new Error(`rejected: ${j.status || `HTTP ${res.status}`} ${JSON.stringify(j.generalErrors || j.couponRowErrors || j.betErrors || j).slice(0, 200)}`);
+        err.detail = `Kambi coupon response (HTTP ${res.status}): ${JSON.stringify(res.json ?? res.text)}`;
+        throw err;
       }
       let status = j.coupon?.bets?.[0]?.betStatus;
 
