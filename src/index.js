@@ -10,6 +10,7 @@ import { makeMockSource } from './sources/mock.js';
 import { startBridge } from './books/bridge.js';
 import { makeBooks, parseBooks, BOOK_LABELS } from './books/index.js';
 import { makeResultSync } from './resultsync.js';
+import { allBets } from './results.js';
 import readline from 'node:readline/promises';
 import { appDir } from './paths.js';
 import { ensureConfig, writeExtension, extensionChanged } from './setup.js';
@@ -68,7 +69,7 @@ async function fetchResultsWhileOpen() {
   });
   if (!free) { console.log('The placer is running, so it fills in results itself.'); return; }
   const bridge = startBridge(port, { quiet: true });
-  const rs = makeResultSync({ cfg, bridge, root: appDir, log, bets: () => makeBetLog(appDir, { log }).bets() });
+  const rs = makeResultSync({ cfg, bridge, root: appDir, log, bets: () => allBets(appDir) });
   const waiting = rs.waitingBooks();
   if (!waiting.length) { await bridge.close(); return; }
   const names = waiting.map((b) => BOOK_LABELS[b]).join(' and ');
@@ -348,7 +349,7 @@ log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=
 // bet today, as long as that book's tab is open. "results": {"everyMinutes": 0} turns it off.
 const resultsEvery = (cfg.results?.everyMinutes ?? 10) * 60e3;
 if (!dryRun && bridge && resultsEvery > 0) {
-  const rs = makeResultSync({ cfg, bridge, root, dryRun, log, bets: () => betLog.bets(), books });
+  const rs = makeResultSync({ cfg, bridge, root, dryRun, log, bets: () => allBets(root, { dryRun }), books });
   setTimeout(rs.sync, 15e3); setInterval(rs.sync, resultsEvery);
 }
 

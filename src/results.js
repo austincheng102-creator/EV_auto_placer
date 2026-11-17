@@ -68,7 +68,8 @@ export function makeResults(dir, { dryRun = false } = {}) {
  * Every bet we know about, newest last, with its result and profit filled in.
  * Uses bets.json, plus bets from state.json that were placed before bets.json existed.
  */
-export function loadBets(dir, { dryRun = false } = {}) {
+/** Every bet placed: bets.json plus bets from state.json placed before bets.json existed. */
+export function allBets(dir, { dryRun = false } = {}) {
   const sfx = dryRun ? '.dry' : '';
   const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch { return d; } };
   const logged = readJson(`bets${sfx}.json`, []);
@@ -79,8 +80,12 @@ export function loadBets(dir, { dryRun = false } = {}) {
     line: p.line ?? null, sentOdds: p.odds, confirmedOdds: null, fairOdds: p.fair, ev: p.ev, stake: p.stake,
     live: null, clv: null, fromState: true,
   }));
+  return [...older, ...logged];
+}
+
+export function loadBets(dir, { dryRun = false } = {}) {
   const results = makeResults(dir, { dryRun }).read();
-  return [...older, ...logged]
+  return allBets(dir, { dryRun })
     .filter((b) => b.placedAt && Number.isFinite(Date.parse(b.placedAt)))
     .sort((a, b) => Date.parse(a.placedAt) - Date.parse(b.placedAt))
     .map((b) => {
