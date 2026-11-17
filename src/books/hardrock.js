@@ -19,6 +19,20 @@ const GEO = '{{hrGeo}}';
 
 const toDecimal = (am) => Math.round((am > 0 ? 1 + am / 100 : 1 + 100 / -am) * 1e8) / 1e8;
 
+/**
+ * The price Hard Rock says it accepted the bet at, from its placeBets response (American odds),
+ * or null if the response doesn't say. Looks at the bet's leg first, then the bet itself.
+ */
+export function confirmedOdds(r) {
+  const leg = r?.bet?.parts?.betPart?.[0] || r?.bet?.betParts?.[0] || r?.bet?.part?.[0];
+  const res = r?.betPartPlacementResult?.[0];
+  for (const o of [leg?.odds, leg?.price, res?.odds, res?.acceptedOdds, r?.bet?.odds, r?.odds]) {
+    const d = Number(o?.decimal ?? o?.decimalOdds ?? (typeof o === 'number' ? o : NaN));
+    if (Number.isFinite(d) && d > 1) return decimalToAmerican(d);
+  }
+  return null;
+}
+
 /** Hard Rock selection id from the bet link Gambit gives for the row. */
 export function hardrockSelectionId(row) {
   if (row.bookRef) return String(row.bookRef);
@@ -82,7 +96,8 @@ export function makeHardRock(name, label, cfg, bridge) {
       const betId = r?.betId || r?.bet?.id;
       // Accepted, or still being reviewed by Hard Rock (record it so we never bet it twice).
       if (betId && /ACCEPTED|PENDING|REFERRED|DELAY/i.test(String(status))) {
-        return { betId: `hardrock:${betId}${/ACCEPTED/i.test(status) ? '' : ` (${status})`}` };
+        return { betId: `hardrock:${betId}${/ACCEPTED/i.test(status) ? '' : ` (${status})`}`,
+          confirmedOdds: confirmedOdds(r), detail: `Hard Rock placeBets response: ${JSON.stringify(j)}` };
       }
       const leg = r?.betPartPlacementResult?.[0];
       const why = [status, leg?.status !== 'UNCHANGED' && leg?.status, r?.errorCode, r?.errorMessage, r?.reason].filter(Boolean).join(' ');

@@ -3,6 +3,7 @@
 //   { marketName, source, devig: [{method, winProbability}], bet: { id, odds, sportsbook_id,
 //     selection, selection_line, points, player_name, comparableBets[], opposingBets[] } } ] } ] }
 import { americanToDecimal, decimalToAmerican } from '../ev.js';
+import { fairKey } from '../betlog.js';
 
 // Gambit sportsbook ids -> our book names.
 // Hard Rock: Gambit lists it as 850, 851, 1008 and 1016. 851 is Colorado (its bets were accepted
@@ -85,7 +86,11 @@ export function fairProb(devig, method = 'worst') {
   return hit ? hit.winProbability : null;
 }
 
-export function evsToRows(json, g = {}) {
+/**
+ * `fairOut` (optional Map) collects Gambit's fair price for every selection in the response,
+ * from any book, keyed by fairKey (event|market|selection|line). Used for closing line value.
+ */
+export function evsToRows(json, g = {}, fairOut = null) {
   detectBookIds(json);
   const nameById = {};
   for (const [n, list] of Object.entries(bookIdLists(g))) for (const id of list) nameById[id] = n;
@@ -94,10 +99,9 @@ export function evsToRows(json, g = {}) {
     for (const op of ev.evOpportunities || []) {
       const b = op.bet || {};
       const book = nameById[b.sportsbook_id];
-      if (!book) continue;                                // a book we don't bet
+      if (!book && !fairOut) continue;                    // a book we don't bet
       const p = fairProb(op.devig, g.devigMethod || 'worst');
       if (p == null || p >= 1) continue;
-      const fairOdds = decimalToAmerican(1 / p);
       const own = (b.comparableBets || []).find((c) => c.sportsbook_id === b.sportsbook_id);
       const link = own?.desktop_link || own?.mobile_link || '';
       const refs = book === 'betrivers' ? kambiRef(link) : book === 'fanduel' ? fanduelRef(link) : book === 'hardrock' ? hardrockRef(link) : {};
@@ -107,10 +111,20 @@ export function evsToRows(json, g = {}) {
       const side = cap(b.selection_line || (isTotal ? b.selection : ''));
       const selection = b.player_name ? `${b.player_name} ${side}`.trim() : isTotal ? side : b.selection;
       const line = /money_line/.test(op.marketName) ? null : Number(b.points ?? b.selection_points);
+      if (fairOut) {
+        // Same selection listed under several books: prefer the row for a book we bet, else the
+        // lowest fair probability (the less flattering close).
+        const k = fairKey({ event: ev.event_name, marketKey: op.marketName, selection, line });
+        const had = fairOut.get(k), own = !!book;
+        if (!had || (own && !had.own) || (own === had.own && p < had.prob)) fairOut.set(k, { prob: p, isLive: !!ev.isLive, own });
+      }
+      if (!book) continue;
+      const fairOdds = decimalToAmerican(1 / p);
       rows.push({
         id: b.id, book, gambitBookId: b.sportsbook_id, event: ev.event_name, league: ev.league, isLive: !!ev.isLive, startDate: ev.startDate,
         market: prettyMarket(op.marketName), marketKey: op.marketName, selection, line,
-        odds: Number(b.odds), fairOdds, fairProb: p, ev: (p * americanToDecimal(Number(b.odds)) - 1) * 100,
+        odds: Number(b.odds), fairOdds, fairProb: p,
+        devig: Object.fromEntries((op.devig || []).filter((d) => d.method).map((d) => [d.method, d.winProbability])), ev: (p * americanToDecimal(Number(b.odds)) - 1) * 100,
         fairBooks: (b.comparableBets || []).length + (b.opposingBets || []).length,
         fairSource: SOURCE_NAMES[op.source] ?? String(op.source),
         novigOdds: novig?.odds ?? null, novigOppOdds: novigOpp?.odds ?? null,

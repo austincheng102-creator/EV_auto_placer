@@ -23,12 +23,14 @@ const LAUNCHERS = {
     'Run demo.bat': '@echo off\r\ncd /d "%~dp0"\r\nev-placer.exe dry\r\npause\r\n',
     'Start BetRivers.bat': '@echo off\r\ncd /d "%~dp0"\r\nev-placer.exe --book betrivers %*\r\npause\r\n',
     'Start Hard Rock.bat': '@echo off\r\ncd /d "%~dp0"\r\nev-placer.exe --book hardrock %*\r\npause\r\n',
+    'Show bets.bat': '@echo off\r\ncd /d "%~dp0"\r\nev-placer.exe bets\r\npause\r\n',
   },
   mac: {
     'Start EV Placer.command': '#!/bin/bash\ncd "$(dirname "$0")"\nxattr -d com.apple.quarantine ./ev-placer 2>/dev/null\n./ev-placer "$@"\n',
     'Run demo.command': '#!/bin/bash\ncd "$(dirname "$0")"\nxattr -d com.apple.quarantine ./ev-placer 2>/dev/null\n./ev-placer dry\n',
     'Start BetRivers.command': '#!/bin/bash\ncd "$(dirname "$0")"\nxattr -d com.apple.quarantine ./ev-placer 2>/dev/null\n./ev-placer --book betrivers "$@"\n',
     'Start Hard Rock.command': '#!/bin/bash\ncd "$(dirname "$0")"\nxattr -d com.apple.quarantine ./ev-placer 2>/dev/null\n./ev-placer --book hardrock "$@"\n',
+    'Show bets.command': '#!/bin/bash\ncd "$(dirname "$0")"\n./ev-placer bets\n',
   },
 };
 

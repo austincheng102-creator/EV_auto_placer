@@ -1,5 +1,6 @@
 // Fake Gambit feed for dry runs. Produces a few rows per poll, some +EV.
-import { evPct } from '../ev.js';
+import { evPct, impliedProb } from '../ev.js';
+import { fairKey } from '../betlog.js';
 
 const EVENTS = [
   ['James Madison Dukes @ Southern Miss Golden Eagles', 'Total', 71.5],
@@ -10,7 +11,9 @@ const EVENTS = [
 
 export function makeMockSource(cfg) {
   let n = 0;
+  let fair = new Map();
   return {
+    fairIndex: () => fair,
     async fetchRows() {
       n++;
       const rows = [];
@@ -35,6 +38,8 @@ export function makeMockSource(cfg) {
         const roll = Math.random();
         if (roll > 0.1) r.novigOdds = roll < 0.4 ? r.odds - 4 : Math.round(r.fairOdds + (r.fairOdds > 0 ? 3 : -3));
       }
+      // Fair price drifts a little each poll, so dry runs show closing line value moving.
+      fair = new Map(rows.map((r) => [fairKey(r), { prob: Math.min(0.95, impliedProb(r.fairOdds) * (1 + (Math.random() - 0.45) * 0.06)), isLive: true }]));
       return rows;
     },
   };

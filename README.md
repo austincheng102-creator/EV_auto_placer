@@ -32,6 +32,7 @@ From a terminal, the app takes commands:
 ev-placer            live run
 ev-placer dry        demo run
 ev-placer init       create config.json and extension/, then exit
+ev-placer bets       bet log and closing line value (also: Show bets)
 ev-placer --book hardrock   bet Hard Rock this run (or betrivers)
 ev-placer --help     all options (--min-ev 12, --books betrivers,hardrock, --config other.json)
 ```
@@ -81,6 +82,30 @@ Set it in `config.json` -> `novig`:
   matched to Gambit rows by event, market, selection and line.
 
 Command line: `--novig-min-ev 3`, `--no-novig`.
+
+## Checking that bets were really +EV
+Every placed bet is saved to **`bets.csv`** next to the app (open it in Excel or Sheets; the same
+data is in `bets.json`). Dry runs go to `bets.dry.csv`. Each row has:
+- **Gambit listed odds**, **odds we checked and sent**, and **book confirmed odds**: the price
+  Hard Rock (or BetRivers) says it accepted, read from its reply. `confirmed = sent` should be `yes`.
+  Hard Rock bets are sent with price changes refused, so it can't fill you at a different price.
+  If the book doesn't report its price, the column says `not reported` and the raw reply is in
+  `debug.log`.
+- **Fair odds**: the one we used (the lowest of Gambit's four no-vig methods), plus each method
+  (Power, Multiplicative, Additive, Shin) and how many books are behind it. If Gambit's page shows a
+  higher EV than the log, it's using a different method than the lowest one; find it in those columns.
+- EV at Gambit's price and at the placed price, Novig's odds and EV, stake, and Hard Rock's max stake.
+
+**Closing line value (CLV).** After a bet is placed the app keeps watching Gambit's fair price for
+the same selection. At game start it saves the last pre-game fair price (the "close") and works out
+CLV % = the close's win probability x our decimal odds - 1. If the bets beat the close on average,
+the edge is real; that's the standard check, and it doesn't need hundreds of results to settle.
+- Live bets have no real close: they use the last fair price Gambit showed (`live, last seen`),
+  once it's been gone for 15 minutes.
+- Gambit only lists selections that are +EV somewhere. If it stops listing one after we bet, there's
+  no close for it (`not seen after placing`) and it's left out of the average.
+- The terminal shows a `CLV:` line for each close and the running average. **Show bets**
+  (`ev-placer bets`) prints the last 25 bets and the totals.
 
 ## Updates (automatic)
 Every change pushed to `main` is built by GitHub Actions and published as a release. Each time the
