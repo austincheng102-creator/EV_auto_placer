@@ -116,15 +116,17 @@ the edge is real; that's the standard check, and it doesn't need hundreds of res
 - **All books** is the default view; click **Hard Rock Bet** or **BetRivers** to see one book.
   Also 30 days / 7 days.
 
-**Results.** Hard Rock results fill in by themselves. While the placer runs (and a Hard Rock tab is
-open, even on BetRivers days), it reads Hard Rock's **My Bets > Settled** list every 10 minutes and
-saves the result, payout and odds of each logged bet to `results.json`. The terminal shows a
-`Results:` line when bets settle. Change the timing with `"results": {"everyMinutes": 10}` in
-`config.json` (0 turns it off). It's read-only, so it works while the extension is disarmed.
+**Results.** Results fill in by themselves. While the placer runs, it reads each book's
+**My Bets > Settled** list every 10 minutes (Hard Rock and BetRivers, whichever tabs are open, on
+any day) and saves the result, payout and odds of each logged bet to `results.json`. The terminal
+shows a `Results:` line when bets settle. Change the timing with `"results": {"everyMinutes": 10}`
+in `config.json` (0 turns it off). It's read-only, so it works while the extension is disarmed.
+BetRivers needs the extension to have seen the site's login once: refresh the BetRivers tab after
+updating.
 
-Anything else (BetRivers for now) can be marked in the table at the bottom of the page: won, lost,
-push, void, half won, half lost. A result you mark by hand is never overwritten. Results live in
-`results.json`, apart from `bets.json`, so the running placer never overwrites them.
+You can also mark a bet in the table at the bottom of the page (won, lost, push, void, half won,
+half lost). A result you mark by hand is never overwritten. Results live in `results.json`, apart
+from `bets.json`, so the running placer never overwrites them.
 - Keep the Show bets window open while you mark results; closing it stops the page.
 - A read-only copy is saved as `bets.html` and opens on its own later.
 - Bets placed before the bet log existed (from `state.json`) are included.

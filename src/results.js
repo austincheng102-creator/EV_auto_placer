@@ -4,9 +4,9 @@
 // kept apart from bets.json on purpose: the running placer rewrites bets.json from memory
 // on every bet, so a result written into bets.json by `ev-placer bets` would be lost.
 //
-// Where results come from: the running placer reads Hard Rock's settled bets (My Bets >
-// Settled) every few minutes and fills them in (source "book", with the book's payout and
-// odds). Anything else, e.g. BetRivers, can be marked by hand on the chart page.
+// Where results come from: the running placer reads Hard Rock's and BetRivers' settled bets
+// (My Bets > Settled) every few minutes and fills them in (source "book", with the book's
+// payout and odds). Anything can also be marked by hand on the chart page.
 import fs from 'node:fs';
 import path from 'node:path';
 import { americanToDecimal } from './ev.js';

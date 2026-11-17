@@ -9,6 +9,7 @@ import { makeMockSource } from './sources/mock.js';
 import { startBridge } from './books/bridge.js';
 import { makeBooks, parseBooks, BOOK_LABELS } from './books/index.js';
 import { makeHardRock } from './books/hardrock.js';
+import { makeBetRivers } from './books/betrivers.js';
 import { makeResults, betKey } from './results.js';
 import readline from 'node:readline/promises';
 import { appDir } from './paths.js';
@@ -301,36 +302,42 @@ async function tick() {
 }
 
 log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}% novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} maxOdds=${cfg.maxOdds == null ? 'off' : fmtAmerican(cfg.maxOdds)} stake=$${cfg.stake.amount} poll=${cfg.pollSeconds}s`);
-// Results for the P&L chart: read Hard Rock's settled bets (My Bets > Settled) every few
-// minutes while any logged Hard Rock bet has no result yet. Works on BetRivers days too,
-// as long as a Hard Rock tab is open. "results": {"everyMinutes": 0} turns it off.
+// Results for the P&L chart: read each book's settled bets (My Bets > Settled) every few
+// minutes while a logged bet from that book has no result yet. Works whichever book is being
+// bet today, as long as that book's tab is open. "results": {"everyMinutes": 0} turns it off.
 const resultsEvery = (cfg.results?.everyMinutes ?? 10) * 60e3;
 const resultStore = makeResults(root, { dryRun });
-const hrResults = !dryRun && bridge && resultsEvery > 0 ? (books.hardrock?.settled ? books.hardrock : makeHardRock('hardrock', 'Hard Rock Bet', cfg, bridge)) : null;
-let resultsWarned = false;
+const resultSources = !dryRun && bridge && resultsEvery > 0 ? [
+  { book: 'hardrock', idRe: /^hardrock:(\d+)/, api: books.hardrock?.settled ? books.hardrock : makeHardRock('hardrock', 'Hard Rock Bet', cfg, bridge) },
+  { book: 'betrivers', idRe: /^coupon:(\d+)/, api: books.betrivers?.settled ? books.betrivers : makeBetRivers('betrivers', 'BetRivers', cfg, bridge) },
+] : [];
+const resultsWarned = new Set();
 async function syncResults() {
-  if (!hrResults || !bridge.connected() || !bridge.hasTab('hardrock')) return;
-  const have = resultStore.read();
-  const waiting = betLog.bets().filter((b) => b.book === 'hardrock' && /^hardrock:\d+/.test(b.betId || '') && !have[betKey(b)]);
-  if (!waiting.length) return;
-  const byId = new Map(waiting.map((b) => [/^hardrock:(\d+)/.exec(b.betId)[1], b]));
-  const from = Math.min(...waiting.map((b) => Date.parse(b.placedAt))) - 864e5;
-  try {
-    const settled = (await hrResults.settled(from)).filter((r) => byId.has(r.betId));
-    resultsWarned = false;
-    if (!settled.length) return;
-    const n = resultStore.setMany(settled.map((r) => ({ key: betKey(byId.get(r.betId)), result: r.result, payout: r.payout, odds: r.odds, settledAt: r.settledAt })));
-    if (!n) return;
-    const profit = settled.reduce((s, r) => s + r.payout - (r.stake ?? byId.get(r.betId).stake), 0);
-    const won = settled.filter((r) => r.result === 'won').length, lost = settled.filter((r) => r.result === 'lost').length;
-    const other = settled.length - won - lost;
-    log.info(`Results: ${n} Hard Rock bet${n === 1 ? '' : 's'} settled (${won} won, ${lost} lost${other ? `, ${other} other` : ''}), ${profit >= 0 ? '+' : '-'}$${Math.abs(profit).toFixed(2)}. Show bets for the P&L chart`);
-  } catch (e) {
-    if (!resultsWarned) log.warn(`Couldn't read Hard Rock's settled bets: ${e.message} (will keep trying)`);
-    resultsWarned = true;
+  for (const { book, idRe, api } of resultSources) {
+    if (!bridge.connected() || !bridge.hasTab(book)) continue;
+    const have = resultStore.read();
+    const waiting = betLog.bets().filter((b) => b.book === book && idRe.test(b.betId || '') && !have[betKey(b)]);
+    if (!waiting.length) continue;
+    const byId = new Map(waiting.map((b) => [idRe.exec(b.betId)[1], b]));
+    const from = Math.min(...waiting.map((b) => Date.parse(b.placedAt))) - 864e5;
+    const label = BOOK_LABELS[book];
+    try {
+      const settled = (await api.settled(from)).filter((r) => byId.has(r.betId));
+      resultsWarned.delete(book);
+      if (!settled.length) continue;
+      const n = resultStore.setMany(settled.map((r) => ({ key: betKey(byId.get(r.betId)), result: r.result, payout: r.payout, odds: r.odds, settledAt: r.settledAt })));
+      if (!n) continue;
+      const profit = settled.reduce((s, r) => s + r.payout - (r.stake ?? byId.get(r.betId).stake), 0);
+      const won = settled.filter((r) => r.result === 'won').length, lost = settled.filter((r) => r.result === 'lost').length;
+      const other = settled.length - won - lost;
+      log.info(`Results: ${n} ${label} bet${n === 1 ? '' : 's'} settled (${won} won, ${lost} lost${other ? `, ${other} other` : ''}), ${profit >= 0 ? '+' : '-'}$${Math.abs(profit).toFixed(2)}. Show bets for the P&L chart`);
+    } catch (e) {
+      if (!resultsWarned.has(book)) log.warn(`Couldn't read ${label}'s settled bets: ${e.message} (will keep trying)`);
+      resultsWarned.add(book);
+    }
   }
 }
-if (hrResults) { setTimeout(syncResults, 15e3); setInterval(syncResults, resultsEvery); }
+if (resultSources.length) { setTimeout(syncResults, 15e3); setInterval(syncResults, resultsEvery); }
 
 log.info(`${betLog.summaryLine()} (ev-placer bets for details, file ${path.basename(betLog.csvPath)})`);
 // Give the Chrome extension a few seconds to connect before the first scan.
