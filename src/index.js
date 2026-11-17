@@ -17,6 +17,7 @@ import { checkForUpdate, cleanupOld } from './update.js';
 import { makeNovig } from './novig.js';
 import { seenBooks } from './sources/gambit-evs.js';
 import { makeBetLog } from './betlog.js';
+import { writeSnapshot, serveReport, openInBrowser } from './report.js';
 
 const root = appDir;
 let args = process.argv.slice(2);
@@ -32,7 +33,8 @@ if (flag('--help') || flag('-h') || args[0] === 'help') {
   ev-placer dry          demo run: fake Gambit feed, simulated book, nothing is sent
   ev-placer init         create config.json and the extension/ folder, then exit
   ev-placer update       check for a new version now, then exit
-  ev-placer bets         show the bet log and closing line value, then exit
+  ev-placer bets         bet log summary, then open the bets and P&L chart in your browser
+                         (--no-open: just write bets.html)
 
   --min-ev 12            override minimum EV %
   --max-odds 250         skip bets with odds above this (default +250)
@@ -60,6 +62,16 @@ if (args[0] === 'bets') {
   if (list.length > 25) console.log(`(last 25 of ${list.length}, all of them are in ${bl.csvPath})`);
   console.log(bl.summaryLine());
   console.log(`Full log: ${bl.csvPath}`);
+  // Chart page: bets over time and P&L, per book. Served locally so results can be marked on it.
+  try {
+    const snap = writeSnapshot(appDir, { dryRun: flag('--dry-run') });
+    if (flag('--no-open')) process.exit(0);
+    const { url } = await serveReport(appDir, { dryRun: flag('--dry-run'), port: Number(opt('--port', 8766)), log });
+    openInBrowser(url);
+    console.log(`\nChart: ${url}  (opened in your browser; mark results there)`);
+    console.log(`Keep this window open while you mark results. A read-only copy is saved as ${snap}`);
+    await new Promise(() => {});
+  } catch (e) { log.err(`couldn't open the chart page: ${e.message}`); }
   process.exit(0);
 }
 
