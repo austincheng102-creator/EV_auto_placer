@@ -8,6 +8,8 @@
 //    picks it up from your BetRivers tab's own requests
 // Kambi units: odds and stake are x1000 (odds 1630 = 1.63 decimal, stake 1000 = $1), lines x1000.
 
+import { decimalToAmerican } from '../ev.js';
+
 const STATE = (cfg) => String(cfg.region || 'CO').toLowerCase();
 
 export function kambiSettings(cfg) {
@@ -99,7 +101,10 @@ export function makeBetRivers(name, label, cfg, bridge) {
         }
       }
       if (status !== 'OPEN') throw new Error(`not accepted (coupon ${ref}, status ${status || 'unknown'})`);
-      return { betId: `coupon:${ref}` };
+      // Kambi odds are decimal x 1000 (e.g. 2150 = +115).
+      const ko = Number(j.coupon?.couponRows?.[0]?.odds ?? j.coupon?.bets?.[0]?.odds);
+      return { betId: `coupon:${ref}`, confirmedOdds: Number.isFinite(ko) && ko > 1000 ? decimalToAmerican(ko / 1000) : null,
+        detail: `BetRivers coupon response: ${JSON.stringify(j)}` };
     },
   };
 }

@@ -7,3 +7,8 @@ test.config.json
 github-token.txt
 debug.log
 debug.old.log
+bets.json
+bets.csv
+bets.dry.json
+bets.dry.csv
+bets.bad.json

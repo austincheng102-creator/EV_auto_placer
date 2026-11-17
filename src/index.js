@@ -16,6 +16,7 @@ import embedded from './embedded.js';
 import { checkForUpdate, cleanupOld } from './update.js';
 import { makeNovig } from './novig.js';
 import { seenBooks } from './sources/gambit-evs.js';
+import { makeBetLog } from './betlog.js';
 
 const root = appDir;
 let args = process.argv.slice(2);
@@ -31,6 +32,7 @@ if (flag('--help') || flag('-h') || args[0] === 'help') {
   ev-placer dry          demo run: fake Gambit feed, simulated book, nothing is sent
   ev-placer init         create config.json and the extension/ folder, then exit
   ev-placer update       check for a new version now, then exit
+  ev-placer bets         show the bet log and closing line value, then exit
 
   --min-ev 12            override minimum EV %
   --max-odds 250         skip bets with odds above this (default +250)
@@ -47,6 +49,19 @@ if (flag('--help') || flag('-h') || args[0] === 'help') {
   process.exit(0);
 }
 if (flag('--version') || flag('-v')) { console.log(VERSION); process.exit(0); }
+if (args[0] === 'bets') {
+  const bl = makeBetLog(appDir, { dryRun: flag('--dry-run'), log });
+  const list = bl.bets();
+  for (const b of list.slice(-25)) {
+    const conf = b.confirmedOdds == null ? 'book did not report its price' : b.oddsMatch === 'yes' ? 'book confirmed same price' : `BOOK CONFIRMED ${fmtAmerican(b.confirmedOdds)}`;
+    const close = b.clv != null ? `close ${fmtAmerican(b.closeFairOdds)} (${b.closeKind}) -> CLV ${fmtPct(b.clv)}` : b.closeKind || 'waiting for close';
+    console.log(`${b.placedAt.slice(0, 16).replace('T', ' ')}  ${bl.describe(b)}  fair ${fmtAmerican(b.fairOdds)} ${fmtPct(b.ev)} EV, ${conf}, ${close}`);
+  }
+  if (list.length > 25) console.log(`(last 25 of ${list.length}, all of them are in ${bl.csvPath})`);
+  console.log(bl.summaryLine());
+  console.log(`Full log: ${bl.csvPath}`);
+  process.exit(0);
+}
 
 // Always keep the extension folder and a config.json next to the app.
 const extDir = writeExtension();
@@ -113,6 +128,7 @@ for (const b of Object.values(books)) {
   if (b.ready === false) { log.err(`${b.label}: ${b.notReadyReason}`); process.exit(1); }
 }
 const novig = makeNovig(cfg); // null = Novig check turned off
+const betLog = makeBetLog(root, { dryRun, log });
 
 // Persistent state: what we've already bet and how much today.
 const statePath = path.join(root, dryRun ? 'state.dry.json' : 'state.json');
@@ -162,7 +178,7 @@ async function placeAt(row, book, quote, retried = false) {
   log.bet(`${book.label}: re-check OK: ${tail}`);
 
   // Novig has to agree at the live price too.
-  let novigEvPct = null;
+  let novigEvPct = null, novigCheck = null;
   if (novig) {
     const nc = novig.check(row, quote.odds);
     if (!nc.ok) {
@@ -170,7 +186,7 @@ async function placeAt(row, book, quote, retried = false) {
         : 'Novig FAIL: Novig has no usable price for this selection (missing, or its two sides are from different lines) — skipped, nothing placed');
       return false;
     }
-    novigEvPct = nc.ev;
+    novigEvPct = nc.ev; novigCheck = nc;
     log.bet(`Novig OK: ${fmtAmerican(quote.odds)} vs Novig ${fmtNovig(nc.nv)} -> ${fmtPct(nc.ev)} EV`);
   }
 
@@ -180,11 +196,20 @@ async function placeAt(row, book, quote, retried = false) {
     log.warn(`daily stake limit $${cfg.dailyStakeLimit} reached — skipped`); return false;
   }
   try {
-    const { betId } = await book.place(row, stake, quote);
+    const { betId, confirmedOdds, detail } = await book.place(row, stake, quote);
+    if (detail) log.debug(`${book.label} ${desc(row)} PLACED — ${detail}`);
     state.placed.push({ at: new Date().toISOString(), key: selKey(row), event: row.event, book: row.book,
       market: row.market, gambitBookId: row.gambitBookId, selection: row.selection, line: row.line, odds: quote.odds, fair: row.fairOdds, ev, novigEv: novigEvPct, stake, betId });
     state.staked += stake; save();
+    // Paper trail: what we checked vs what the book says it accepted, plus Gambit's fair odds.
+    // Dry runs: the simulated book "confirms" the price we sent.
+    betLog.record({ row, quote, stake, betId, confirmedOdds: dryRun ? quote.odds : confirmedOdds, ev, novig: novigCheck });
     log.ok(`${BOOK_LABELS[row.book]} PLACED $${stake} @ ${fmtAmerican(quote.odds)} (${fmtPct(ev)} EV) bet_id=${betId}${dryRun ? ' [DRY RUN]' : ''}`);
+    if (!dryRun) {
+      if (confirmedOdds == null) log.bet(`${book.label} didn't report the accepted price; check bet ${betId} in your bet history (raw reply in debug.log)`);
+      else if (confirmedOdds === quote.odds) log.bet(`${book.label} confirmed ${fmtAmerican(confirmedOdds)}, same as checked. Logged to bets.csv`);
+      else log.warn(`${book.label} CONFIRMED ${fmtAmerican(confirmedOdds)}, NOT the ${fmtAmerican(quote.odds)} we checked: ${fmtPct(evPct(confirmedOdds, row.fairOdds))} EV at that price. Logged to bets.csv`);
+    }
     return true;
   } catch (e) {
     if (e.detail) log.debug(`${book.label} ${desc(row)} — ${e.message}: ${e.detail}`);
@@ -209,6 +234,15 @@ async function tick() {
   let rows;
   try { rows = await source.fetchRows(); }
   catch (e) { log.err(`Gambit fetch failed: ${e.message}`); return; }
+  // Closing line value: follow Gambit's fair price for bets already placed.
+  if (source.fairIndex) {
+    const closed = betLog.track(source.fairIndex());
+    for (const b of closed) {
+      if (b.clv == null) log.info(`CLV: ${betLog.describe(b)}: Gambit stopped listing it after we bet, no close to compare`);
+      else log.info(`CLV: ${betLog.describe(b)} vs close ${fmtAmerican(b.closeFairOdds)} (${b.closeKind}) -> ${fmtPct(b.clv)}`);
+    }
+    if (closed.length) log.info(betLog.summaryLine());
+  }
   if (novig) {
     try { await novig.refresh(); }
     catch (e) { log.err(`Novig fetch failed: ${e.message} — not placing`); return; }
@@ -253,6 +287,7 @@ async function tick() {
 }
 
 log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}% novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} maxOdds=${cfg.maxOdds == null ? 'off' : fmtAmerican(cfg.maxOdds)} stake=$${cfg.stake.amount} poll=${cfg.pollSeconds}s`);
+log.info(`${betLog.summaryLine()} (ev-placer bets for details, file ${path.basename(betLog.csvPath)})`);
 // Give the Chrome extension a few seconds to connect before the first scan.
 if (bridge) for (let i = 0; i < 20 && !bridge.connected(); i++) await new Promise((r) => setTimeout(r, 250));
 if (bridge && !bridge.connected()) log.warn('Chrome extension not connected yet: is Chrome open with the EV Placer extension loaded?');

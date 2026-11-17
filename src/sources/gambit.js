@@ -57,19 +57,23 @@ export function makeGambitSource(cfg, bridge) {
     return res.json();
   }
 
+  let fair = new Map();   // every selection's fair price in the last poll (for closing line value)
   return {
     needsBridge: via === 'extension',
+    fairIndex: () => fair,
     async fetchRows() {
       const list = urls();
       if (!list.length || list.some((u) => u.startsWith('PASTE_'))) throw new Error('gambit.url not set in config.json');
       const out = [];
+      const nextFair = new Map();
       for (const url of list) {
         const json = await fetchOne(withBookIds(url));
-        if (Array.isArray(json?.evs)) { out.push(...evsToRows(json, g)); continue; }   // Gambit's evs.json
+        if (Array.isArray(json?.evs)) { out.push(...evsToRows(json, g, nextFair)); continue; }   // Gambit's evs.json
         const rows = g.rowsPath ? get(json, g.rowsPath) : json;
         if (!Array.isArray(rows)) throw new Error(`Gambit: rowsPath "${g.rowsPath}" is not an array`);
         out.push(...rows.map((r) => normalizeRow(r, g.fields)));
       }
+      fair = nextFair;
       return out;
     },
   };
