@@ -3,8 +3,9 @@
 import { WebSocketServer } from 'ws';
 import { log } from '../log.js';
 
-export function startBridge(port, { reloadExtension = false } = {}) {
+export function startBridge(port, { reloadExtension = false, quiet = false } = {}) {
   const wss = new WebSocketServer({ host: '127.0.0.1', port });
+  wss.on('error', (e) => log.err(e.code === 'EADDRINUSE' ? `Port ${port} for the Chrome extension is in use: is another ev-placer window open (Show bets checking results lets go within 90s)? Close it and start again` : `Chrome extension link on port ${port} failed: ${e.message}`));
   let sock = null;
   let tabs = [];
   let seq = 0;
@@ -21,17 +22,19 @@ export function startBridge(port, { reloadExtension = false } = {}) {
       return;
     }
     sock = ws;
-    log.info('Chrome extension connected');
+    if (!quiet) log.info('Chrome extension connected');
     ws.on('message', (buf) => {
       let m; try { m = JSON.parse(buf); } catch { return; }
       if (m.type === 'tabs') { tabs = m.tabs; return; }
       const p = pending.get(m.id);
       if (p) { pending.delete(m.id); clearTimeout(p.t); p.resolve(m); }
     });
-    ws.on('close', () => { if (sock === ws) { sock = null; tabs = []; log.warn('Chrome extension disconnected'); } });
+    ws.on('close', () => { if (sock === ws) { sock = null; tabs = []; if (!quiet) log.warn('Chrome extension disconnected'); } });
   });
 
   return {
+    /** Let go of the port (so the placer can take it). */
+    close: () => new Promise((r) => { for (const c of wss.clients) c.terminate(); wss.close(() => r()); }),
     connected: () => !!sock,
     hasTab: (book) => tabs.some((t) => t.book === book),
     /** Run fetch() inside the book's tab. request = {url, method, headers, body, storageHeaders} */

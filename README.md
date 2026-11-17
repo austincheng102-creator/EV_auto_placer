@@ -121,6 +121,8 @@ the edge is real; that's the standard check, and it doesn't need hundreds of res
 any day) and saves the result, payout and odds of each logged bet to `results.json`. The terminal
 shows a `Results:` line when bets settle. Change the timing with `"results": {"everyMinutes": 10}`
 in `config.json` (0 turns it off). It's read-only, so it works while the extension is disarmed.
+**Show bets** also checks the books when it opens (Chrome with the book tab open, placer not running),
+so the chart catches up on days you don't bet. It lets go of the extension within 90 seconds.
 BetRivers needs the extension to have seen the site's login once: refresh the BetRivers tab after
 updating.
 

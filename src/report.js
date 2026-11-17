@@ -446,7 +446,7 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', render);
 if (LIVE) setInterval(async () => {
   if (document.activeElement?.tagName === 'SELECT') return;
   try { const r = await fetch('/data.json'); if (r.ok) { DATA = await r.json(); render(); } } catch {}
-}, 60000);
+}, 15000);
 </script>
 </body>
 </html>`;
