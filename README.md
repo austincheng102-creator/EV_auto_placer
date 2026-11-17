@@ -63,6 +63,12 @@ One app runs either book; the Gambit feed, Novig check, EV math and limits are s
 Bets with odds above +250 are skipped, both when scanning and at the live or new price. Change it
 with `"maxOdds"` in `config.json` (`null` turns it off) or `--max-odds 300`.
 
+## Pre-game: only within 12 hours of the start
+Gambit's pre-game list is scanned along with live. A pre-game bet is only placed if the game starts
+within 12 hours (a row with no start time is skipped). Change it with `"pregameMaxHours"` in
+`config.json` (`null` = no limit) or `--pregame-hours 6`. Bet lines show `[live]` or
+`[pre-game, starts in 3.5h]`.
+
 ## Novig has to agree (on by default)
 A bet is only placed when Novig's price also shows it at **2% EV or more**, on top of Gambit's
 `minEvPct`. It's checked twice: when scanning Gambit's rows, and again at the live price after the
