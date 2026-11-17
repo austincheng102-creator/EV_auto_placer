@@ -86,14 +86,15 @@ export function makeHardRock(name, label, cfg, bridge) {
       }
       const leg = r?.betPartPlacementResult?.[0];
       const why = [status, leg?.status !== 'UNCHANGED' && leg?.status, r?.errorCode, r?.errorMessage, r?.reason].filter(Boolean).join(' ');
-      const err = new Error(`rejected: ${why || `HTTP ${res.status}`} ${JSON.stringify(r || j).slice(0, 240)}`);
+      const err = new Error(`rejected: ${why || `HTTP ${res.status}`}`);
+      err.detail = `Hard Rock placeBets response: ${JSON.stringify(j)}`;
       // NEW_ODDS: the price moved. If Hard Rock says what it is now, pass it back so the
       // engine can re-check EV and Novig at that price and try once more.
       if (/NEW_ODDS|PRICE_CHANGE/i.test(why)) {
+        err.priceMoved = true;
         const d = Number(leg?.newOdds?.decimal ?? leg?.currentOdds?.decimal ?? leg?.odds?.decimal);
         if (Number.isFinite(d) && d > 1 && Math.abs(d - toDecimal(quote.odds)) > 1e-6) err.newOdds = decimalToAmerican(d);
-        err.message += ` leg=${JSON.stringify(leg || {}).slice(0, 300)}`;
-      }
+      } else if (/UNAVAILABLE|SUSPENDED|CLOSED/i.test(why)) err.gone = true;
       throw err;
     },
   };

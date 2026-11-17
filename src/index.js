@@ -180,11 +180,19 @@ async function placeAt(row, book, quote, retried = false) {
     log.ok(`${BOOK_LABELS[row.book]} PLACED $${stake} @ ${fmtAmerican(quote.odds)} (${fmtPct(ev)} EV) bet_id=${betId}${dryRun ? ' [DRY RUN]' : ''}`);
     return true;
   } catch (e) {
-    log.err(`${book.label}: place failed: ${e.message}`);
-    if (e.newOdds != null && Number.isFinite(e.newOdds) && !retried) {
-      log.bet(`${book.label}: price is now ${fmtAmerican(e.newOdds)} (was ${fmtAmerican(quote.odds)}), checking again at the new price`);
-      return placeAt(row, book, { ...quote, odds: e.newOdds }, true);
+    if (e.detail) log.debug(`${book.label} ${desc(row)} — ${e.message}: ${e.detail}`);
+    const hasNew = e.newOdds != null && Number.isFinite(e.newOdds);
+    // Price moves and pulled markets are routine: one short line, details in debug.log.
+    if (e.priceMoved) {
+      if (hasNew && !retried) {
+        log.warn(`${book.label}: price moved ${fmtAmerican(quote.odds)} → ${fmtAmerican(e.newOdds)}, checking again`);
+        return placeAt(row, book, { ...quote, odds: e.newOdds }, true);
+      }
+      log.warn(`${book.label}: price moved${hasNew ? ` to ${fmtAmerican(e.newOdds)}` : ''} — skipped, nothing placed`);
+      return false;
     }
+    if (e.gone) { log.warn(`${book.label}: bet no longer offered — skipped, nothing placed`); return false; }
+    log.err(`${book.label}: place failed: ${e.message}`);
     return false;
   }
 }
