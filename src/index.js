@@ -142,6 +142,12 @@ async function tryBet(row) {
     log.warn(`${BOOK_LABELS[row.book]}: line moved (Gambit priced ${row.line}, ${book.label} line is now ${quote.line}) — skipped, nothing placed`);
     return false;
   }
+  return placeAt(row, book, quote);
+}
+
+// EV, Novig, stake limits, then place. If the book says the price changed and tells us the new
+// one, everything is checked again at that price and the bet is sent once more.
+async function placeAt(row, book, quote, retried = false) {
   const ev = evPct(quote.odds, row.fairOdds);
   const tail = `${fmtAmerican(quote.odds)} vs fair ${fmtAmerican(row.fairOdds)} from ${row.fairBooks ?? '?'} book(s) -> ${fmtPct(ev)} EV` +
     (quote.maxStake ? ` (max stake $${quote.maxStake})` : '');
@@ -173,7 +179,22 @@ async function tryBet(row) {
     state.staked += stake; save();
     log.ok(`${BOOK_LABELS[row.book]} PLACED $${stake} @ ${fmtAmerican(quote.odds)} (${fmtPct(ev)} EV) bet_id=${betId}${dryRun ? ' [DRY RUN]' : ''}`);
     return true;
-  } catch (e) { log.err(`${book.label}: place failed: ${e.message}`); return false; }
+  } catch (e) {
+    if (e.detail) log.debug(`${book.label} ${desc(row)} — ${e.message}: ${e.detail}`);
+    const hasNew = e.newOdds != null && Number.isFinite(e.newOdds);
+    // Price moves and pulled markets are routine: one short line, details in debug.log.
+    if (e.priceMoved) {
+      if (hasNew && !retried) {
+        log.warn(`${book.label}: price moved ${fmtAmerican(quote.odds)} → ${fmtAmerican(e.newOdds)}, checking again`);
+        return placeAt(row, book, { ...quote, odds: e.newOdds }, true);
+      }
+      log.warn(`${book.label}: price moved${hasNew ? ` to ${fmtAmerican(e.newOdds)}` : ''} — skipped, nothing placed`);
+      return false;
+    }
+    if (e.gone) { log.warn(`${book.label}: bet no longer offered — skipped, nothing placed`); return false; }
+    log.err(`${book.label}: place failed: ${e.message}`);
+    return false;
+  }
 }
 
 async function tick() {
