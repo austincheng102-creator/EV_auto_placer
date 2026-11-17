@@ -23,7 +23,7 @@ const toOdds = (p) => (p > 0 && p < 1 ? decimalToAmerican(1 / p) : null);
 export const clvPct = (odds, closeProb) => (closeProb * americanToDecimal(odds) - 1) * 100;
 
 // Gambit's startDate may be an ISO string or epoch seconds/ms.
-const parseTime = (t) => {
+export const parseTime = (t) => {
   if (t == null || t === '') return NaN;
   const n = Number(t);
   if (Number.isFinite(n)) return n < 1e12 ? n * 1000 : n;

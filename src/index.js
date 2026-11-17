@@ -19,7 +19,7 @@ import embedded from './embedded.js';
 import { checkForUpdate, cleanupOld } from './update.js';
 import { makeNovig } from './novig.js';
 import { seenBooks } from './sources/gambit-evs.js';
-import { makeBetLog } from './betlog.js';
+import { makeBetLog, parseTime } from './betlog.js';
 import { writeSnapshot, serveReport, openInBrowser } from './report.js';
 
 const root = appDir;
@@ -41,6 +41,7 @@ if (flag('--help') || flag('-h') || args[0] === 'help') {
 
   --min-ev 12            override minimum EV %
   --max-odds 250         skip bets with odds above this (default +250)
+  --pregame-hours 12     pre-game bets only if the game starts within this many hours
   --novig-min-ev 2       Novig must also show at least this EV % (default 2)
   --no-novig             don't require Novig to agree
   --book hardrock        which book to bet today: betrivers or hardrock
@@ -145,6 +146,15 @@ if (opt('--min-ev')) cfg.minEvPct = Number(opt('--min-ev'));
 if (opt('--max-odds')) cfg.maxOdds = Number(opt('--max-odds'));
 if (cfg.maxOdds === undefined) cfg.maxOdds = 250;
 const tooLong = (odds) => cfg.maxOdds != null && odds > cfg.maxOdds;
+// Pre-game bets only when the game starts within this many hours (default 12; null = no limit).
+// A pre-game row with no start time is skipped, since we can't tell.
+if (opt('--pregame-hours')) cfg.pregameMaxHours = Number(opt('--pregame-hours'));
+if (cfg.pregameMaxHours === undefined) cfg.pregameMaxHours = 12;
+const tooEarly = (r) => {
+  if (r.isLive || cfg.pregameMaxHours == null || r.isLive === undefined) return false;
+  const start = parseTime(r.startDate);
+  return !Number.isFinite(start) || start - Date.now() > cfg.pregameMaxHours * 3600e3;
+};
 if (!cfg.novig) cfg.novig = { required: true, minEvPct: 2, mode: 'gambit' };
 if (flag('--no-novig')) cfg.novig.required = false;
 if (opt('--novig-min-ev')) cfg.novig.minEvPct = Number(opt('--novig-min-ev'));
@@ -209,7 +219,8 @@ function stakeFor(quote) {
 
 async function tryBet(row) {
   const book = books[row.book];
-  log.header(`${desc(row)} ${fmtAmerican(row.odds)} (${fmtPct(row.ev)} EV) — ${row.event}${row.book === 'hardrock' && row.gambitBookId ? ` [Gambit book ${row.gambitBookId}]` : ''}`);
+  const startIn = row.isLive === false ? (parseTime(row.startDate) - Date.now()) / 3600e3 : NaN;
+  log.header(`${desc(row)} ${fmtAmerican(row.odds)} (${fmtPct(row.ev)} EV) — ${row.event}${row.isLive ? ' [live]' : Number.isFinite(startIn) ? ` [pre-game, starts in ${startIn < 1 ? `${Math.max(0, Math.round(startIn * 60))}m` : `${startIn.toFixed(1)}h`}]` : ''}${row.book === 'hardrock' && row.gambitBookId ? ` [Gambit book ${row.gambitBookId}]` : ''}`);
 
   let quote;
   try { quote = await book.recheck(row); }
@@ -320,8 +331,10 @@ async function tick() {
   const perEvent = {};
   for (const p of state.placed) perEvent[p.event] = (perEvent[p.event] || 0) + 1;
   const now = Date.now();
+  let farOff = 0;
   let ev = rows
     .filter((r) => Number.isFinite(r.ev) && r.ev >= cfg.minEvPct && !tooLong(r.odds))
+    .filter((r) => !tooEarly(r) || (farOff++, false))
     .filter((r) => !placedKeys.has(selKey(r)) && (cooldown.get(r.id) || 0) < now)
     .filter((r) => (perEvent[r.event] || 0) < (cfg.maxBetsPerEvent ?? Infinity))
     .filter((r) => dryRun || bridge.hasTab(r.book))
@@ -331,7 +344,8 @@ async function tick() {
 
   const nBooks = new Set(rows.map((r) => r.book)).size;
   log.scan(`${ev.length} +EV bets from ${rows.length} rows (${nBooks} book${nBooks === 1 ? '' : 's'})` +
-    (novig ? `, ${gambitCount - ev.length} dropped because Novig doesn't show ${novig.minEvPct}%+` : ''), ev.length === 0);
+    (novig ? `, ${gambitCount - ev.length} dropped because Novig doesn't show ${novig.minEvPct}%+` : '') +
+    (farOff ? `, ${farOff} pre-game skipped (starts more than ${cfg.pregameMaxHours}h away)` : ''), ev.length === 0);
   if (!ev.length) return;
   if (!dryRun && !bridge.connected()) { log.warn('Chrome extension not connected — not placing'); return; }
 
@@ -343,7 +357,7 @@ async function tick() {
   }
 }
 
-log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}% novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} maxOdds=${cfg.maxOdds == null ? 'off' : fmtAmerican(cfg.maxOdds)} stake=$${cfg.stake.amount} poll=${cfg.pollSeconds}s`);
+log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}% novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} maxOdds=${cfg.maxOdds == null ? 'off' : fmtAmerican(cfg.maxOdds)} pregame<=${cfg.pregameMaxHours == null ? 'any' : cfg.pregameMaxHours + 'h'} stake=$${cfg.stake.amount} poll=${cfg.pollSeconds}s`);
 // Results for the P&L chart: read each book's settled bets (My Bets > Settled) every few
 // minutes while a logged bet from that book has no result yet. Works whichever book is being
 // bet today, as long as that book's tab is open. "results": {"everyMinutes": 0} turns it off.
