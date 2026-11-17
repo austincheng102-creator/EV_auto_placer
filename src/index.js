@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Auto +EV placer: poll Gambit -> filter by EV -> re-check live price at the book -> place.
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { evPct, fmtAmerican, fmtPct } from './ev.js';
 import { log } from './log.js';
@@ -8,9 +9,7 @@ import { makeGambitSource } from './sources/gambit.js';
 import { makeMockSource } from './sources/mock.js';
 import { startBridge } from './books/bridge.js';
 import { makeBooks, parseBooks, BOOK_LABELS } from './books/index.js';
-import { makeHardRock } from './books/hardrock.js';
-import { makeBetRivers } from './books/betrivers.js';
-import { makeResults, betKey } from './results.js';
+import { makeResultSync } from './resultsync.js';
 import readline from 'node:readline/promises';
 import { appDir } from './paths.js';
 import { ensureConfig, writeExtension, extensionChanged } from './setup.js';
@@ -54,6 +53,47 @@ if (flag('--help') || flag('-h') || args[0] === 'help') {
   process.exit(0);
 }
 if (flag('--version') || flag('-v')) { console.log(VERSION); process.exit(0); }
+// Show bets also fetches settled results from the books, through the Chrome extension,
+// unless the placer is already running (it does that itself).
+async function fetchResultsWhileOpen() {
+  const dry = flag('--dry-run');
+  let cfg = {};
+  try { cfg = JSON.parse(fs.readFileSync(path.join(appDir, opt('--config', 'config.json')), 'utf8')); } catch {}
+  const every = (cfg.results?.everyMinutes ?? 10) * 60e3;
+  if (dry || every <= 0) return;
+  const port = cfg.bridgePort || 8765;
+  const free = await new Promise((res) => {
+    const srv = net.createServer().once('error', () => res(false)).once('listening', () => srv.close(() => res(true)));
+    srv.listen(port, '127.0.0.1');
+  });
+  if (!free) { console.log('The placer is running, so it fills in results itself.'); return; }
+  const bridge = startBridge(port, { quiet: true });
+  const rs = makeResultSync({ cfg, bridge, root: appDir, log, bets: () => makeBetLog(appDir, { log }).bets() });
+  const waiting = rs.waitingBooks();
+  if (!waiting.length) { await bridge.close(); return; }
+  const names = waiting.map((b) => BOOK_LABELS[b]).join(' and ');
+  console.log(`Checking ${names} for settled bets (needs Chrome open with the ${names} tab and the EV Placer extension)...`);
+  const started = Date.now();
+  let told = false;
+  /** One check. False while Chrome (extension + book tab) isn't there yet. */
+  const tick = async () => {
+    if (!bridge.connected() || !waiting.some((b) => bridge.hasTab(b))) {
+      if (!told && Date.now() - started > 45e3) { told = true; console.log(`Not connected to Chrome yet. Open Chrome with the ${names} tab; I'll keep trying for a minute, otherwise results fill in next time you run the placer or Show bets.`); }
+      return false;
+    }
+    const n = await rs.sync();
+    if (n) { try { writeSnapshot(appDir, {}); } catch {} console.log('Chart updated, it refreshes by itself in a few seconds.'); }
+    else console.log('No newly settled bets yet.');
+    return true;
+  };
+  // The extension reconnects within a few seconds (30 at most): check every 3s until it's
+  // there (tabs arrive just after the connection). Then let go of the extension's port, so
+  // starting the placer while this window is open still works.
+  await new Promise((r) => setTimeout(r, 2000));
+  while (!(await tick()) && Date.now() - started < 90e3) await new Promise((r) => setTimeout(r, 3000));
+  await bridge.close();
+}
+
 if (args[0] === 'bets') {
   const bl = makeBetLog(appDir, { dryRun: flag('--dry-run'), log });
   const list = bl.bets();
@@ -73,6 +113,7 @@ if (args[0] === 'bets') {
     openInBrowser(url);
     console.log(`\nChart: ${url}  (opened in your browser; mark results there)`);
     console.log(`Keep this window open while you mark results. A read-only copy is saved as ${snap}`);
+    await fetchResultsWhileOpen();
     await new Promise(() => {});
   } catch (e) { log.err(`couldn't open the chart page: ${e.message}`); }
   process.exit(0);
@@ -306,38 +347,10 @@ log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=
 // minutes while a logged bet from that book has no result yet. Works whichever book is being
 // bet today, as long as that book's tab is open. "results": {"everyMinutes": 0} turns it off.
 const resultsEvery = (cfg.results?.everyMinutes ?? 10) * 60e3;
-const resultStore = makeResults(root, { dryRun });
-const resultSources = !dryRun && bridge && resultsEvery > 0 ? [
-  { book: 'hardrock', idRe: /^hardrock:(\d+)/, api: books.hardrock?.settled ? books.hardrock : makeHardRock('hardrock', 'Hard Rock Bet', cfg, bridge) },
-  { book: 'betrivers', idRe: /^coupon:(\d+)/, api: books.betrivers?.settled ? books.betrivers : makeBetRivers('betrivers', 'BetRivers', cfg, bridge) },
-] : [];
-const resultsWarned = new Set();
-async function syncResults() {
-  for (const { book, idRe, api } of resultSources) {
-    if (!bridge.connected() || !bridge.hasTab(book)) continue;
-    const have = resultStore.read();
-    const waiting = betLog.bets().filter((b) => b.book === book && idRe.test(b.betId || '') && !have[betKey(b)]);
-    if (!waiting.length) continue;
-    const byId = new Map(waiting.map((b) => [idRe.exec(b.betId)[1], b]));
-    const from = Math.min(...waiting.map((b) => Date.parse(b.placedAt))) - 864e5;
-    const label = BOOK_LABELS[book];
-    try {
-      const settled = (await api.settled(from)).filter((r) => byId.has(r.betId));
-      resultsWarned.delete(book);
-      if (!settled.length) continue;
-      const n = resultStore.setMany(settled.map((r) => ({ key: betKey(byId.get(r.betId)), result: r.result, payout: r.payout, odds: r.odds, settledAt: r.settledAt })));
-      if (!n) continue;
-      const profit = settled.reduce((s, r) => s + r.payout - (r.stake ?? byId.get(r.betId).stake), 0);
-      const won = settled.filter((r) => r.result === 'won').length, lost = settled.filter((r) => r.result === 'lost').length;
-      const other = settled.length - won - lost;
-      log.info(`Results: ${n} ${label} bet${n === 1 ? '' : 's'} settled (${won} won, ${lost} lost${other ? `, ${other} other` : ''}), ${profit >= 0 ? '+' : '-'}$${Math.abs(profit).toFixed(2)}. Show bets for the P&L chart`);
-    } catch (e) {
-      if (!resultsWarned.has(book)) log.warn(`Couldn't read ${label}'s settled bets: ${e.message} (will keep trying)`);
-      resultsWarned.add(book);
-    }
-  }
+if (!dryRun && bridge && resultsEvery > 0) {
+  const rs = makeResultSync({ cfg, bridge, root, dryRun, log, bets: () => betLog.bets(), books });
+  setTimeout(rs.sync, 15e3); setInterval(rs.sync, resultsEvery);
 }
-if (resultSources.length) { setTimeout(syncResults, 15e3); setInterval(syncResults, resultsEvery); }
 
 log.info(`${betLog.summaryLine()} (ev-placer bets for details, file ${path.basename(betLog.csvPath)})`);
 // Give the Chrome extension a few seconds to connect before the first scan.
