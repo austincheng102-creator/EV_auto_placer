@@ -4,8 +4,37 @@
   ],
   "region": "CO",
   "minEvPct": 10,
+  "minOdds": -300,
   "maxOdds": 250,
+  "maxEvPct": 25,
   "pregameMaxHours": 12,
+  "group": {
+    "maxBets": 1,
+    "maxStake": 1
+  },
+  "sharp": {
+    "maxSpreadPts": 3,
+    "liveMaxAgeSec": 5,
+    "liveMainlineNeeds": [
+      "pinnacle",
+      "kalshi",
+      "polymarket",
+      "novig"
+    ],
+    "livePropNeeds": [
+      "fanduel"
+    ],
+    "ids": {
+      "pinnacle": 1014,
+      "kalshi": 194,
+      "polymarket": [
+        193,
+        1011
+      ],
+      "novig": 192,
+      "fanduel": 100
+    }
+  },
   "stake": {
     "mode": "flat",
     "amount": 5,

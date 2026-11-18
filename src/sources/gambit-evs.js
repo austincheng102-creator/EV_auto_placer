@@ -120,6 +120,11 @@ export function evsToRows(json, g = {}, fairOut = null) {
       }
       if (!book) continue;
       const fairOdds = decimalToAmerican(1 / p);
+      // Every book's price for this selection (odds) and the other side (oppOdds), by Gambit id.
+      // Used by the sharp-book rules in filters.js.
+      const prices = {};
+      for (const c of b.comparableBets || []) if (prices[c.sportsbook_id]?.odds == null) (prices[c.sportsbook_id] ||= {}).odds = Number(c.odds);
+      for (const c of b.opposingBets || []) if (prices[c.sportsbook_id]?.oppOdds == null) (prices[c.sportsbook_id] ||= {}).oppOdds = Number(c.odds);
       rows.push({
         id: b.id, book, gambitBookId: b.sportsbook_id, event: ev.event_name, league: ev.league, isLive: !!ev.isLive, startDate: ev.startDate,
         market: prettyMarket(op.marketName), marketKey: op.marketName, selection, line,
@@ -128,6 +133,8 @@ export function evsToRows(json, g = {}, fairOut = null) {
         fairBooks: (b.comparableBets || []).length + (b.opposingBets || []).length,
         fairSource: SOURCE_NAMES[op.source] ?? String(op.source),
         novigOdds: novig?.odds ?? null, novigOppOdds: novigOpp?.odds ?? null,
+        isProp: /^PLAYER_PROP/i.test(op.marketName), prices,
+        sharpKey: fairKey({ event: ev.event_name, marketKey: op.marketName, selection, line }),
         link, ...refs,
       });
     }

@@ -63,6 +63,33 @@ One app runs either book; the Gambit feed, Novig check, EV math and limits are s
 Bets with odds above +250 are skipped, both when scanning and at the live or new price. Change it
 with `"maxOdds"` in `config.json` (`null` turns it off) or `--max-odds 300`.
 
+## Placement rules (odds window, EV cap, sharp books, groups)
+All are checked when scanning, and the odds and EV ones again at the live or new price. Each is a
+setting in `config.json`; one that isn't there gets the default below, and `null` turns it off.
+
+| Rule | Default | Setting |
+|---|---|---|
+| Favorites: nothing shorter than -300 (-300 itself is fine) | -300 | `"minOdds"` or `--min-odds -250` |
+| Underdogs: nothing longer than +250 | +250 | `"maxOdds"` (above) |
+| Nothing above 25% EV | 25 | `"maxEvPct"` or `--max-ev 20` |
+| Sharp books' no-vig win probabilities within 3 points of each other | 3 | `"sharp": {"maxSpreadPts"}` |
+| Live mainlines need Pinnacle, Kalshi, Polymarket or Novig listed | | `"sharp": {"liveMainlineNeeds"}` |
+| Live player props need FanDuel listed | | `"sharp": {"livePropNeeds"}` |
+| Live: a sharp price changed within the last 5 seconds | 5 | `"sharp": {"liveMaxAgeSec"}` |
+| Same game + market + period + side = one group: one bet, $1 total | 1 bet, $1 | `"group": {"maxBets", "maxStake"}` |
+
+- **Sharp agreement:** each sharp book with both sides listed is de-vigged on its own (Pinnacle comes
+  through Gambit as PS3838). For player props FanDuel counts as a sharp book too. If fewer than two
+  sharp books have both sides, there's nothing to compare and the rule passes.
+- **Live timing:** Gambit doesn't say when a sharp price last moved, so the app watches the sharp
+  prices itself from poll to poll. A change is dated to the previous poll (the earliest it could have
+  happened), so while this rule is on the app polls every 3 seconds. A live selection seen for the
+  first time has no known age and waits for its next move.
+- **Groups:** the line and the book don't matter (Over 220.5 and Over 221.5 on the full-game total are one
+  group). The period is part of the market (1H Moneyline is its own group). Bets from the last 24 hours count.
+- The `[SCAN]` line says how many rows each rule skipped.
+- Not done yet: no bets in the last 2 minutes of a game. Gambit's feed has no game clock.
+
 ## Pre-game: only within 12 hours of the start
 Gambit's pre-game list is scanned along with live. A pre-game bet is only placed if the game starts
 within 12 hours (a row with no start time is skipped). Change it with `"pregameMaxHours"` in

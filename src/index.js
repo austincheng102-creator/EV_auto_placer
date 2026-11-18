@@ -21,6 +21,7 @@ import { makeNovig } from './novig.js';
 import { seenBooks } from './sources/gambit-evs.js';
 import { makeBetLog, parseTime } from './betlog.js';
 import { writeSnapshot, serveReport, openInBrowser } from './report.js';
+import { applyFilterDefaults, tooShort, evTooHigh, sharpSpread, liveSharpMissing, makeSharpClock, groupKey, groupTotals, groupRoom } from './filters.js';
 
 const root = appDir;
 let args = process.argv.slice(2);
@@ -41,6 +42,8 @@ if (flag('--help') || flag('-h') || args[0] === 'help') {
 
   --min-ev 12            override minimum EV %
   --max-odds 250         skip bets with odds above this (default +250)
+  --min-odds -300        skip favorites shorter than this (default -300)
+  --max-ev 25            skip anything above this EV % (default 25)
   --pregame-hours 12     pre-game bets only if the game starts within this many hours
   --novig-min-ev 2       Novig must also show at least this EV % (default 2)
   --no-novig             don't require Novig to agree
@@ -155,6 +158,17 @@ const tooEarly = (r) => {
   const start = parseTime(r.startDate);
   return !Number.isFinite(start) || start - Date.now() > cfg.pregameMaxHours * 3600e3;
 };
+// Odds floor, EV cap, sharp-book rules and bet groups (src/filters.js). Missing settings get
+// the defaults: -300, 25%, sharp books within 3 points, sharp price changed within 5s (live),
+// one bet and $1 per group.
+if (opt('--min-odds')) cfg.minOdds = Number(opt('--min-odds'));
+if (opt('--max-ev')) cfg.maxEvPct = Number(opt('--max-ev'));
+applyFilterDefaults(cfg);
+// The live timing rule can only see a change as recent as our polls are frequent, so poll at
+// least every (limit - 2) seconds while it's on: 3s for the 5s rule.
+const pollSeconds = cfg.sharp.liveMaxAgeSec != null
+  ? Math.min(cfg.pollSeconds || 6, Math.max(1, cfg.sharp.liveMaxAgeSec - 2)) : (cfg.pollSeconds || 6);
+const sharpClock = makeSharpClock(cfg);
 if (!cfg.novig) cfg.novig = { required: true, minEvPct: 2, mode: 'gambit' };
 if (flag('--no-novig')) cfg.novig.required = false;
 if (opt('--novig-min-ev')) cfg.novig.minEvPct = Number(opt('--novig-min-ev'));
@@ -239,7 +253,9 @@ async function tryBet(row) {
 // one, everything is checked again at that price and the bet is sent once more.
 async function placeAt(row, book, quote, retried = false) {
   if (tooLong(quote.odds)) { log.warn(`${book.label}: ${fmtAmerican(quote.odds)} is above the ${fmtAmerican(cfg.maxOdds)} cap — skipped, nothing placed`); return false; }
+  if (tooShort(cfg, quote.odds)) { log.warn(`${book.label}: ${fmtAmerican(quote.odds)} is shorter than the ${fmtAmerican(cfg.minOdds)} limit — skipped, nothing placed`); return false; }
   const ev = evPct(quote.odds, row.fairOdds);
+  if (evTooHigh(cfg, ev)) { log.warn(`${book.label}: ${fmtAmerican(quote.odds)} is ${fmtPct(ev)} EV, above the ${cfg.maxEvPct}% cap (likely a stale or wrong price) — skipped, nothing placed`); return false; }
   const tail = `${fmtAmerican(quote.odds)} vs fair ${fmtAmerican(row.fairOdds)} from ${row.fairBooks ?? '?'} book(s) -> ${fmtPct(ev)} EV` +
     (quote.maxStake ? ` (max stake $${quote.maxStake})` : '');
   if (ev < cfg.minEvPct) { log.warn(`${book.label}: re-check FAIL: ${tail}`); return false; }
@@ -258,7 +274,10 @@ async function placeAt(row, book, quote, retried = false) {
     log.bet(`Novig OK: ${fmtAmerican(quote.odds)} vs Novig ${fmtNovig(nc.nv)} -> ${fmtPct(nc.ev)} EV`);
   }
 
-  const stake = stakeFor(quote);
+  // Same game + market + side as an earlier bet share one bet and the group's $ cap.
+  const room = groupRoom(cfg, groupTotals(state.placed), row);
+  if (room == null) { log.warn(`already bet this group (${row.event}, ${row.market}, ${row.selection}) — skipped`); return false; }
+  const stake = Math.floor(Math.min(stakeFor(quote), room) * 100) / 100;
   if (stake <= 0) { log.warn('stake is 0 — skipped'); return false; }
   if (cfg.dailyStakeLimit && state.staked + stake > cfg.dailyStakeLimit) {
     log.warn(`daily stake limit $${cfg.dailyStakeLimit} reached — skipped`); return false;
@@ -266,7 +285,7 @@ async function placeAt(row, book, quote, retried = false) {
   try {
     const { betId, confirmedOdds, detail } = await book.place(row, stake, quote);
     if (detail) log.debug(`${book.label} ${desc(row)} PLACED — ${detail}`);
-    state.placed.push({ at: new Date().toISOString(), key: selKey(row), event: row.event, book: row.book,
+    state.placed.push({ at: new Date().toISOString(), key: selKey(row), group: groupKey(row), event: row.event, book: row.book,
       market: row.market, gambitBookId: row.gambitBookId, selection: row.selection, line: row.line, odds: quote.odds, fair: row.fairOdds, ev, novigEv: novigEvPct, stake, betId });
     state.staked += stake; save();
     // Paper trail: what we checked vs what the book says it accepted, plus Gambit's fair odds.
@@ -317,6 +336,7 @@ async function tick() {
   }
 
   rows = rows.filter((r) => books[r.book]);
+  sharpClock.update(rows);
   for (const b of Object.keys(books)) {
     if (!warnedNoRows.has(b) && !rows.some((r) => r.book === b)) {
       warnedNoRows.add(b);
@@ -332,20 +352,42 @@ async function tick() {
   for (const p of state.placed) perEvent[p.event] = (perEvent[p.event] || 0) + 1;
   const now = Date.now();
   let farOff = 0;
+  const why = { odds: 0, evCap: 0, sharpSpread: 0, noSharp: 0, stale: 0, group: 0 };
+  const drop = (k) => (why[k]++, false);
+  const groups = groupTotals(state.placed);
+  const ageMax = cfg.sharp.liveMaxAgeSec;
   let ev = rows
-    .filter((r) => Number.isFinite(r.ev) && r.ev >= cfg.minEvPct && !tooLong(r.odds))
+    .filter((r) => Number.isFinite(r.ev) && r.ev >= cfg.minEvPct)
+    .filter((r) => (!tooLong(r.odds) && !tooShort(cfg, r.odds)) || drop('odds'))
+    .filter((r) => !evTooHigh(cfg, r.ev) || drop('evCap'))
     .filter((r) => !tooEarly(r) || (farOff++, false))
+    .filter((r) => !liveSharpMissing(cfg, r) || drop('noSharp'))
+    .filter((r) => sharpSpread(cfg, r).ok || drop('sharpSpread'))
+    .filter((r) => { if (!r.isLive || ageMax == null || !r.prices) return true; const a = sharpClock.ageSec(r); return (a != null && a <= ageMax) || drop('stale'); })
+    .filter((r) => groupRoom(cfg, groups, r) != null || drop('group'))
     .filter((r) => !placedKeys.has(selKey(r)) && (cooldown.get(r.id) || 0) < now)
     .filter((r) => (perEvent[r.event] || 0) < (cfg.maxBetsPerEvent ?? Infinity))
     .filter((r) => dryRun || bridge.hasTab(r.book))
     .sort((a, b) => b.ev - a.ev);
   const gambitCount = ev.length;
   if (novig) ev = ev.filter((r) => novig.check(r, r.odds).ok);
+  const novigDropped = gambitCount - ev.length;
+  // One bet per group: keep only the best-EV row of each group this scan.
+  { const g = new Set(); ev = ev.filter((r) => { const k = groupKey(r); if (g.has(k)) return false; g.add(k); return true; }); }
+  const whyText = [
+    why.odds && `${why.odds} outside ${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)} to ${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)}`,
+    why.evCap && `${why.evCap} above ${cfg.maxEvPct}% EV`,
+    why.noSharp && `${why.noSharp} live without the needed sharp book`,
+    why.sharpSpread && `${why.sharpSpread} sharp books more than ${cfg.sharp.maxSpreadPts} pts apart`,
+    why.stale && `${why.stale} live with no sharp move in the last ${ageMax}s`,
+    why.group && `${why.group} group already bet`,
+  ].filter(Boolean).join(', ');
 
   const nBooks = new Set(rows.map((r) => r.book)).size;
   log.scan(`${ev.length} +EV bets from ${rows.length} rows (${nBooks} book${nBooks === 1 ? '' : 's'})` +
-    (novig ? `, ${gambitCount - ev.length} dropped because Novig doesn't show ${novig.minEvPct}%+` : '') +
-    (farOff ? `, ${farOff} pre-game skipped (starts more than ${cfg.pregameMaxHours}h away)` : ''), ev.length === 0);
+    (novig ? `, ${novigDropped} dropped because Novig doesn't show ${novig.minEvPct}%+` : '') +
+    (farOff ? `, ${farOff} pre-game skipped (starts more than ${cfg.pregameMaxHours}h away)` : '') +
+    (whyText ? `, skipped: ${whyText}` : ''), ev.length === 0);
   if (!ev.length) return;
   if (!dryRun && !bridge.connected()) { log.warn('Chrome extension not connected — not placing'); return; }
 
@@ -357,7 +399,7 @@ async function tick() {
   }
 }
 
-log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}% novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} maxOdds=${cfg.maxOdds == null ? 'off' : fmtAmerican(cfg.maxOdds)} pregame<=${cfg.pregameMaxHours == null ? 'any' : cfg.pregameMaxHours + 'h'} stake=$${cfg.stake.amount} poll=${cfg.pollSeconds}s`);
+log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}% novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} odds=${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)}..${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)} maxEV=${cfg.maxEvPct ?? 'off'}% sharpSpread<=${cfg.sharp.maxSpreadPts ?? 'off'}pts liveSharpAge<=${cfg.sharp.liveMaxAgeSec ?? 'off'}s group=${cfg.group.maxBets ?? 'any'} bet/$${cfg.group.maxStake ?? 'any'} pregame<=${cfg.pregameMaxHours == null ? 'any' : cfg.pregameMaxHours + 'h'} stake=$${cfg.stake.amount} poll=${pollSeconds}s`);
 // Results for the P&L chart: read each book's settled bets (My Bets > Settled) every few
 // minutes while a logged bet from that book has no result yet. Works whichever book is being
 // bet today, as long as that book's tab is open. "results": {"everyMinutes": 0} turns it off.
@@ -371,6 +413,6 @@ log.info(`${betLog.summaryLine()} (ev-placer bets for details, file ${path.basen
 // Give the Chrome extension a few seconds to connect before the first scan.
 if (bridge) for (let i = 0; i < 20 && !bridge.connected(); i++) await new Promise((r) => setTimeout(r, 250));
 if (bridge && !bridge.connected()) log.warn('Chrome extension not connected yet: is Chrome open with the EV Placer extension loaded?');
-const loop = async () => { await tick(); setTimeout(loop, (cfg.pollSeconds || 6) * 1000); };
+const loop = async () => { await tick(); setTimeout(loop, pollSeconds * 1000); };
 loop();
 process.on('SIGINT', () => { save(); console.log(); process.exit(0); });
