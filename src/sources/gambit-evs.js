@@ -134,6 +134,8 @@ export function evsToRows(json, g = {}, fairOut = null) {
         fairSource: SOURCE_NAMES[op.source] ?? String(op.source),
         novigOdds: novig?.odds ?? null, novigOppOdds: novigOpp?.odds ?? null,
         isProp: /^PLAYER_PROP/i.test(op.marketName), prices,
+        // When Gambit says it got this book price (for measuring how far behind it is), if it says.
+        priceAt: b.updated_at ?? b.created_at ?? own?.updated_at ?? own?.created_at ?? null,
         sharpKey: fairKey({ event: ev.event_name, marketKey: op.marketName, selection, line }),
         link, ...refs,
       });

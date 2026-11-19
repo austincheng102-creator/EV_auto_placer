@@ -96,6 +96,19 @@ within 12 hours (a row with no start time is skipped). Change it with `"pregameM
 `config.json` (`null` = no limit) or `--pregame-hours 6`. Bet lines show `[live]` or
 `[pre-game, starts in 3.5h]`.
 
+## When the book's price already moved
+Gambit's copy of a book's price can be a few seconds old, so a bet can show 10%+ on Gambit
+while the book already moved. Every bet is checked at the book's real price first (EV, Novig and
+all the rules above), and nothing is placed at a price that didn't pass.
+- Bets run in the background, up to `maxInFlight` (default 3) at once, each in a different group,
+  so scanning Gambit keeps going while Hard Rock takes ~10s to accept a bet.
+- BetRivers' price check is free (a public read, no bet), so when it fails, the app checks that
+  bet again on every scan for `recheckWatchMinutes` (default 5) as long as Gambit still lists it,
+  and places it if the real price gets back to `minEvPct`. Repeat checks only show on screen when
+  the price changes. Hard Rock's check is the bet itself, so a failed Hard Rock bet still waits 5 minutes.
+- `prices.csv` next to the app gets a line for each check: Gambit's price, how long Gambit had shown
+  it, the book's real price and EV, and what happened. This shows how far behind Gambit is.
+
 ## Novig has to agree (on by default)
 A bet is only placed when Novig's price also shows it at **2% EV or more**, on top of Gambit's
 `minEvPct`. It's checked twice: when scanning Gambit's rows, and again at the live price after the

@@ -20,6 +20,7 @@ import { checkForUpdate, cleanupOld } from './update.js';
 import { makeNovig } from './novig.js';
 import { seenBooks } from './sources/gambit-evs.js';
 import { makeBetLog, parseTime } from './betlog.js';
+import { makePriceLog } from './skiplog.js';
 import { writeSnapshot, serveReport, openInBrowser } from './report.js';
 import { applyFilterDefaults, tooShort, evTooHigh, sharpSpread, liveSharpMissing, makeSharpClock, groupKey, groupTotals, groupRoom } from './filters.js';
 
@@ -218,6 +219,19 @@ const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, '
 const save = () => fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
 const cooldown = new Map(); // row.id -> retry-after ms
 const COOLDOWN_MS = 5 * 60 * 1000;
+// Bets being checked or placed right now, by group. Scanning keeps going while a book takes its
+// time (Hard Rock ~10s, BetRivers' live delay), and up to maxInFlight bets run at once, each in a
+// different group. Their stake counts toward the daily limit while they're out.
+const inflight = new Map(); // groupKey -> row
+let pendingStake = 0;
+const maxInFlight = Math.max(1, Number(cfg.maxInFlight ?? 3));
+// After a failed price check, a book whose price check is free (BetRivers: a public read, no bet
+// is made) re-checks that bet on every scan for a few minutes, as long as Gambit still lists it
+// and it passes every rule, instead of ignoring it for 5 minutes. "recheckWatchMinutes": 0 = off.
+const WATCH_MS = Number(cfg.recheckWatchMinutes ?? 5) * 60e3;
+const watch = new Map(); // row.id -> { since, sig }
+const shown = new Map(); // row.id -> { odds, since }: when our polls first saw Gambit show this price
+const priceLog = makePriceLog(root, { dryRun });
 const warnedNoRows = new Set();
 
 const selKey = (r) => `${r.book}|${r.event}|${r.market}|${r.selection}`;
@@ -231,89 +245,128 @@ function stakeFor(quote) {
   return Math.floor(s * 100) / 100;
 }
 
-async function tryBet(row) {
-  const book = books[row.book];
-  const startIn = row.isLive === false ? (parseTime(row.startDate) - Date.now()) / 3600e3 : NaN;
-  log.header(`${desc(row)} ${fmtAmerican(row.odds)} (${fmtPct(row.ev)} EV) — ${row.event}${row.isLive ? ' [live]' : Number.isFinite(startIn) ? ` [pre-game, starts in ${startIn < 1 ? `${Math.max(0, Math.round(startIn * 60))}m` : `${startIn.toFixed(1)}h`}]` : ''}${row.book === 'hardrock' && row.gambitBookId ? ` [Gambit book ${row.gambitBookId}]` : ''}`);
+const loudLog = { ...log, quiet: false, flush() {} };
+/** Logger for a repeat check of a watched bet that came back the same: kept back unless it gets placed. */
+function quietLog() {
+  const buf = [];
+  const q = { ...log, quiet: true };
+  for (const k of ['header', 'bet', 'warn', 'info']) q[k] = (m) => buf.push([k, m]);
+  q.flush = () => { for (const [k, m] of buf.splice(0)) log[k](m); };
+  return q;
+}
 
+const headerText = (row) => {
+  const startIn = row.isLive === false ? (parseTime(row.startDate) - Date.now()) / 3600e3 : NaN;
+  return `${desc(row)} ${fmtAmerican(row.odds)} (${fmtPct(row.ev)} EV) — ${row.event}${row.isLive ? ' [live]' : Number.isFinite(startIn) ? ` [pre-game, starts in ${startIn < 1 ? `${Math.max(0, Math.round(startIn * 60))}m` : `${startIn.toFixed(1)}h`}]` : ''}${row.book === 'hardrock' && row.gambitBookId ? ` [Gambit book ${row.gambitBookId}]` : ''}`;
+};
+
+// ctx collects what happened, for the price log and for deciding whether to keep watching.
+async function tryBet(row, ctx) {
+  const book = books[row.book];
+  const w = watch.get(row.id);
   let quote;
   try { quote = await book.recheck(row); }
-  catch (e) { log.warn(`${book.label}: re-check error: ${e.message}`); return false; }
-
-  if (!Number.isFinite(quote.odds)) { log.warn(`${book.label}: re-check returned no price — skipped`); return false; }
-  if (quote.suspended) { log.warn(`${book.label}: market suspended — skipped`); return false; }
-  if (row.line != null && quote.line != null && quote.line !== row.line) {
-    log.warn(`${BOOK_LABELS[row.book]}: line moved (Gambit priced ${row.line}, ${book.label} line is now ${quote.line}) — skipped, nothing placed`);
+  catch (e) {
+    ctx.outcome = 'check error';
+    if (w) log.debug(`${book.label} ${desc(row)}: re-check error: ${e.message}`);
+    else { log.header(headerText(row)); log.warn(`${book.label}: re-check error: ${e.message}`); }
     return false;
   }
-  return placeAt(row, book, quote);
+  ctx.quote = quote; ctx.checkedAt = Date.now();
+  if (book.freePriceCheck) ctx.realOdds = quote.odds;
+  // A watched bet whose price, line and fair odds haven't changed since its last check stays quiet.
+  ctx.sig = `${quote.odds}|${quote.line}|${quote.suspended}|${row.fairOdds}|${row.novigOdds}|${row.novigOppOdds}`;
+  ctx.changed = !w || w.sig !== ctx.sig;
+  if (w) w.sig = ctx.sig;
+  const lg = ctx.lg = ctx.changed ? loudLog : quietLog();
+  lg.header(headerText(row) + (w ? ` (checking again, ${Math.round((Date.now() - w.since) / 1000)}s after it failed)` : ''));
+
+  if (!Number.isFinite(quote.odds)) { ctx.outcome = 'no price'; lg.warn(`${book.label}: re-check returned no price — skipped`); return false; }
+  if (quote.suspended) { ctx.outcome = 'suspended'; lg.warn(`${book.label}: market suspended — skipped`); return false; }
+  if (row.line != null && quote.line != null && quote.line !== row.line) {
+    ctx.outcome = 'line moved';
+    lg.warn(`${BOOK_LABELS[row.book]}: line moved (Gambit priced ${row.line}, ${book.label} line is now ${quote.line}) — skipped, nothing placed`);
+    return false;
+  }
+  return placeAt(row, book, quote, ctx);
 }
 
 // EV, Novig, stake limits, then place. If the book says the price changed and tells us the new
 // one, everything is checked again at that price and the bet is sent once more.
-async function placeAt(row, book, quote, retried = false) {
-  if (tooLong(quote.odds)) { log.warn(`${book.label}: ${fmtAmerican(quote.odds)} is above the ${fmtAmerican(cfg.maxOdds)} cap — skipped, nothing placed`); return false; }
-  if (tooShort(cfg, quote.odds)) { log.warn(`${book.label}: ${fmtAmerican(quote.odds)} is shorter than the ${fmtAmerican(cfg.minOdds)} limit — skipped, nothing placed`); return false; }
+async function placeAt(row, book, quote, ctx, retried = false) {
+  const lg = ctx.lg;
+  if (tooLong(quote.odds)) { ctx.outcome = 'odds above max'; lg.warn(`${book.label}: ${fmtAmerican(quote.odds)} is above the ${fmtAmerican(cfg.maxOdds)} cap — skipped, nothing placed`); return false; }
+  if (tooShort(cfg, quote.odds)) { ctx.outcome = 'odds below min'; lg.warn(`${book.label}: ${fmtAmerican(quote.odds)} is shorter than the ${fmtAmerican(cfg.minOdds)} limit — skipped, nothing placed`); return false; }
   const ev = evPct(quote.odds, row.fairOdds);
-  if (evTooHigh(cfg, ev)) { log.warn(`${book.label}: ${fmtAmerican(quote.odds)} is ${fmtPct(ev)} EV, above the ${cfg.maxEvPct}% cap (likely a stale or wrong price) — skipped, nothing placed`); return false; }
+  ctx.bookEv = ev;
+  if (evTooHigh(cfg, ev)) { ctx.outcome = 'EV above cap'; lg.warn(`${book.label}: ${fmtAmerican(quote.odds)} is ${fmtPct(ev)} EV, above the ${cfg.maxEvPct}% cap (likely a stale or wrong price) — skipped, nothing placed`); return false; }
   const tail = `${fmtAmerican(quote.odds)} vs fair ${fmtAmerican(row.fairOdds)} from ${row.fairBooks ?? '?'} book(s) -> ${fmtPct(ev)} EV` +
     (quote.maxStake ? ` (max stake $${quote.maxStake})` : '');
-  if (ev < cfg.minEvPct) { log.warn(`${book.label}: re-check FAIL: ${tail}`); return false; }
-  log.bet(`${book.label}: re-check OK: ${tail}`);
+  if (ev < cfg.minEvPct) { ctx.outcome = 'EV too low'; lg.warn(`${book.label}: re-check FAIL: ${tail}`); return false; }
+  lg.bet(`${book.label}: re-check OK: ${tail}`);
 
   // Novig has to agree at the live price too.
   let novigEvPct = null, novigCheck = null;
   if (novig) {
     const nc = novig.check(row, quote.odds);
     if (!nc.ok) {
-      log.warn(nc.nv ? `Novig FAIL: ${fmtAmerican(quote.odds)} vs Novig ${fmtNovig(nc.nv)} -> ${fmtPct(nc.ev)} EV (need ${novig.minEvPct}%) — skipped, nothing placed`
+      ctx.outcome = 'Novig fail';
+      lg.warn(nc.nv ? `Novig FAIL: ${fmtAmerican(quote.odds)} vs Novig ${fmtNovig(nc.nv)} -> ${fmtPct(nc.ev)} EV (need ${novig.minEvPct}%) — skipped, nothing placed`
         : 'Novig FAIL: Novig has no usable price for this selection (missing, or its two sides are from different lines) — skipped, nothing placed');
       return false;
     }
     novigEvPct = nc.ev; novigCheck = nc;
-    log.bet(`Novig OK: ${fmtAmerican(quote.odds)} vs Novig ${fmtNovig(nc.nv)} -> ${fmtPct(nc.ev)} EV`);
+    lg.bet(`Novig OK: ${fmtAmerican(quote.odds)} vs Novig ${fmtNovig(nc.nv)} -> ${fmtPct(nc.ev)} EV`);
   }
 
   // Same game + market + side as an earlier bet share one bet and the group's $ cap.
   const room = groupRoom(cfg, groupTotals(state.placed), row);
-  if (room == null) { log.warn(`already bet this group (${row.event}, ${row.market}, ${row.selection}) — skipped`); return false; }
+  if (room == null) { ctx.outcome = 'group full'; lg.warn(`already bet this group (${row.event}, ${row.market}, ${row.selection}) — skipped`); return false; }
   const stake = Math.floor(Math.min(stakeFor(quote), room) * 100) / 100;
-  if (stake <= 0) { log.warn('stake is 0 — skipped'); return false; }
-  if (cfg.dailyStakeLimit && state.staked + stake > cfg.dailyStakeLimit) {
-    log.warn(`daily stake limit $${cfg.dailyStakeLimit} reached — skipped`); return false;
+  if (stake <= 0) { ctx.outcome = 'stake 0'; lg.warn('stake is 0 — skipped'); return false; }
+  if (cfg.dailyStakeLimit && state.staked + pendingStake + stake > cfg.dailyStakeLimit) {
+    ctx.outcome = 'daily limit';
+    lg.warn(`daily stake limit $${cfg.dailyStakeLimit} reached — skipped`); return false;
   }
+  lg.flush();   // about to bet: show everything, even for a quiet repeat check
+  ctx.sent = true; ctx.changed = true;
+  pendingStake += stake;
   try {
     const { betId, confirmedOdds, detail } = await book.place(row, stake, quote);
-    if (detail) log.debug(`${book.label} ${desc(row)} PLACED — ${detail}`);
+    ctx.outcome = 'placed'; ctx.realOdds = confirmedOdds ?? quote.odds;
+    if (detail) lg.debug(`${book.label} ${desc(row)} PLACED — ${detail}`);
     state.placed.push({ at: new Date().toISOString(), key: selKey(row), group: groupKey(row), event: row.event, book: row.book,
       market: row.market, gambitBookId: row.gambitBookId, selection: row.selection, line: row.line, odds: quote.odds, fair: row.fairOdds, ev, novigEv: novigEvPct, stake, betId });
     state.staked += stake; save();
     // Paper trail: what we checked vs what the book says it accepted, plus Gambit's fair odds.
     // Dry runs: the simulated book "confirms" the price we sent.
     betLog.record({ row, quote, stake, betId, confirmedOdds: dryRun ? quote.odds : confirmedOdds, ev, novig: novigCheck });
-    log.ok(`${BOOK_LABELS[row.book]} PLACED $${stake} @ ${fmtAmerican(quote.odds)} (${fmtPct(ev)} EV) bet_id=${betId}${dryRun ? ' [DRY RUN]' : ''}`);
+    lg.ok(`${BOOK_LABELS[row.book]} PLACED $${stake} @ ${fmtAmerican(quote.odds)} (${fmtPct(ev)} EV) bet_id=${betId}${dryRun ? ' [DRY RUN]' : ''}`);
     if (!dryRun) {
-      if (confirmedOdds == null) log.bet(`${book.label} didn't report the accepted price; check bet ${betId} in your bet history (raw reply in debug.log)`);
-      else if (confirmedOdds === quote.odds) log.bet(`${book.label} confirmed ${fmtAmerican(confirmedOdds)}, same as checked. Logged to bets.csv`);
-      else log.warn(`${book.label} CONFIRMED ${fmtAmerican(confirmedOdds)}, NOT the ${fmtAmerican(quote.odds)} we checked: ${fmtPct(evPct(confirmedOdds, row.fairOdds))} EV at that price. Logged to bets.csv`);
+      if (confirmedOdds == null) lg.bet(`${book.label} didn't report the accepted price; check bet ${betId} in your bet history (raw reply in debug.log)`);
+      else if (confirmedOdds === quote.odds) lg.bet(`${book.label} confirmed ${fmtAmerican(confirmedOdds)}, same as checked. Logged to bets.csv`);
+      else lg.warn(`${book.label} CONFIRMED ${fmtAmerican(confirmedOdds)}, NOT the ${fmtAmerican(quote.odds)} we checked: ${fmtPct(evPct(confirmedOdds, row.fairOdds))} EV at that price. Logged to bets.csv`);
     }
     return true;
   } catch (e) {
-    if (e.detail) log.debug(`${book.label} ${desc(row)} — ${e.message}: ${e.detail}`);
+    if (e.detail) lg.debug(`${book.label} ${desc(row)} — ${e.message}: ${e.detail}`);
     const hasNew = e.newOdds != null && Number.isFinite(e.newOdds);
-    // Price moves and pulled markets are routine: one short line, details in debug.log.
+    // Price moves and pulled markets are routine: one short line, details in debug.lg.
     if (e.priceMoved) {
+      ctx.priceMoved = true; ctx.outcome = 'price moved';
+      if (hasNew) ctx.realOdds = e.newOdds;
       if (hasNew && !retried) {
-        log.warn(`${book.label}: price moved ${fmtAmerican(quote.odds)} → ${fmtAmerican(e.newOdds)}, checking again`);
-        return placeAt(row, book, { ...quote, odds: e.newOdds }, true);
+        lg.warn(`${book.label}: price moved ${fmtAmerican(quote.odds)} → ${fmtAmerican(e.newOdds)}, checking again`);
+        return placeAt(row, book, { ...quote, odds: e.newOdds }, ctx, true);
       }
-      log.warn(`${book.label}: price moved${hasNew ? ` to ${fmtAmerican(e.newOdds)}` : ''} — skipped, nothing placed`);
+      lg.warn(`${book.label}: price moved${hasNew ? ` to ${fmtAmerican(e.newOdds)}` : ''} — skipped, nothing placed`);
       return false;
     }
-    if (e.gone) { log.warn(`${book.label}: bet no longer offered — skipped, nothing placed`); return false; }
-    log.err(`${book.label}: place failed: ${e.message}`);
+    if (e.gone) { ctx.outcome = 'no longer offered'; lg.warn(`${book.label}: bet no longer offered — skipped, nothing placed`); return false; }
+    ctx.outcome = 'place failed';
+    lg.err(`${book.label}: place failed: ${e.message}`);
     return false;
-  }
+  } finally { pendingStake -= stake; }
 }
 
 async function tick() {
@@ -336,7 +389,12 @@ async function tick() {
   }
 
   rows = rows.filter((r) => books[r.book]);
+  const scanAt = Date.now();
   sharpClock.update(rows);
+  { const ids = new Set();
+    for (const r of rows) { ids.add(r.id); const s = shown.get(r.id); if (!s || s.odds !== r.odds) shown.set(r.id, { odds: r.odds, since: scanAt }); }
+    for (const id of shown.keys()) if (!ids.has(id)) shown.delete(id);
+    for (const [id, w] of watch) if (scanAt - w.since > WATCH_MS + 60e3) watch.delete(id); }
   for (const b of Object.keys(books)) {
     if (!warnedNoRows.has(b) && !rows.some((r) => r.book === b)) {
       warnedNoRows.add(b);
@@ -349,7 +407,7 @@ async function tick() {
   }
   const placedKeys = new Set(state.placed.map((p) => p.key));
   const perEvent = {};
-  for (const p of state.placed) perEvent[p.event] = (perEvent[p.event] || 0) + 1;
+  for (const p of [...state.placed, ...inflight.values()]) perEvent[p.event] = (perEvent[p.event] || 0) + 1;
   const now = Date.now();
   let farOff = 0;
   const why = { odds: 0, evCap: 0, sharpSpread: 0, noSharp: 0, stale: 0, group: 0 };
@@ -365,14 +423,16 @@ async function tick() {
     .filter((r) => sharpSpread(cfg, r).ok || drop('sharpSpread'))
     .filter((r) => { if (!r.isLive || ageMax == null || !r.prices) return true; const a = sharpClock.ageSec(r); return (a != null && a <= ageMax) || drop('stale'); })
     .filter((r) => groupRoom(cfg, groups, r) != null || drop('group'))
+    .filter((r) => !inflight.has(groupKey(r)))
     .filter((r) => !placedKeys.has(selKey(r)) && (cooldown.get(r.id) || 0) < now)
     .filter((r) => (perEvent[r.event] || 0) < (cfg.maxBetsPerEvent ?? Infinity))
     .filter((r) => dryRun || bridge.hasTab(r.book))
-    .sort((a, b) => b.ev - a.ev);
+    // New bets first, then ones being watched after a failed price check.
+    .sort((a, b) => (watch.has(a.id) - watch.has(b.id)) || b.ev - a.ev);
   const gambitCount = ev.length;
   if (novig) ev = ev.filter((r) => novig.check(r, r.odds).ok);
   const novigDropped = gambitCount - ev.length;
-  // One bet per group: keep only the best-EV row of each group this scan.
+  // One bet per group: keep the first (best-EV new) row of each group this scan.
   { const g = new Set(); ev = ev.filter((r) => { const k = groupKey(r); if (g.has(k)) return false; g.add(k); return true; }); }
   const whyText = [
     why.odds && `${why.odds} outside ${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)} to ${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)}`,
@@ -391,15 +451,51 @@ async function tick() {
   if (!ev.length) return;
   if (!dryRun && !bridge.connected()) { log.warn('Chrome extension not connected — not placing'); return; }
 
-  const batch = ev.slice(0, cfg.betsAtOnce || 1);
-  log.autoev(`Next ${batch.length} at once: ${batch.map((r) => `${desc(r)} ${fmtAmerican(r.odds)} (${fmtPct(r.ev)} EV)`).join(', ')}`);
-  for (const r of batch) {
-    const ok = await tryBet(r);
-    if (!ok) cooldown.set(r.id, Date.now() + COOLDOWN_MS);
-  }
+  // Bets run in the background so the next Gambit poll isn't held up by a slow book.
+  const batch = ev.slice(0, Math.max(0, maxInFlight - inflight.size));
+  const fresh = batch.filter((r) => !watch.has(r.id));
+  if (fresh.length) log.autoev(`Next ${fresh.length}: ${fresh.map((r) => `${desc(r)} ${fmtAmerican(r.odds)} (${fmtPct(r.ev)} EV)`).join(', ')}`);
+  for (const r of batch) startBet(r, scanAt);
 }
 
-log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}% novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} odds=${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)}..${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)} maxEV=${cfg.maxEvPct ?? 'off'}% sharpSpread<=${cfg.sharp.maxSpreadPts ?? 'off'}pts liveSharpAge<=${cfg.sharp.liveMaxAgeSec ?? 'off'}s group=${cfg.group.maxBets ?? 'any'} bet/$${cfg.group.maxStake ?? 'any'} pregame<=${cfg.pregameMaxHours == null ? 'any' : cfg.pregameMaxHours + 'h'} stake=$${cfg.stake.amount} poll=${pollSeconds}s`);
+function startBet(row, scanAt) {
+  const k = groupKey(row);
+  const book = books[row.book];
+  const ctx = { scanAt };
+  inflight.set(k, row);
+  tryBet(row, ctx)
+    .catch((e) => { ctx.outcome = 'error'; log.err(`${book.label}: ${e.message}`); return false; })
+    .then((ok) => {
+      inflight.delete(k);
+      const now = Date.now();
+      const w = watch.get(row.id);
+      if (ok) watch.delete(row.id);
+      else if (book.freePriceCheck && WATCH_MS > 0 && ctx.quote && (!ctx.sent || ctx.priceMoved) && (!w || now - w.since < WATCH_MS)) {
+        if (!w) watch.set(row.id, { since: now, sig: ctx.sig });
+        cooldown.delete(row.id);   // check it again next scan
+      } else {
+        if (w && !ctx.sent && now - w.since >= WATCH_MS) log.info(`stopped re-checking ${desc(row)} (${row.event}) after ${Math.round(WATCH_MS / 60e3)} min, last ${books[row.book].label} price ${fmtAmerican(ctx.quote?.odds)}`);
+        watch.delete(row.id);
+        cooldown.set(row.id, now + COOLDOWN_MS);
+      }
+      if (ctx.changed && ctx.quote) {
+        const s = shown.get(row.id);
+        const at = parseTime(row.priceAt);
+        priceLog.record({
+          time: new Date(now).toISOString(), book: row.book, live: row.isLive ? 'live' : 'pre-game', event: row.event,
+          market: row.market, selection: row.selection, line: row.line, gambitOdds: row.odds, gambitEvPct: row.ev,
+          gambitShownSec: s && s.odds === row.odds ? (scanAt - s.since) / 1000 : null,
+          gambitPriceAgeSec: Number.isFinite(at) ? (scanAt - at) / 1000 : null,
+          bookOdds: ctx.realOdds, bookLine: ctx.quote.line,
+          bookEvPct: ctx.realOdds != null ? evPct(ctx.realOdds, row.fairOdds) : null, fairOdds: row.fairOdds,
+          msScanToCheck: ctx.checkedAt - scanAt, watching: w ? Math.round((now - w.since) / 1000) + 's' : '',
+          outcome: ctx.outcome || '',
+        });
+      }
+    });
+}
+
+log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}% novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} odds=${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)}..${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)} maxEV=${cfg.maxEvPct ?? 'off'}% sharpSpread<=${cfg.sharp.maxSpreadPts ?? 'off'}pts liveSharpAge<=${cfg.sharp.liveMaxAgeSec ?? 'off'}s group=${cfg.group.maxBets ?? 'any'} bet/$${cfg.group.maxStake ?? 'any'} pregame<=${cfg.pregameMaxHours == null ? 'any' : cfg.pregameMaxHours + 'h'} stake=$${cfg.stake.amount} poll=${pollSeconds}s atOnce=${maxInFlight} recheckWatch=${WATCH_MS / 60e3}min`);
 // Results for the P&L chart: read each book's settled bets (My Bets > Settled) every few
 // minutes while a logged bet from that book has no result yet. Works whichever book is being
 // bet today, as long as that book's tab is open. "results": {"everyMinutes": 0} turns it off.

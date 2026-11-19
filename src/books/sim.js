@@ -1,7 +1,7 @@
 // Simulated book for --dry-run: random small line moves, never sends anything.
 export function makeSimBook(name, label) {
   return {
-    name, label,
+    name, label, freePriceCheck: name === 'betrivers',
     async recheck(row) {
       await new Promise((r) => setTimeout(r, 300));
       const roll = Math.random();

@@ -64,6 +64,9 @@ export function makeBetRivers(name, label, cfg, bridge) {
 
   return {
     name, label,
+    // The price check is a public read of BetRivers' odds (no bet, no login), so a bet whose
+    // check failed can be checked again on every scan.
+    freePriceCheck: true,
 
     async recheck(row) {
       if (!row.bookRef) throw new Error('no BetRivers outcome id on this Gambit row');
