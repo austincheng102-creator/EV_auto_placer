@@ -94,7 +94,11 @@ export function makeHardRockFeed(cfg, log) {
 
   const get = async (path) => {
     const res = await fetch(`${h.feedApi || API}${path}`, { headers: HEADERS, signal: AbortSignal.timeout(10000) });
-    if (!res.ok) throw new Error(`Hard Rock ${path.split('?')[0]} HTTP ${res.status}`);
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      log.debug(`Hard Rock feed GET ${path} -> HTTP ${res.status}: ${body.slice(0, 500)}`);
+      throw new Error(`Hard Rock ${path.split('?')[0]} HTTP ${res.status}`);
+    }
     return res.json();
   };
   const warn = (msg) => { if (Date.now() - warnedAt > 60e3) { warnedAt = Date.now(); log.warn(msg); } };
@@ -106,13 +110,20 @@ export function makeHardRockFeed(cfg, log) {
     const want = [];
     for (const sport of sports) {
       for (const inplay of [true, false]) {
-        try {
-          const j = await get(`/java-graphql/events?${q}&sports=${sport}&outright=false&inplay=${inplay}&offset=0&limit=100&includeMarkets=false`);
-          for (const e of j?.data || []) {
+        // Same request the site makes (it pages 50 at a time; start = earliest game time).
+        const start = inplay ? now - 12 * 3600e3 : now - 3600e3;
+        for (let offset = 0; offset < 200; offset += 50) {
+          let data;
+          try {
+            const j = await get(`/java-graphql/events?${q}&sports=${sport}&outright=false&inplay=${inplay}&start=${start}&sort=compEventWeightingV2&sortDesc=false&offset=${offset}&limit=50&includeCount=true&includeMarkets=false`);
+            data = j?.data || [];
+          } catch (e) { warn(`Hard Rock live prices: couldn't list ${sport} games (${e.message})`); break; }
+          for (const e of data) {
             const t = Number(e.eventTime);
             if (e.inplay || (Number.isFinite(t) && t - now < horizon)) want.push({ id: e.id, inplay: !!e.inplay, t });
           }
-        } catch (e) { warn(`Hard Rock live prices: couldn't list ${sport} games (${e.message})`); }
+          if (data.length < 50) break;
+        }
       }
     }
     want.sort((a, b) => (b.inplay - a.inplay) || a.t - b.t);
