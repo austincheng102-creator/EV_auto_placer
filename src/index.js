@@ -291,6 +291,7 @@ async function placeAt(row, book, quote, retried = false) {
     // Paper trail: what we checked vs what the book says it accepted, plus Gambit's fair odds.
     // Dry runs: the simulated book "confirms" the price we sent.
     betLog.record({ row, quote, stake, betId, confirmedOdds: dryRun ? quote.odds : confirmedOdds, ev, novig: novigCheck });
+    try { writeSnapshot(root, { dryRun }); } catch {}   // keep bets.html current too
     log.ok(`${BOOK_LABELS[row.book]} PLACED $${stake} @ ${fmtAmerican(quote.odds)} (${fmtPct(ev)} EV) bet_id=${betId}${dryRun ? ' [DRY RUN]' : ''}`);
     if (!dryRun) {
       if (confirmedOdds == null) log.bet(`${book.label} didn't report the accepted price; check bet ${betId} in your bet history (raw reply in debug.log)`);

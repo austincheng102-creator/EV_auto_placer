@@ -168,6 +168,9 @@ select { font: inherit; font-size: 12px; background: var(--surface); color: var(
 </main>
 <script>
 let DATA = __DATA__;
+let lastPick = 0;
+addEventListener('pointerdown', (e) => { if (e.target.tagName === 'SELECT') lastPick = Date.now(); }, true);
+addEventListener('keydown', (e) => { if (e.target.tagName === 'SELECT') lastPick = Date.now(); }, true);
 const LIVE = __LIVE__;
 const NS = 'http://www.w3.org/2000/svg';
 const state = { book: 'all', range: 'all' };
@@ -444,9 +447,24 @@ let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(ren
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', render);
 // Pick up bets the placer logs while this page is open.
 if (LIVE) setInterval(async () => {
-  if (document.activeElement?.tagName === 'SELECT') return;
-  try { const r = await fetch('/data.json'); if (r.ok) { DATA = await r.json(); render(); } } catch {}
+  // Don't redraw under someone picking a result, but a dropdown that just kept focus afterwards
+  // mustn't freeze the page (it used to skip every refresh until you clicked elsewhere).
+  if (document.activeElement?.tagName === 'SELECT' && Date.now() - lastPick < 10000) return;
+  try {
+    const r = await fetch('/data.json');
+    if (r.ok) { DATA = await r.json(); stale(false); render(); } else stale(true);
+  } catch { stale(true); }
 }, 15000);
+// The page only updates while the Show bets window runs: say so when it's gone.
+function stale(on) {
+  let b = document.getElementById('stale');
+  if (!on) { if (b) b.remove(); return; }
+  if (b) return;
+  b = document.createElement('div'); b.id = 'stale';
+  b.style.cssText = 'position:sticky;top:0;z-index:5;margin:0 0 12px;padding:10px 14px;border-radius:10px;background:var(--chip);color:var(--text);border:1px solid var(--border)';
+  b.textContent = 'Not updating: the Show bets window was closed. Run Show bets again to see new bets and results.';
+  document.querySelector('main').prepend(b);
+}
 </script>
 </body>
 </html>`;
