@@ -10,7 +10,9 @@
 // The straight-bet body matches a captured $1 SINGLE (accepted). Hard Rock's max stake comes
 // back in a field named "Double" (it's a number type, not a bet type).
 
-import { decimalToAmerican } from '../ev.js';
+import { decimalToAmerican, americanToDecimal } from '../ev.js';
+import { makeHardRockFeed } from './hardrock-feed.js';
+import { log } from '../log.js';
 
 export const HARDROCK_HOSTS = /(^|\.)hardrock\.bet$|(^|\.)hardrocksportsbook\.com$/;
 
@@ -93,8 +95,39 @@ export function makeHardRock(name, label, cfg, bridge) {
   }
   const loginError = (j) => /session|token|login|auth/i.test(JSON.stringify(j?.error || j?.Error || j?.errors || '').slice(0, 300));
 
+  // Hard Rock's live prices, streamed from Hard Rock itself (hardrock-feed.js).
+  // "hardrock": {"directPrices": false} turns it off and uses Gambit's copy of the price.
+  const feed = h.directPrices === false ? null : makeHardRockFeed(cfg, log);
+
   return {
     name, label,
+
+    // Puts Hard Rock's real price (from the live feed) in place of Gambit's copy, for rows
+    // within directMarginPts of minEvPct on Gambit's numbers. Selections the feed doesn't have
+    // keep Gambit's price (rows Gambit lists under other books are then left out).
+    async livePrices(rows, minEvPct) {
+      const st = { read: 0, moved: 0, gone: 0, shadowNew: 0 };
+      if (!feed) return st;
+      await feed.start();
+      if (!feed.live()) return st;
+      const margin = h.directMarginPts ?? 5;
+      for (const r of rows) {
+        if (r.book !== name || !Number.isFinite(r.ev) || r.ev < minEvPct - margin) continue;
+        const id = hardrockSelectionId(r);
+        const p = id && feed.price(id);
+        if (!p) continue;
+        r.gambitOdds = r.odds; r.gambitEv = r.ev;
+        if (p.suspended) { r.direct = 'gone'; r.ev = -Infinity; st.gone++; continue; }
+        st.read++;
+        if (p.odds !== r.odds) st.moved++;
+        r.direct = true; r.odds = p.odds;
+        r.directQuote = { odds: p.odds, line: r.line, at: Date.now(), changedAt: p.changedAt ? new Date(p.changedAt).toISOString() : null };
+        r.ev = (r.fairProb * americanToDecimal(p.odds) - 1) * 100;
+        if (r.shadow && r.ev >= minEvPct) st.shadowNew++;
+      }
+      return st;
+    },
+    feed,
 
     // Hard Rock's prices stream over a websocket that wasn't captured, so the live price
     // check is the bet itself: placeBets carries Gambit's price with acceptPriceChange=false
@@ -107,7 +140,10 @@ export function makeHardRock(name, label, cfg, bridge) {
       if (res.status === 401 || res.status === 403 || loginError(j)) throw new Error('Hard Rock didn\'t accept the login: refresh the Hard Rock tab and stay logged in');
       if (res.status >= 400) throw new Error(`stake check HTTP ${res.status}: ${JSON.stringify(j || res.text).slice(0, 200)}`);
       const max = Number(j.Double ?? j.Single);
-      return { odds: row.odds, line: row.line, maxStake: Number.isFinite(max) && max > 0 ? max : null, suspended: false };
+      // With the live feed on, row.odds is Hard Rock's real price as of this scan; read it again now.
+      const p = feed?.live() && row.direct === true ? feed.price(hardrockSelectionId(row)) : null;
+      return { odds: p ? p.odds : row.odds, line: row.line, maxStake: Number.isFinite(max) && max > 0 ? max : null, suspended: !!p?.suspended,
+        changedAt: p?.changedAt ? new Date(p.changedAt).toISOString() : null };
     },
 
     // Settled bets between two times (ms), from the same list as My Bets > Settled.

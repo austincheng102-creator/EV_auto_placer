@@ -58,7 +58,7 @@ export function makeGambitSource(cfg, bridge) {
   }
 
   // Books whose real prices the app reads itself: Gambit's other rows for them become candidates too.
-  const shadow = (cfg.books || []).filter((b) => b === 'betrivers' && cfg.betrivers?.directPrices !== false && cfg.source !== 'mock');
+  const shadow = (cfg.books || []).filter((b) => ['betrivers', 'hardrock'].includes(b) && cfg[b]?.directPrices !== false);
   let fair = new Map();   // every selection's fair price in the last poll (for closing line value)
   return {
     needsBridge: via === 'extension',

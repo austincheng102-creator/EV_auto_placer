@@ -113,6 +113,11 @@ all the rules above), and nothing is placed at a price that didn't pass.
   selection Gambit only lists under another book still counts when BetRivers' real price is +EV.
   Every rule still applies. `"betrivers": {"directPrices": false}` turns this off. The scan line
   shows how many prices were read and how many had moved since Gambit's copy.
+- **Hard Rock prices come straight from Hard Rock's live odds feed** (the one app.hardrock.bet
+  uses, no login): the app follows live games and games starting within `pregameMaxHours`
+  (up to `hardrock.feedMaxGames`, default 150) and uses Hard Rock's real price in the scan, the same
+  way as BetRivers. Bets still go in with price changes refused, so Hard Rock turns a bet down if
+  the price moved in the meantime. `"hardrock": {"directPrices": false}` turns this off.
 - `prices.csv` next to the app gets a line for each check: Gambit's price, how long Gambit had shown
   it, the book's real price and EV, how long ago BetRivers last changed that price, and what happened. This shows how far behind Gambit is.
 
