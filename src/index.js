@@ -233,6 +233,7 @@ const watch = new Map(); // row.id -> { since, sig }
 const shown = new Map(); // row.id -> { odds, since }: when our polls first saw Gambit show this price
 const priceLog = makePriceLog(root, { dryRun });
 const directWarnAt = {};
+let lastScanDebug = 0;
 const warnedNoRows = new Set();
 
 const selKey = (r) => `${r.book}|${r.event}|${r.market}|${r.selection}`;
@@ -457,19 +458,25 @@ async function tick() {
   ].filter(Boolean).join(', ');
 
   const nBooks = new Set(rows.map((r) => r.book)).size;
-  // Nothing to bet: show the closest one at a real (book-read) price, so a quiet market is visible.
-  let closest = '';
-  if (!ev.length) {
-    let best = null;
-    for (const r of rows) if (r.direct === true && Number.isFinite(r.ev) && (!best || r.ev > best.ev)) best = r;
-    if (best) closest = `, closest: ${desc(best)} ${fmtAmerican(best.odds)} ${fmtPct(best.ev)} (${best.event})`;
-  }
+  // Nothing to bet: the closest one at a real (book-read) price, so a quiet market is visible.
+  let best = null;
+  if (!ev.length) for (const r of rows) if (r.direct === true && Number.isFinite(r.ev) && (!best || r.ev > best.ev)) best = r;
   const directText = Object.entries(direct).filter(([, d]) => d && (d.read || d.gone))
     .map(([n, d]) => `, ${BOOK_LABELS[n]} prices read directly: ${d.read} (${d.moved} moved since Gambit${d.gone ? `, ${d.gone} gone or line changed` : ''}${d.shadowNew ? `, ${d.shadowNew} +EV not listed for ${BOOK_LABELS[n]} on Gambit` : ''})`).join('');
-  log.scan(`${ev.length} +EV bets from ${rows.length} rows (${nBooks} book${nBooks === 1 ? '' : 's'})` +
+  const full = `${ev.length} +EV bets from ${rows.length} rows (${nBooks} book${nBooks === 1 ? '' : 's'})` +
     (novig ? `, ${novigDropped} dropped because Novig doesn't show ${novig.minEvPct}%+` : '') +
     (farOff ? `, ${farOff} pre-game skipped (starts more than ${cfg.pregameMaxHours}h away)` : '') +
-    (whyText ? `, skipped: ${whyText}` : '') + directText + closest, ev.length === 0);
+    (whyText ? `, skipped: ${whyText}` : '') + directText +
+    (best ? `, closest: ${desc(best)} ${fmtAmerican(best.odds)} ${fmtPct(best.ev)} (${best.event})` : '');
+  if (cfg.verboseScan) log.scan(full, ev.length === 0);
+  else {
+    // Short status line, rewritten in place each scan. The full breakdown goes to debug.log.
+    if (Date.now() - lastScanDebug > 30e3) { lastScanDebug = Date.now(); log.debug(`SCAN ${full}`); }
+    const short = (n) => ({ betrivers: 'BR', hardrock: 'HR', fanduel: 'FD' }[n] || n);
+    const live = Object.entries(direct).filter(([, d]) => d && d.read).map(([n, d]) => `${short(n)} ${d.read} live (${d.moved} moved)`).join(', ');
+    log.status(`${ev.length ? `${ev.length} to bet` : 'no bets'} | ${rows.length} rows${live ? ` | ${live}` : ''}` +
+      (best ? ` | closest: ${short(best.book)} ${best.selection === best.market ? best.market : best.selection}${best.line != null && !String(best.selection).includes(best.line) ? ' ' + best.line : ''} ${fmtAmerican(best.odds)} ${fmtPct(best.ev)}` : ''));
+  }
   if (!ev.length) return;
   if (!dryRun && !bridge.connected()) { log.warn('Chrome extension not connected — not placing'); return; }
 
