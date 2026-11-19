@@ -149,7 +149,7 @@ export function evsToRows(json, g = {}, fairOut = null, { shadow = [] } = {}) {
         const sb = shadowIds.get(c.sportsbook_id);
         if (!sb || sb === book || !Number.isFinite(Number(c.odds))) continue;
         const l = c.desktop_link || c.mobile_link || '';
-        const r = sb === 'betrivers' ? kambiRef(l) : {};
+        const r = sb === 'betrivers' ? kambiRef(l) : sb === 'hardrock' ? hardrockRef(l) : {};
         if (!r.bookRef) continue;
         const odds = Number(c.odds);
         shadows.push({ ...base, id: `${sb}:${r.bookRef}`, book: sb, gambitBookId: c.sportsbook_id, shadow: true,
