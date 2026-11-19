@@ -258,7 +258,11 @@ async function placeAt(row, book, quote, retried = false) {
   if (evTooHigh(cfg, ev)) { log.warn(`${book.label}: ${fmtAmerican(quote.odds)} is ${fmtPct(ev)} EV, above the ${cfg.maxEvPct}% cap (likely a stale or wrong price) — skipped, nothing placed`); return false; }
   const tail = `${fmtAmerican(quote.odds)} vs fair ${fmtAmerican(row.fairOdds)} from ${row.fairBooks ?? '?'} book(s) -> ${fmtPct(ev)} EV` +
     (quote.maxStake ? ` (max stake $${quote.maxStake})` : '');
-  if (ev < cfg.minEvPct) { log.warn(`${book.label}: re-check FAIL: ${tail}`); return false; }
+  if (ev < cfg.minEvPct) {
+    const was = quote.odds !== row.odds ? ` (Gambit showed ${fmtAmerican(row.odds)}${Number.isFinite(row.ev) ? `, ${fmtPct(row.ev)} EV` : ''})` : '';
+    log.warn(`${book.label}: re-check FAIL, below the ${cfg.minEvPct}% minimum EV: ${tail}${was} — skipped, nothing placed`);
+    return false;
+  }
   log.bet(`${book.label}: re-check OK: ${tail}`);
 
   // Novig has to agree at the live price too.
