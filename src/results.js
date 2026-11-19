@@ -38,7 +38,20 @@ export function profitOf({ result, stake, odds, payout }) {
 export function makeResults(dir, { dryRun = false } = {}) {
   const file = path.join(dir, dryRun ? 'results.dry.json' : 'results.json');
   // Always read fresh: the placer and the chart page can both write it.
-  const read = () => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return {}; } };
+  // Fix-up for BetRivers results saved before this fix, which read Kambi's x1000 payout as
+  // cents (10x too big). Those entries have no "v"; divide once and mark them.
+  function migrate(all) {
+    let changed = false;
+    for (const [k, r] of Object.entries(all)) {
+      if (k.startsWith('coupon:') && r?.source === 'book' && !r.v) {
+        if (r.payout != null) r.payout = Math.round(r.payout * 10) / 100;
+        r.v = 2; changed = true;
+      }
+    }
+    if (changed) try { fs.writeFileSync(file, JSON.stringify(all, null, 2)); } catch {}
+    return all;
+  }
+  const read = () => { try { return migrate(JSON.parse(fs.readFileSync(file, 'utf8'))); } catch { return {}; } };
   function set(key, result, { source = 'manual', payout = null, odds = null, settledAt = null } = {}) {
     const all = read();
     if (!result) delete all[key];
@@ -55,7 +68,7 @@ export function makeResults(dir, { dryRun = false } = {}) {
     let n = 0;
     for (const { key, result, payout = null, odds = null, settledAt = null } of list) {
       if (all[key]?.source === 'manual' || (all[key] && all[key].result === result && all[key].payout === payout)) continue;
-      all[key] = { result, payout, odds, source: 'book', settledAt: settledAt || new Date().toISOString() };
+      all[key] = { result, payout, odds, source: 'book', settledAt: settledAt || new Date().toISOString(), v: 2 };
       n++;
     }
     if (n) fs.writeFileSync(file, JSON.stringify(all, null, 2));

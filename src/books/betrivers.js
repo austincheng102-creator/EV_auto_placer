@@ -30,9 +30,9 @@ const kambiToAmerican = (k) => {
 };
 
 // One coupon from BetRivers' bet history (My Bets) as a result for results.json, or null if it
-// isn't settled. Matches our bet log by couponRef (logged as "coupon:<ref>"). Units here are
-// the site's, not Kambi's: stake and payout in cents, odds decimal x 1000. payout is the total
-// return (0 for a loss), so profit = payout - stake whatever the status.
+// isn't settled. Matches our bet log by couponRef (logged as "coupon:<ref>"). Kambi units:
+// stake, payout and odds are all x 1000 (stake 1000 = $1, payout 2600 = $2.60, odds 2600 = 2.6).
+// payout is the total return (0 for a loss), so profit = payout - stake whatever the status.
 export function settledCoupon(c) {
   const b = c?.bets?.[0];
   if (!c?.couponRef || !b || (c.bets.length !== 1)) return null;
@@ -45,8 +45,8 @@ export function settledCoupon(c) {
   const ko = Number(b.playedOdds);
   return {
     betId: String(c.couponRef), result, status: st,
-    payout: Math.round(Number(b.payout) || 0) / 100,
-    stake: Number.isFinite(Number(b.stake)) ? Number(b.stake) / 100 : null,
+    payout: Math.round((Number(b.payout) || 0) / 10) / 100,
+    stake: Number.isFinite(Number(b.stake)) ? Number(b.stake) / 1000 : null,
     odds: Number.isFinite(ko) && ko > 1000 ? decimalToAmerican(ko / 1000) : null,
     settledAt: null, placedAt: c.placedDate || null,
   };
