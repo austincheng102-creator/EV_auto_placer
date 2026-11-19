@@ -457,12 +457,19 @@ async function tick() {
   ].filter(Boolean).join(', ');
 
   const nBooks = new Set(rows.map((r) => r.book)).size;
+  // Nothing to bet: show the closest one at a real (book-read) price, so a quiet market is visible.
+  let closest = '';
+  if (!ev.length) {
+    let best = null;
+    for (const r of rows) if (r.direct === true && Number.isFinite(r.ev) && (!best || r.ev > best.ev)) best = r;
+    if (best) closest = `, closest: ${desc(best)} ${fmtAmerican(best.odds)} ${fmtPct(best.ev)} (${best.event})`;
+  }
   const directText = Object.entries(direct).filter(([, d]) => d && (d.read || d.gone))
     .map(([n, d]) => `, ${BOOK_LABELS[n]} prices read directly: ${d.read} (${d.moved} moved since Gambit${d.gone ? `, ${d.gone} gone or line changed` : ''}${d.shadowNew ? `, ${d.shadowNew} +EV not listed for ${BOOK_LABELS[n]} on Gambit` : ''})`).join('');
   log.scan(`${ev.length} +EV bets from ${rows.length} rows (${nBooks} book${nBooks === 1 ? '' : 's'})` +
     (novig ? `, ${novigDropped} dropped because Novig doesn't show ${novig.minEvPct}%+` : '') +
     (farOff ? `, ${farOff} pre-game skipped (starts more than ${cfg.pregameMaxHours}h away)` : '') +
-    (whyText ? `, skipped: ${whyText}` : '') + directText, ev.length === 0);
+    (whyText ? `, skipped: ${whyText}` : '') + directText + closest, ev.length === 0);
   if (!ev.length) return;
   if (!dryRun && !bridge.connected()) { log.warn('Chrome extension not connected — not placing'); return; }
 
