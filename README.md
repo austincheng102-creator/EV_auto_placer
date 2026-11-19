@@ -106,8 +106,15 @@ all the rules above), and nothing is placed at a price that didn't pass.
   bet again on every scan for `recheckWatchMinutes` (default 5) as long as Gambit still lists it,
   and places it if the real price gets back to `minEvPct`. Repeat checks only show on screen when
   the price changes. Hard Rock's check is the bet itself, so a failed Hard Rock bet still waits 5 minutes.
+- **BetRivers prices are read straight from BetRivers** on every scan (its public odds, no login)
+  for every BetRivers selection within `betrivers.directMarginPts` (default 5) points of `minEvPct`
+  on Gambit's numbers, up to `betrivers.directMax` (default 300). The scan then uses BetRivers' real
+  price with Gambit's fair price, so stale Gambit rows drop out before a bet is tried, and a
+  selection Gambit only lists under another book still counts when BetRivers' real price is +EV.
+  Every rule still applies. `"betrivers": {"directPrices": false}` turns this off. The scan line
+  shows how many prices were read and how many had moved since Gambit's copy.
 - `prices.csv` next to the app gets a line for each check: Gambit's price, how long Gambit had shown
-  it, the book's real price and EV, and what happened. This shows how far behind Gambit is.
+  it, the book's real price and EV, how long ago BetRivers last changed that price, and what happened. This shows how far behind Gambit is.
 
 ## Novig has to agree (on by default)
 A bet is only placed when Novig's price also shows it at **2% EV or more**, on top of Gambit's

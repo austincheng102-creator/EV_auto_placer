@@ -232,6 +232,7 @@ const WATCH_MS = Number(cfg.recheckWatchMinutes ?? 5) * 60e3;
 const watch = new Map(); // row.id -> { since, sig }
 const shown = new Map(); // row.id -> { odds, since }: when our polls first saw Gambit show this price
 const priceLog = makePriceLog(root, { dryRun });
+const directWarnAt = {};
 const warnedNoRows = new Set();
 
 const selKey = (r) => `${r.book}|${r.event}|${r.market}|${r.selection}`;
@@ -257,7 +258,8 @@ function quietLog() {
 
 const headerText = (row) => {
   const startIn = row.isLive === false ? (parseTime(row.startDate) - Date.now()) / 3600e3 : NaN;
-  return `${desc(row)} ${fmtAmerican(row.odds)} (${fmtPct(row.ev)} EV) — ${row.event}${row.isLive ? ' [live]' : Number.isFinite(startIn) ? ` [pre-game, starts in ${startIn < 1 ? `${Math.max(0, Math.round(startIn * 60))}m` : `${startIn.toFixed(1)}h`}]` : ''}${row.book === 'hardrock' && row.gambitBookId ? ` [Gambit book ${row.gambitBookId}]` : ''}`;
+  const was = row.gambitOdds != null && row.gambitOdds !== row.odds ? `, Gambit showed ${fmtAmerican(row.gambitOdds)}` : '';
+  return `${desc(row)} ${fmtAmerican(row.odds)} (${fmtPct(row.ev)} EV${was}) — ${row.event}${row.isLive ? ' [live]' : Number.isFinite(startIn) ? ` [pre-game, starts in ${startIn < 1 ? `${Math.max(0, Math.round(startIn * 60))}m` : `${startIn.toFixed(1)}h`}]` : ''}${row.book === 'hardrock' && row.gambitBookId ? ` [Gambit book ${row.gambitBookId}]` : ''}`;
 };
 
 // ctx collects what happened, for the price log and for deciding whether to keep watching.
@@ -395,6 +397,17 @@ async function tick() {
     for (const r of rows) { ids.add(r.id); const s = shown.get(r.id); if (!s || s.odds !== r.odds) shown.set(r.id, { odds: r.odds, since: scanAt }); }
     for (const id of shown.keys()) if (!ids.has(id)) shown.delete(id);
     for (const [id, w] of watch) if (scanAt - w.since > WATCH_MS + 60e3) watch.delete(id); }
+  // Books that let us read their prices directly (BetRivers): use the real price, not Gambit's copy.
+  const direct = {};
+  for (const [n, b] of Object.entries(books)) {
+    if (!b.livePrices) continue;
+    try { direct[n] = await b.livePrices(rows, cfg.minEvPct); }
+    catch (e) {
+      if (!(directWarnAt[n] > Date.now() - 60e3)) { directWarnAt[n] = Date.now(); log.warn(`${b.label}: couldn't read its prices directly (${e.message}), using Gambit's prices for now`); }
+    }
+  }
+  // Gambit rows from other books only count once the book's own price was read.
+  rows = rows.filter((r) => !r.shadow || r.direct === true);
   for (const b of Object.keys(books)) {
     if (!warnedNoRows.has(b) && !rows.some((r) => r.book === b)) {
       warnedNoRows.add(b);
@@ -444,10 +457,12 @@ async function tick() {
   ].filter(Boolean).join(', ');
 
   const nBooks = new Set(rows.map((r) => r.book)).size;
+  const directText = Object.entries(direct).filter(([, d]) => d && (d.read || d.gone))
+    .map(([n, d]) => `, ${BOOK_LABELS[n]} prices read directly: ${d.read} (${d.moved} moved since Gambit${d.gone ? `, ${d.gone} gone or line changed` : ''}${d.shadowNew ? `, ${d.shadowNew} +EV not listed for ${BOOK_LABELS[n]} on Gambit` : ''})`).join('');
   log.scan(`${ev.length} +EV bets from ${rows.length} rows (${nBooks} book${nBooks === 1 ? '' : 's'})` +
     (novig ? `, ${novigDropped} dropped because Novig doesn't show ${novig.minEvPct}%+` : '') +
     (farOff ? `, ${farOff} pre-game skipped (starts more than ${cfg.pregameMaxHours}h away)` : '') +
-    (whyText ? `, skipped: ${whyText}` : ''), ev.length === 0);
+    (whyText ? `, skipped: ${whyText}` : '') + directText, ev.length === 0);
   if (!ev.length) return;
   if (!dryRun && !bridge.connected()) { log.warn('Chrome extension not connected — not placing'); return; }
 
@@ -483,12 +498,15 @@ function startBet(row, scanAt) {
         const at = parseTime(row.priceAt);
         priceLog.record({
           time: new Date(now).toISOString(), book: row.book, live: row.isLive ? 'live' : 'pre-game', event: row.event,
-          market: row.market, selection: row.selection, line: row.line, gambitOdds: row.odds, gambitEvPct: row.ev,
-          gambitShownSec: s && s.odds === row.odds ? (scanAt - s.since) / 1000 : null,
+          market: row.market, selection: row.selection, line: row.line, gambitOdds: row.gambitOdds ?? row.odds, gambitEvPct: row.gambitEv ?? row.ev,
+          gambitShownSec: s && s.odds === (row.gambitOdds ?? row.odds) ? (scanAt - s.since) / 1000 : null,
           gambitPriceAgeSec: Number.isFinite(at) ? (scanAt - at) / 1000 : null,
           bookOdds: ctx.realOdds, bookLine: ctx.quote.line,
           bookEvPct: ctx.realOdds != null ? evPct(ctx.realOdds, row.fairOdds) : null, fairOdds: row.fairOdds,
-          msScanToCheck: ctx.checkedAt - scanAt, watching: w ? Math.round((now - w.since) / 1000) + 's' : '',
+          msScanToCheck: ctx.checkedAt - scanAt,
+          bookChangedSec: Number.isFinite(Date.parse(ctx.quote.changedAt)) ? (scanAt - Date.parse(ctx.quote.changedAt)) / 1000 : null,
+          source: row.direct === true ? (row.shadow ? `${row.book} (Gambit row from another book)` : row.book) : 'gambit',
+          watching: w ? Math.round((now - w.since) / 1000) + 's' : '',
           outcome: ctx.outcome || '',
         });
       }

@@ -90,11 +90,17 @@ export function fairProb(devig, method = 'worst') {
  * `fairOut` (optional Map) collects Gambit's fair price for every selection in the response,
  * from any book, keyed by fairKey (event|market|selection|line). Used for closing line value.
  */
-export function evsToRows(json, g = {}, fairOut = null) {
+export function evsToRows(json, g = {}, fairOut = null, { shadow = [] } = {}) {
   detectBookIds(json);
   const nameById = {};
-  for (const [n, list] of Object.entries(bookIdLists(g))) for (const id of list) nameById[id] = n;
+  const idLists = bookIdLists(g);
+  for (const [n, list] of Object.entries(idLists)) for (const id of list) nameById[id] = n;
   const rows = [];
+  // "Shadow" rows: a selection Gambit lists for another book, where a book we bet (BetRivers)
+  // also has a price. Gambit's copy of that price may be old, so these only count once the
+  // book's real price has been read (books/betrivers.js livePrices); Gambit gives the fair price.
+  const shadows = [];
+  const shadowIds = new Map(shadow.flatMap((n) => (idLists[n] || []).map((id) => [id, n])));
   for (const ev of json?.evs || []) {
     for (const op of ev.evOpportunities || []) {
       const b = op.bet || {};
@@ -118,15 +124,15 @@ export function evsToRows(json, g = {}, fairOut = null) {
         const had = fairOut.get(k), own = !!book;
         if (!had || (own && !had.own) || (own === had.own && p < had.prob)) fairOut.set(k, { prob: p, isLive: !!ev.isLive, own });
       }
-      if (!book) continue;
+      if (!book && !shadowIds.size) continue;
       const fairOdds = decimalToAmerican(1 / p);
       // Every book's price for this selection (odds) and the other side (oppOdds), by Gambit id.
       // Used by the sharp-book rules in filters.js.
       const prices = {};
       for (const c of b.comparableBets || []) if (prices[c.sportsbook_id]?.odds == null) (prices[c.sportsbook_id] ||= {}).odds = Number(c.odds);
       for (const c of b.opposingBets || []) if (prices[c.sportsbook_id]?.oppOdds == null) (prices[c.sportsbook_id] ||= {}).oppOdds = Number(c.odds);
-      rows.push({
-        id: b.id, book, gambitBookId: b.sportsbook_id, event: ev.event_name, league: ev.league, isLive: !!ev.isLive, startDate: ev.startDate,
+      const base = {
+        event: ev.event_name, league: ev.league, isLive: !!ev.isLive, startDate: ev.startDate,
         market: prettyMarket(op.marketName), marketKey: op.marketName, selection, line,
         odds: Number(b.odds), fairOdds, fairProb: p,
         devig: Object.fromEntries((op.devig || []).filter((d) => d.method).map((d) => [d.method, d.winProbability])), ev: (p * americanToDecimal(Number(b.odds)) - 1) * 100,
@@ -137,9 +143,22 @@ export function evsToRows(json, g = {}, fairOut = null) {
         // When Gambit says it got this book price (for measuring how far behind it is), if it says.
         priceAt: b.updated_at ?? b.created_at ?? own?.updated_at ?? own?.created_at ?? null,
         sharpKey: fairKey({ event: ev.event_name, marketKey: op.marketName, selection, line }),
-        link, ...refs,
-      });
+      };
+      if (book) rows.push({ ...base, id: b.id, book, gambitBookId: b.sportsbook_id, link, ...refs });
+      for (const c of b.comparableBets || []) {
+        const sb = shadowIds.get(c.sportsbook_id);
+        if (!sb || sb === book || !Number.isFinite(Number(c.odds))) continue;
+        const l = c.desktop_link || c.mobile_link || '';
+        const r = sb === 'betrivers' ? kambiRef(l) : {};
+        if (!r.bookRef) continue;
+        const odds = Number(c.odds);
+        shadows.push({ ...base, id: `${sb}:${r.bookRef}`, book: sb, gambitBookId: c.sportsbook_id, shadow: true,
+          odds, ev: (p * americanToDecimal(odds) - 1) * 100, priceAt: c.updated_at ?? c.created_at ?? null, link: l, ...r });
+      }
     }
   }
+  // A selection Gambit already lists for that book keeps its own row.
+  const have = new Set(rows.map((r) => `${r.book}|${r.bookRef}`));
+  for (const r of shadows) { const k = `${r.book}|${r.bookRef}`; if (!have.has(k)) { have.add(k); rows.push(r); } }
   return rows;
 }

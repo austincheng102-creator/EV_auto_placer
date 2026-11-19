@@ -8,7 +8,7 @@
 //    picks it up from your BetRivers tab's own requests
 // Kambi units: odds and stake are x1000 (odds 1630 = 1.63 decimal, stake 1000 = $1), lines x1000.
 
-import { decimalToAmerican } from '../ev.js';
+import { decimalToAmerican, americanToDecimal } from '../ev.js';
 
 const STATE = (cfg) => String(cfg.region || 'CO').toLowerCase();
 
@@ -57,6 +57,47 @@ export function makeBetRivers(name, label, cfg, bridge) {
   const qs = (extra = '') => `lang=en_US&market=${k.market}&client_id=${k.clientId}&channel_id=1${extra}`;
   const json = { accept: 'application/json, text/javascript, */*; q=0.01', 'content-type': 'application/json' };
 
+  const quoteOf = (oc, bo) => ({
+    odds: oc.oddsAmerican != null ? Number(oc.oddsAmerican) : kambiToAmerican(oc.odds),
+    kambiOdds: oc.odds,
+    line: oc.line != null ? oc.line / 1000 : null,   // signed, from the bettor's side, like Gambit's
+    suspended: oc.status !== 'OPEN',
+    maxStake: null,
+    betOfferId: bo.id, eventId: bo.eventId,
+    changedAt: oc.changedDate || null,               // when BetRivers last changed this price
+    at: Date.now(),
+  });
+
+  // Several outcomes per request (id=1,2,3). If Kambi turns that down, one request per outcome.
+  let manyIds = cfg.betrivers?.manyIdsPerRequest !== false;
+  async function outcomes(ids) {
+    const out = new Map();
+    const get = async (list) => {
+      const url = `${k.offeringHost}/offering/v2018/${k.offering}/betoffer/outcome.json?${qs(`&ncid=${Date.now()}`)}&id=${list.join(',')}`;
+      const res = await fetch(url, { headers: { accept: json.accept }, signal: AbortSignal.timeout(5000) });
+      if (!res.ok) { const e = new Error(`Kambi price HTTP ${res.status}`); e.status = res.status; throw e; }
+      const j = await res.json();
+      let n = 0;
+      for (const bo of j.betOffers || []) for (const oc of bo.outcomes || []) { out.set(String(oc.id), quoteOf(oc, bo)); n++; }
+      return n;
+    };
+    const pool = async (items, n, fn) => { let i = 0; await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => { while (i < items.length) await fn(items[i++]); })); };
+    if (manyIds && ids.length > 1) {
+      const chunks = [];
+      for (let i = 0; i < ids.length; i += 40) chunks.push(ids.slice(i, i + 40));
+      try {
+        const counts = [];
+        await pool(chunks, 4, async (c) => counts.push(await get(c)));
+        // Only one outcome back for a long list: Kambi read just the first id.
+        if (!(chunks[0].length >= 5 && Math.max(...counts) <= 2)) return out;
+      } catch (e) { if (!(e.status >= 400 && e.status < 500)) throw e; }
+      manyIds = false;
+      out.clear();
+    }
+    await pool(ids, 8, async (id) => { try { await get([id]); } catch {} });
+    return out;
+  }
+
   async function inTab(kind, url, method = 'GET', body) {
     const res = await bridge.send(name, { kind, url, method, headers: json, body, useKambiAuth: true }, 20000);
     return res;
@@ -68,8 +109,36 @@ export function makeBetRivers(name, label, cfg, bridge) {
     // check failed can be checked again on every scan.
     freePriceCheck: true,
 
+    // Reads BetRivers' real prices for these rows, straight from BetRivers (public, no login),
+    // and puts them in place of Gambit's copy, so the scan sees the price you'd actually get.
+    // Rows within `directMarginPts` of minEvPct on Gambit's numbers are read (up to directMax).
+    // Gambit's fair price stays. Returns counts for the scan line.
+    async livePrices(rows, minEvPct) {
+      const b = cfg.betrivers || {};
+      const margin = b.directMarginPts ?? 5, max = b.directMax ?? 300;
+      const want = rows.filter((r) => r.book === name && r.bookRef && Number.isFinite(r.ev) && r.ev >= minEvPct - margin)
+        .sort((x, y) => y.ev - x.ev).slice(0, max);
+      const ids = [...new Set(want.map((r) => String(r.bookRef)))];
+      const st = { read: 0, moved: 0, gone: 0, shadowNew: 0 };
+      if (!ids.length) return st;
+      const got = await outcomes(ids);
+      for (const r of want) {
+        const q = got.get(String(r.bookRef));
+        r.gambitOdds = r.odds; r.gambitEv = r.ev;
+        if (!q || q.suspended || (r.line != null && q.line != null && q.line !== r.line)) { r.direct = 'gone'; r.ev = -Infinity; st.gone++; continue; }
+        st.read++;
+        if (q.odds !== r.odds) st.moved++;
+        r.direct = true; r.directQuote = q; r.odds = q.odds;
+        r.ev = (r.fairProb * americanToDecimal(q.odds) - 1) * 100;
+        if (r.shadow && r.ev >= minEvPct) st.shadowNew++;
+      }
+      return st;
+    },
+
     async recheck(row) {
       if (!row.bookRef) throw new Error('no BetRivers outcome id on this Gambit row');
+      // Price read from BetRivers in this same scan, under 1.5s ago: that's already a live check.
+      if (row.directQuote && Date.now() - row.directQuote.at < 1500) return row.directQuote;
       const url = `${k.offeringHost}/offering/v2018/${k.offering}/betoffer/outcome.json?${qs(`&ncid=${Date.now()}`)}&id=${row.bookRef}`;
       const res = await fetch(url, { headers: { accept: json.accept }, signal: AbortSignal.timeout(8000) });
       if (!res.ok) throw new Error(`Kambi price HTTP ${res.status}`);
@@ -77,14 +146,7 @@ export function makeBetRivers(name, label, cfg, bridge) {
       const bo = (j.betOffers || []).find((b) => (b.outcomes || []).some((o) => String(o.id) === String(row.bookRef)));
       const oc = bo?.outcomes.find((o) => String(o.id) === String(row.bookRef));
       if (!oc) return { odds: null, suspended: true };
-      return {
-        odds: oc.oddsAmerican != null ? Number(oc.oddsAmerican) : kambiToAmerican(oc.odds),
-        kambiOdds: oc.odds,
-        line: oc.line != null ? oc.line / 1000 : null,   // signed, from the bettor's side, like Gambit's
-        suspended: oc.status !== 'OPEN',
-        maxStake: null,
-        betOfferId: bo.id, eventId: bo.eventId,
-      };
+      return quoteOf(oc, bo);
     },
 
     // Settled bets placed since `from` (ms), from the list behind My Bets > Settled on
