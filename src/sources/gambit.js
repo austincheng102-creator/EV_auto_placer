@@ -57,6 +57,8 @@ export function makeGambitSource(cfg, bridge) {
     return res.json();
   }
 
+  // Books whose real prices the app reads itself: Gambit's other rows for them become candidates too.
+  const shadow = (cfg.books || []).filter((b) => b === 'betrivers' && cfg.betrivers?.directPrices !== false && cfg.source !== 'mock');
   let fair = new Map();   // every selection's fair price in the last poll (for closing line value)
   return {
     needsBridge: via === 'extension',
@@ -68,7 +70,7 @@ export function makeGambitSource(cfg, bridge) {
       const nextFair = new Map();
       for (const url of list) {
         const json = await fetchOne(withBookIds(url));
-        if (Array.isArray(json?.evs)) { out.push(...evsToRows(json, g, nextFair)); continue; }   // Gambit's evs.json
+        if (Array.isArray(json?.evs)) { out.push(...evsToRows(json, g, nextFair, { shadow })); continue; }   // Gambit's evs.json
         const rows = g.rowsPath ? get(json, g.rowsPath) : json;
         if (!Array.isArray(rows)) throw new Error(`Gambit: rowsPath "${g.rowsPath}" is not an array`);
         out.push(...rows.map((r) => normalizeRow(r, g.fields)));
