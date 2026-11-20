@@ -2,6 +2,7 @@
 //  - odds window: nothing shorter than -300 (minOdds) or longer than +250 (maxOdds)
 //  - EV cap: nothing above 25% EV (maxEvPct), it's usually a stale or wrong price
 //  - sharp books must agree: their no-vig win probabilities within 3 points of each other
+//    (Pinnacle, Kalshi, Polymarket, Novig; FanDuel left out since 2026-11-19, sharp.spreadBooks)
 //  - live mainlines need Pinnacle, Kalshi, Polymarket or Novig listed; live props need FanDuel
 //  - live timing: a sharp price for the selection changed within the last 5 seconds
 //  - groups: same game + market (period is part of the market) + side share one bet and $1
@@ -19,6 +20,9 @@ export function applyFilterDefaults(cfg) {
   if (s.liveMainlineNeeds === undefined) s.liveMainlineNeeds = ['pinnacle', 'kalshi', 'polymarket', 'novig'];
   if (s.livePropNeeds === undefined) s.livePropNeeds = ['fanduel'];
   if (s.maxSpreadPts === undefined) s.maxSpreadPts = 3;
+  // Books compared by the 3-point rule. FanDuel isn't in it: it isn't sharp on props and kept
+  // knocking them out. Add "fanduel" here to compare it again on props.
+  if (s.spreadBooks === undefined) s.spreadBooks = ['pinnacle', 'kalshi', 'polymarket', 'novig'];
   if (s.liveMaxAgeSec === undefined) s.liveMaxAgeSec = 5;
   const g = (cfg.group ||= {});
   if (g.maxBets === undefined) g.maxBets = 1;
@@ -45,10 +49,10 @@ export function bookFairProb(odds, oppOdds) {
   return p / (p + q);
 }
 
-/** Which sharp books count for a row: the mainline sharps, plus FanDuel (etc.) for player props. */
+/** Which sharp books the 3-point rule compares for a row (sharp.spreadBooks; FanDuel only on props). */
 export function sharpNames(cfg, row) {
-  const s = cfg.sharp;
-  return [...new Set(row.isProp ? [...s.livePropNeeds, ...s.liveMainlineNeeds] : s.liveMainlineNeeds)];
+  const list = cfg.sharp.spreadBooks || [];
+  return row.isProp ? [...new Set(list)] : [...new Set(list.filter((n) => n !== 'fanduel'))];
 }
 
 /**

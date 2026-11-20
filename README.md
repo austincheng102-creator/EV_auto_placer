@@ -72,7 +72,7 @@ setting in `config.json`; one that isn't there gets the default below, and `null
 | Favorites: nothing shorter than -300 (-300 itself is fine) | -300 | `"minOdds"` or `--min-odds -250` |
 | Underdogs: nothing longer than +250 | +250 | `"maxOdds"` (above) |
 | Nothing above 25% EV | 25 | `"maxEvPct"` or `--max-ev 20` |
-| Sharp books' no-vig win probabilities within 3 points of each other | 3 | `"sharp": {"maxSpreadPts"}` |
+| Sharp books' no-vig win probabilities within 3 points of each other (Pinnacle, Kalshi, Polymarket, Novig; not FanDuel) | 3 | `"sharp": {"maxSpreadPts", "spreadBooks"}` |
 | Live mainlines need Pinnacle, Kalshi, Polymarket or Novig listed | | `"sharp": {"liveMainlineNeeds"}` |
 | Live player props need FanDuel listed | | `"sharp": {"livePropNeeds"}` |
 | Live: a sharp price changed within the last 5 seconds | 5 | `"sharp": {"liveMaxAgeSec"}` |
