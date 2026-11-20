@@ -221,8 +221,9 @@ Also on the betting PC: turn off sleep while the app runs (Windows Settings > Sy
 Screen and sleep: "Never" while plugged in), and allow Chrome notifications
 (Windows Settings > System > Notifications > Google Chrome: On).
 
-Settings (`config.json`, all optional): `"session": {"checkSeconds": 60, "remindMinutes": 2, "reloadTabs": true}`.
+Settings (`config.json`, all optional): `"session": {"checkSeconds": 60, "remindMinutes": 2, "reloadTabs": true, "gambitAlertSeconds": 20}`.
 `"checkSeconds": 0` turns the checks off; `"reloadTabs": false` stops the app asking for tab reloads.
+Gambit only counts as logged out after it has refused for `gambitAlertSeconds` in a row, and the extension only reloads the Gambit tab after about 10 refused polls in a row or once its token has been out for a minute. If Gambit refuses the token, the extension first tries the other recent tokens your Gambit tab sent.
 
 ## Updates (automatic)
 Every change pushed to `main` is built by GitHub Actions and published as a release. Each time the

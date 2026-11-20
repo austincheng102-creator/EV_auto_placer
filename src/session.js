@@ -12,7 +12,7 @@
 //  renewing and the login runs out. The extension now keeps these tabs loaded and reloads a
 //  stalled one; this file sends BetRivers' keepalive itself and checks each login once a minute.
 //
-// config.json "session": { "checkSeconds": 60, "remindMinutes": 2, "reloadTabs": true }
+// config.json "session": { "checkSeconds": 60, "remindMinutes": 2, "reloadTabs": true, "gambitAlertSeconds": 20 }
 //   checkSeconds 0 turns the checks off.
 
 const LOGIN_RE = /login|logged|log in|token|HTTP 40[13]|session|not seen yet/i;
@@ -78,6 +78,8 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
   }
 
   let timer = null;
+  let gambitFailSince = 0;
+  const gambitGraceMs = Number(s.gambitAlertSeconds ?? 20) * 1000;
   return {
     start() {
       if (every <= 0 || timer) return;
@@ -86,9 +88,14 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
     },
     check: checkBooks,
     /** The Gambit poll's result: an Error, or null when it worked. */
+    // Only alarm (and ask for a reload) once Gambit has refused for gambitAlertSeconds (default 20):
+    // a single refused poll while the page renews its token is normal, and reloading the tab in
+    // the middle of that renewal is what knocked the login out.
     gambit(err) {
-      if (!err) return ok('gambit');
-      if (/HTTP 40[13]|log in|no Gambit login|no open Gambit tab/i.test(err.message)) bad('gambit', err.message);
+      if (!err) { gambitFailSince = 0; return ok('gambit'); }
+      if (!/HTTP 40[13]|log in|no Gambit login|no open Gambit tab/i.test(err.message)) return;
+      if (!gambitFailSince) gambitFailSince = Date.now();
+      if (Date.now() - gambitFailSince >= gambitGraceMs) bad('gambit', err.message);
     },
     /** A book reported a login error while checking or placing a bet. */
     bookError(name, msg) { if (/didn't accept the login|login not seen yet|login token|not seen yet/i.test(msg)) bad(name, msg); },

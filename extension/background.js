@@ -12,11 +12,39 @@ const BOOK_HOSTS = {
 // Gambit's login token expires about hourly and the site refreshes it on its own. We
 // watch the requests your open Gambit tab makes and reuse its current token, so the
 // engine never needs a copied one.
+// Only a real, unexpired token is kept, and never one that runs out sooner than the one we have:
+// while the page reloads or renews its login it can send an empty or older token, which used to
+// replace the good one and make every poll fail. The last few good tokens are kept so a refused
+// one can fall back to the next.
 let gambitAuth = null;
-chrome.storage.session?.get('gambitAuth').then((v) => { if (v?.gambitAuth && !gambitAuth) gambitAuth = v.gambitAuth; });
+let gambitSpare = [];   // other recent tokens, newest first
+const gambitTokenOk = (v) => {
+  if (!v || /^(bearer\s*)?(null|undefined|)$/i.test(String(v).trim())) return false;
+  const exp = jwtExp(v);
+  return !exp || exp > Date.now() / 1000;
+};
+function takeGambitToken(v) {
+  if (v === gambitAuth || !gambitTokenOk(v)) return;
+  if (gambitAuth && gambitTokenOk(gambitAuth) && jwtExp(v) && jwtExp(gambitAuth) && jwtExp(v) < jwtExp(gambitAuth)) return;
+  if (gambitAuth) gambitSpare = [gambitAuth, ...gambitSpare.filter((t) => t !== gambitAuth && t !== v)].slice(0, 3);
+  gambitAuth = v;
+  chrome.storage.session?.set({ gambitAuth, gambitSpare });
+}
+// Gambit refused this token: move to the newest spare that hasn't run out. With no spare we keep
+// it (the page's next request brings a new one), so a one-off refusal can't leave us with none.
+function dropGambitToken(v) {
+  gambitSpare = gambitSpare.filter((t) => t !== v && gambitTokenOk(t));
+  if (gambitAuth !== v || !gambitSpare.length) return false;
+  gambitAuth = gambitSpare.shift();
+  chrome.storage.session?.set({ gambitAuth, gambitSpare });
+  return true;
+}
+chrome.storage.session?.get(['gambitAuth', 'gambitSpare']).then((v) => {
+  if (!gambitAuth && v?.gambitAuth) { gambitAuth = v.gambitAuth; gambitSpare = v.gambitSpare || []; }
+});
 chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
   const h = (d.requestHeaders || []).find((x) => x.name.toLowerCase() === 'authorization');
-  if (h?.value && h.value !== gambitAuth) { gambitAuth = h.value; chrome.storage.session?.set({ gambitAuth }); }
+  if (h?.value) takeGambitToken(h.value);
 }, { urls: ['https://api-sports.gambitodds.com/*'] }, ['requestHeaders', 'extraHeaders']);
 
 // BetRivers (Kambi) works the same way: its bet-slip requests carry a login token in an
@@ -98,6 +126,7 @@ async function keepTabsLoaded() {
 const placing = {};      // book -> bets being sent from its tab right now
 const reloadedAt = {};   // book -> ms
 let lastReload = null;
+let gambitRefused = 0;   // Gambit polls refused in a row
 async function reloadTab(book, why) {
   if (placing[book] > 0 || Date.now() - (reloadedAt[book] || 0) < 5 * 60e3) return false;
   const t = (await bookTabs()).find((x) => x.book === book);
@@ -115,8 +144,10 @@ async function watchLogins() {
   const now = Date.now() / 1000;
   // A token that ran out over 10 minutes ago means reloading didn't bring the login back: you're
   // really logged out, so stop reloading (the app keeps alerting until you log in).
+  // Gambit: only once its token has been out for a minute with no new one from the page. Reloading
+  // earlier can land while the page is renewing its own login and knock it out.
   const gExp = jwtExp(gambitAuth);
-  if (gExp && gExp - now < 120 && now - gExp < 600) reloadTab('gambit', gExp < now ? 'its login token ran out' : 'its login token runs out in under 2 minutes and the page hasn\'t renewed it');
+  if (gExp && now - gExp > 60 && now - gExp < 600) reloadTab('gambit', 'its login token ran out and the page hasn\'t renewed it');
   if (hrAuth.session && hrAuth.sessionAt && Date.now() - hrAuth.sessionAt > 4 * 60e3) {
     const exp = jwtExp(hrAuth.session);
     if (!exp || now - exp < 600) reloadTab('hardrock', exp && exp < now ? 'its login token ran out' : 'the page stopped renewing its login (it normally does every 10 seconds)');
@@ -229,11 +260,19 @@ async function handle(msg) {
       msg.request.headers = { ...(msg.request.headers || {}), authorization: gambitAuth };
     }
     // Gambit: fetch from the extension first (no page involved), then from inside the tab.
+    // If Gambit refuses the token, try the other recent ones before giving up on this poll.
     if (msg.book === 'gambit') {
-      const a = await extFetch(msg.request);
-      if (!a.error && a.status && a.status < 400) return reply(a);
+      const refused = (r) => r.status === 401 || r.status === 403;
+      let a = await extFetch(msg.request);
+      while (a.status === 401 && msg.request.headers.authorization === gambitAuth && dropGambitToken(gambitAuth)) {
+        msg.request.headers.authorization = gambitAuth;
+        a = await extFetch(msg.request);
+      }
+      if (!a.error && a.status && a.status < 400) { gambitRefused = 0; return reply(a); }
       const b = await runInTab(tab.id, msg.request);
-      if ((a.status === 401 || a.status === 403) && (b.status === 401 || b.status === 403 || b.error)) reloadTab('gambit', `Gambit answered HTTP ${a.status} (login not accepted)`);
+      if (!b.error && b.status && b.status < 400) { gambitRefused = 0; return reply(b); }
+      // Refused over and over (about 20s of polls): the page's login has stalled, a reload renews it.
+      if (refused(a) && ++gambitRefused >= 10) reloadTab('gambit', `Gambit answered HTTP ${a.status} ${gambitRefused} times in a row (login not accepted)`);
       if (!b.error && b.status) return reply(b);
       return reply({ error: `Gambit: ${a.error || `HTTP ${a.status}`}; ${b.error || `HTTP ${b.status}`}` });
     }
