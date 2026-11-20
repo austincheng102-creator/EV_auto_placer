@@ -363,7 +363,7 @@ async function placeAt(row, book, quote, ctx, retried = false) {
       if (hasNew) ctx.realOdds = e.newOdds;
       if (hasNew && !retried) {
         lg.warn(`${book.label}: price moved ${fmtAmerican(quote.odds)} → ${fmtAmerican(e.newOdds)}, checking again`);
-        return placeAt(row, book, { ...quote, odds: e.newOdds }, ctx, true);
+        return placeAt(row, book, { ...quote, ...(e.newQuote || {}), odds: e.newOdds }, ctx, true);
       }
       lg.warn(`${book.label}: price moved${hasNew ? ` to ${fmtAmerican(e.newOdds)}` : ''} — skipped, nothing placed`);
       return false;
