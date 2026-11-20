@@ -40,14 +40,14 @@ chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
 // token (geolocationDetails) ride in the form body of its own requests. We keep the latest
 // ones your Hard Rock tab sent. The login token refreshes every few seconds; the location
 // token is only sent when you place a bet, so place one bet by hand after logging in.
-let hrAuth = { session: null, geo: null, geoAt: 0 };
+let hrAuth = { session: null, geo: null, geoAt: 0, sessionAt: 0 };
 chrome.storage.session?.get('hrAuth').then((v) => { if (v?.hrAuth && !hrAuth.session) hrAuth = v.hrAuth; });
 chrome.webRequest.onBeforeRequest.addListener((d) => {
   const f = d.requestBody?.formData;
   if (!f) return;
   const session = f.sessionToken?.[0], geo = f.geolocationDetails?.[0];
   if ((session && session !== hrAuth.session) || geo) {
-    hrAuth = { ...hrAuth, ...(session ? { session } : {}), ...(geo ? { geo, geoAt: Date.now() } : {}) };
+    hrAuth = { ...hrAuth, ...(session && session !== hrAuth.session ? { session, sessionAt: Date.now() } : {}), ...(geo ? { geo, geoAt: Date.now() } : {}) };
     chrome.storage.session?.set({ hrAuth });
   }
 }, { urls: ['https://*.hardrocksportsbook.com/*'] }, ['requestBody']);
@@ -55,6 +55,16 @@ chrome.webRequest.onBeforeRequest.addListener((d) => {
 // Read as text: the id is a number too big for JSON.parse to keep exact.
 const hrAccountId = (tok) => {
   try { return (/"accountId"\s*:\s*"?(\d+)/.exec(atob(tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))) || [])[1] || ''; } catch { return ''; }
+};
+
+// The csrf_token header some Hard Rock requests (balance) want is inside the login token.
+const hrCsrf = (tok) => {
+  try { return JSON.parse(atob(tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).csrfToken || ''; } catch { return ''; }
+};
+
+// Seconds since 1970 when a login token (JWT) runs out, or 0 if it isn't one.
+const jwtExp = (tok) => {
+  try { return Number(JSON.parse(atob(String(tok).replace(/^Bearer\s+/i, '').split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).exp) || 0; } catch { return 0; }
 };
 
 let ws = null;
@@ -69,8 +79,69 @@ const bookFor = (url) => {
 
 async function bookTabs() {
   const tabs = await chrome.tabs.query({});
-  return tabs.map((t) => ({ id: t.id, book: bookFor(t.url || ''), url: t.url })).filter((t) => t.book);
+  return tabs.map((t) => ({ id: t.id, book: bookFor(t.url || ''), url: t.url, discarded: t.discarded, autoDiscardable: t.autoDiscardable })).filter((t) => t.book);
 }
+
+// Logouts come from the sites' own timers stopping: Gambit refreshes its token about hourly and
+// Hard Rock every 10 seconds (its token lasts 28 minutes), but only while the tab's page is
+// running. Chrome's Memory Saver unloads ("discards") tabs you haven't looked at in a while,
+// which stops those timers. So: never let Chrome discard these tabs, and reload any it already did.
+async function keepTabsLoaded() {
+  for (const t of await bookTabs()) {
+    if (t.autoDiscardable !== false) chrome.tabs.update(t.id, { autoDiscardable: false }).catch(() => {});
+    if (t.discarded) reloadTab(t.book, 'Chrome had unloaded the tab');
+  }
+}
+
+// A reload lets the site renew its login from its cookies. Never while a bet is being sent from
+// that tab (the reply would be lost), and at most once every 5 minutes per site.
+const placing = {};      // book -> bets being sent from its tab right now
+const reloadedAt = {};   // book -> ms
+let lastReload = null;
+async function reloadTab(book, why) {
+  if (placing[book] > 0 || Date.now() - (reloadedAt[book] || 0) < 5 * 60e3) return false;
+  const t = (await bookTabs()).find((x) => x.book === book);
+  if (!t) return false;
+  reloadedAt[book] = Date.now();
+  lastReload = { book, why, at: Date.now() };
+  chrome.tabs.reload(t.id).catch(() => {});
+  if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'reloaded', book, why }));
+  return true;
+}
+
+// Every 30 seconds: is each site still renewing its own login? If not, its page has stalled.
+async function watchLogins() {
+  await keepTabsLoaded();
+  const now = Date.now() / 1000;
+  // A token that ran out over 10 minutes ago means reloading didn't bring the login back: you're
+  // really logged out, so stop reloading (the app keeps alerting until you log in).
+  const gExp = jwtExp(gambitAuth);
+  if (gExp && gExp - now < 120 && now - gExp < 600) reloadTab('gambit', gExp < now ? 'its login token ran out' : 'its login token runs out in under 2 minutes and the page hasn\'t renewed it');
+  if (hrAuth.session && hrAuth.sessionAt && Date.now() - hrAuth.sessionAt > 4 * 60e3) {
+    const exp = jwtExp(hrAuth.session);
+    if (!exp || now - exp < 600) reloadTab('hardrock', exp && exp < now ? 'its login token ran out' : 'the page stopped renewing its login (it normally does every 10 seconds)');
+  }
+}
+
+// Loud alert from the app (a site is logged out): a Windows/Mac notification that stays up until
+// you close it, and a red "!" on the extension's icon.
+let alertText = '';
+function showAlert(m) {
+  alertText = m.text || '';
+  chrome.action?.setBadgeBackgroundColor?.({ color: '#d00' });
+  chrome.action?.setBadgeText?.({ text: '!' });
+  chrome.action?.setTitle?.({ title: `EV Placer: ${alertText}` });
+  chrome.notifications?.create(`ev-${m.book || 'app'}`, {
+    type: 'basic', iconUrl: ICON, title: m.title || 'EV Placer: logged out', message: alertText,
+    priority: 2, requireInteraction: true,
+  }, () => void chrome.runtime.lastError);
+}
+function clearAlert(m) {
+  chrome.notifications?.clear(`ev-${m.book || 'app'}`, () => void chrome.runtime.lastError);
+  if (m.all !== false) { alertText = ''; chrome.action?.setBadgeText?.({ text: '' }); chrome.action?.setTitle?.({ title: 'EV Placer Bridge' }); }
+}
+// A plain red square (notifications need an icon).
+const ICON = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAALUlEQVR4nO3OIQEAAAjAsPdPRyOIgZmYX1P7KQEBAQEBAQEBAQEBAQEBge/AASEqPGpTs7PIAAAAAElFTkSuQmCC';
 
 async function sendTabs() {
   if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'tabs', tabs: (await bookTabs()).map(({ id, book }) => ({ id, book })) }));
@@ -124,6 +195,7 @@ async function handle(msg) {
   try {
     const { armed = false } = await chrome.storage.local.get('armed');
     if (msg.request.kind === 'place' && !armed) return reply({ error: 'extension is DISARMED (open the popup to arm)' });
+    if (msg.request.kind === 'place') placing[msg.book] = (placing[msg.book] || 0) + 1;
     const matches = (await bookTabs()).filter((t) => t.book === msg.book);
     const tab = matches.find((t) => /^https:\/\/(www\.)?[^/]+\/?/.test(t.url || '') && !/api/.test(new URL(t.url).hostname)) || matches[0];
     if (!tab) return reply({ error: msg.book === 'gambit' ? 'no open Gambit tab (open gambitodds.com and log in)' : `no open ${msg.book} tab` });
@@ -149,6 +221,7 @@ async function handle(msg) {
       // Some Hard Rock requests (My Bets) also carry the login token as a header.
       for (const [h, v] of Object.entries(msg.request.headers || {})) {
         if (typeof v === 'string' && v.includes('{{hrSessionToken}}')) msg.request.headers[h] = v.replaceAll('{{hrSessionToken}}', hrAuth.session);
+        if (typeof v === 'string' && v.includes('{{hrCsrf}}')) msg.request.headers[h] = v.replaceAll('{{hrCsrf}}', hrCsrf(hrAuth.session));
       }
     }
     if (msg.request.useGambitAuth) {
@@ -160,6 +233,7 @@ async function handle(msg) {
       const a = await extFetch(msg.request);
       if (!a.error && a.status && a.status < 400) return reply(a);
       const b = await runInTab(tab.id, msg.request);
+      if ((a.status === 401 || a.status === 403) && (b.status === 401 || b.status === 403 || b.error)) reloadTab('gambit', `Gambit answered HTTP ${a.status} (login not accepted)`);
       if (!b.error && b.status) return reply(b);
       return reply({ error: `Gambit: ${a.error || `HTTP ${a.status}`}; ${b.error || `HTTP ${b.status}`}` });
     }
@@ -167,6 +241,7 @@ async function handle(msg) {
     if (r.error) return reply({ error: r.error });
     reply(r);
   } catch (e) { reply({ error: String(e?.message || e) }); }
+  finally { if (msg.request?.kind === 'place') placing[msg.book] = Math.max(0, (placing[msg.book] || 1) - 1); }
 }
 
 function connect() {
@@ -176,17 +251,24 @@ function connect() {
     const m = JSON.parse(ev.data);
     if (m.type === 'fetch') handle(m);
     else if (m.type === 'reload') chrome.runtime.reload(); // engine updated these files on disk
+    else if (m.type === 'alert') showAlert(m);
+    else if (m.type === 'clearAlert') clearAlert(m);
+    else if (m.type === 'reloadTab') reloadTab(m.book, m.why || 'the app found it logged out');
   };
   ws.onclose = () => { status = 'disconnected'; ws = null; setTimeout(connect, 3000); };
   ws.onerror = () => {};
 }
 
 chrome.tabs.onUpdated.addListener(sendTabs);
+chrome.tabs.onCreated.addListener(() => keepTabsLoaded());
+chrome.tabs.onUpdated.addListener((_id, info) => { if (info.url || info.status === 'complete') keepTabsLoaded(); });
 chrome.tabs.onRemoved.addListener(sendTabs);
 chrome.runtime.onMessage.addListener((m, _s, respond) => {
-  if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth, betriversLogin: !!kambiAuth, hardrockLogin: !!hrAuth.session, hardrockGeo: hrAuth.geoAt || 0 })); return true; }
+  if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth, betriversLogin: !!kambiAuth, hardrockLogin: !!hrAuth.session, hardrockGeo: hrAuth.geoAt || 0,
+    gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, alert: alertText, lastReload })); return true; }
 });
 // Keep the service worker alive while the engine runs.
 chrome.alarms?.create('keepalive', { periodInMinutes: 0.5 });
-chrome.alarms?.onAlarm.addListener(() => { if (!ws) connect(); else sendTabs(); });
+chrome.alarms?.onAlarm.addListener(() => { if (!ws) connect(); else sendTabs(); watchLogins().catch(() => {}); });
 connect();
+keepTabsLoaded();

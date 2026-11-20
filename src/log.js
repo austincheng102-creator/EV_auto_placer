@@ -32,4 +32,11 @@ export const log = {
   warn: (msg) => line('EV BET', 'yellow', msg),
   err: (msg) => line('ERROR', 'red', msg),
   info: (msg) => line('INFO', null, msg, true),
+  // Something needs you (a site logged out): a bell, and a red block that's hard to miss.
+  alarm: (msg) => {
+    process.stdout.write('\x07');
+    const bar = '!'.repeat(70);
+    for (const m of [bar, `!!  ${msg}`, bar]) line('LOGIN', 'red', process.stdout.isTTY ? `\x1b[1;41;97m${m}\x1b[0m` : m);
+  },
+  good: (msg) => line('LOGIN', 'green', `✓ ${msg}`),
 };

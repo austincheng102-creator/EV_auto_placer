@@ -74,5 +74,10 @@
       "betrivers": 1004,
       "fanduel": 100
     }
+  },
+  "session": {
+    "checkSeconds": 60,
+    "remindMinutes": 2,
+    "reloadTabs": true
   }
 }

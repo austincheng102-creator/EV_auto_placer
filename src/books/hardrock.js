@@ -160,6 +160,20 @@ export function makeHardRock(name, label, cfg, bridge) {
       return j.bet.map(settledResult).filter(Boolean);
     },
 
+    // Once a minute (session.js): read the balance (read-only, the site does the same), which
+    // tells us whether Hard Rock still has you logged in. The page itself keeps the login alive.
+    async sessionCheck() {
+      const res = await bridge.send(name, {
+        kind: 'session', url: `${apiHost}/sportsbook/v1/api/getBalance`, method: 'POST', useHardRockAuth: true,
+        headers: { ...form, csrf_token: '{{hrCsrf}}' }, body: `sessionToken=${SESSION}`,
+      }, 15000);
+      const j = res.json || {};
+      const bal = j.AccountBalance;
+      if (res.status < 400 && bal) return { ok: true, balance: Number.isFinite(Number(bal.amount)) ? Number(bal.amount).toFixed(2) : null };
+      if (res.status === 401 || res.status === 403 || loginError(j)) return { ok: false, why: `Hard Rock balance check answered ${res.status === 200 ? JSON.stringify(j).slice(0, 100) : `HTTP ${res.status}`}` };
+      throw new Error(`Hard Rock balance check HTTP ${res.status}: ${JSON.stringify(j || res.text).slice(0, 120)}`);
+    },
+
     async place(row, stake, quote) {
       const res = await post('place', `${stateHost}/sportsbook/v1/api/placeBets`,
         body(betsJson(row, stake, toDecimal(quote.odds), { acceptPriceChange: false }), true));

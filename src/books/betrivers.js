@@ -172,6 +172,20 @@ export function makeBetRivers(name, label, cfg, bridge) {
       return out;
     },
 
+    // Once a minute (session.js): the same "I'm still here" call co.betrivers.com makes, so the
+    // site doesn't log you out for inactivity while the app runs. Also tells us if you're logged out.
+    async sessionCheck() {
+      const site = cfg.betrivers?.siteHost || `https://${STATE(cfg)}.betrivers.com`;
+      const res = await bridge.send(name, {
+        kind: 'session', method: 'POST', useRsiAuth: true, url: `${site}/api/service/sessions/portal/keepalive`,
+        headers: { accept: 'application/json, text/plain, */*', 'content-type': 'application/json; charset=utf-8' },
+      }, 15000);
+      const code = res.json?.code;
+      if (res.status < 400 && code === 'OK') return { ok: true };
+      if (res.status === 401 || res.status === 403 || (code && code !== 'OK')) return { ok: false, why: `BetRivers keepalive answered ${code || `HTTP ${res.status}`}` };
+      throw new Error(`BetRivers keepalive HTTP ${res.status}: ${String(res.text || '').slice(0, 120)}`);
+    },
+
     async place(row, stake, quote) {
       const rows = [{ index: 0, odds: quote.kambiOdds, outcomeId: Number(row.bookRef), type: 'SIMPLE' }];
       const bets = [{ couponRowIndexes: [0], eachWay: false, stake: Math.round(stake * 1000) }];

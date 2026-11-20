@@ -194,6 +194,34 @@ from `bets.json`, so the running placer never overwrites them.
 - A read-only copy is saved as `bets.html` and opens on its own later.
 - Bets placed before the bet log existed (from `state.json`) are included.
 
+## Staying logged in (Gambit, BetRivers, Hard Rock)
+Why the sites logged out during long runs: each site's own page keeps your login alive (Hard
+Rock's token lasts 28 minutes and its page renews it every 10 seconds; Gambit's lasts about an
+hour; BetRivers logs you out after a while with no activity). When Chrome unloads a tab you
+haven't looked at in a while (Memory Saver), or the computer sleeps, the page stops and the login
+runs out. What the app and extension do now:
+- **Tabs stay loaded.** The extension tells Chrome never to unload the Gambit and book tabs, and
+  reloads any tab Chrome already unloaded.
+- **Stalled pages get reloaded.** If Gambit's token is about to run out without being renewed, or
+  Hard Rock's page stops renewing its token, the extension reloads that tab so the site can renew
+  the login from its cookies. Never while a bet is being sent from that tab, and at most once
+  every 5 minutes per site.
+- **BetRivers keepalive.** Once a minute the app sends the same "still here" call co.betrivers.com
+  makes, from your BetRivers tab, so it doesn't time you out for inactivity.
+- **Login check once a minute.** BetRivers (that keepalive) and Hard Rock (a balance read) are
+  checked every minute, and Gambit on every poll.
+- **Loud alert when logged out.** A bell and a red `[LOGIN]` banner in the app window, repeated
+  every 2 minutes, plus a Windows/Mac notification from Chrome that stays up until you close it
+  and a red **!** on the extension icon. The app never stops: it keeps scanning and retrying, and
+  prints `[LOGIN] ✓ ... logged in again` once you log back in. It never types a password.
+
+Also on the betting PC: turn off sleep while the app runs (Windows Settings > System > Power >
+Screen and sleep: "Never" while plugged in), and allow Chrome notifications
+(Windows Settings > System > Notifications > Google Chrome: On).
+
+Settings (`config.json`, all optional): `"session": {"checkSeconds": 60, "remindMinutes": 2, "reloadTabs": true}`.
+`"checkSeconds": 0` turns the checks off; `"reloadTabs": false` stops the app asking for tab reloads.
+
 ## Updates (automatic)
 Every change pushed to `main` is built by GitHub Actions and published as a release. Each time the
 app starts it checks for a newer release, downloads the build for your computer, replaces itself

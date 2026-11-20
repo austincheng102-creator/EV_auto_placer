@@ -18,6 +18,7 @@ import { VERSION } from './version.js';
 import embedded from './embedded.js';
 import { checkForUpdate, cleanupOld } from './update.js';
 import { makeNovig } from './novig.js';
+import { makeSessionWatch } from './session.js';
 import { seenBooks } from './sources/gambit-evs.js';
 import { makeBetLog, parseTime } from './betlog.js';
 import { makePriceLog } from './skiplog.js';
@@ -210,6 +211,8 @@ for (const b of Object.values(books)) {
   if (b.ready === false) { log.err(`${b.label}: ${b.notReadyReason}`); process.exit(1); }
 }
 const novig = makeNovig(cfg); // null = Novig check turned off
+// Logged-out alarms and BetRivers keepalive (session.js). Live runs only.
+const session = makeSessionWatch({ cfg, bridge: dryRun ? null : bridge, books: dryRun ? {} : books, log, labels: BOOK_LABELS });
 const betLog = makeBetLog(root, { dryRun, log });
 
 // Persistent state: what we've already bet and how much today.
@@ -270,6 +273,7 @@ async function tryBet(row, ctx) {
   try { quote = await book.recheck(row); }
   catch (e) {
     ctx.outcome = 'check error';
+    session.bookError(row.book, e.message);
     if (w) log.debug(`${book.label} ${desc(row)}: re-check error: ${e.message}`);
     else { log.header(headerText(row)); log.warn(`${book.label}: re-check error: ${e.message}`); }
     return false;
@@ -367,6 +371,7 @@ async function placeAt(row, book, quote, ctx, retried = false) {
     if (e.gone) { ctx.outcome = 'no longer offered'; lg.warn(`${book.label}: bet no longer offered — skipped, nothing placed`); return false; }
     ctx.outcome = 'place failed';
     lg.err(`${book.label}: place failed: ${e.message}`);
+    session.bookError(row.book, e.message);
     return false;
   } finally { pendingStake -= stake; }
 }
@@ -374,8 +379,8 @@ async function placeAt(row, book, quote, ctx, retried = false) {
 async function tick() {
   if (state.day !== today()) { state.day = today(); state.staked = 0; save(); }
   let rows;
-  try { rows = await source.fetchRows(); }
-  catch (e) { log.err(`Gambit fetch failed: ${e.message}`); return; }
+  try { rows = await source.fetchRows(); session.gambit(null); }
+  catch (e) { log.err(`Gambit fetch failed: ${e.message}`); session.gambit(e); return; }
   // Closing line value: follow Gambit's fair price for bets already placed.
   if (source.fairIndex) {
     const closed = betLog.track(source.fairIndex());
@@ -527,6 +532,7 @@ log.info(`${betLog.summaryLine()} (ev-placer bets for details, file ${path.basen
 // Give the Chrome extension a few seconds to connect before the first scan.
 if (bridge) for (let i = 0; i < 20 && !bridge.connected(); i++) await new Promise((r) => setTimeout(r, 250));
 if (bridge && !bridge.connected()) log.warn('Chrome extension not connected yet: is Chrome open with the EV Placer extension loaded?');
+session.start();
 const loop = async () => { await tick(); setTimeout(loop, pollSeconds * 1000); };
 loop();
 process.on('SIGINT', () => { save(); console.log(); process.exit(0); });
