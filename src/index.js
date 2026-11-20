@@ -470,11 +470,12 @@ async function tick() {
     (best ? `, closest: ${desc(best)} ${fmtAmerican(best.odds)} ${fmtPct(best.ev)} (${best.event})` : '');
   if (cfg.verboseScan) log.scan(full, ev.length === 0);
   else {
-    // Short status line, rewritten in place each scan. The full breakdown goes to debug.log.
+    // Short scan line. The full breakdown goes to debug.log.
     if (Date.now() - lastScanDebug > 30e3) { lastScanDebug = Date.now(); log.debug(`SCAN ${full}`); }
     const short = (n) => ({ betrivers: 'BR', hardrock: 'HR', fanduel: 'FD' }[n] || n);
     const live = Object.entries(direct).filter(([, d]) => d && d.read).map(([n, d]) => `${short(n)} ${d.read} live (${d.moved} moved)`).join(', ');
-    log.status(`${ev.length ? `${ev.length} to bet` : 'no bets'} | ${rows.length} rows${live ? ` | ${live}` : ''}` +
+    // One short line per scan; "scanInPlace": true rewrites a single line instead.
+    (cfg.scanInPlace ? log.status : (m) => log.scan(m, !ev.length))(`${ev.length ? `${ev.length} to bet` : 'no bets'} | ${rows.length} rows${live ? ` | ${live}` : ''}` +
       (best ? ` | closest: ${short(best.book)} ${best.selection === best.market ? best.market : best.selection}${best.line != null && !String(best.selection).includes(best.line) ? ' ' + best.line : ''} ${fmtAmerican(best.odds)} ${fmtPct(best.ev)}` : ''));
   }
   if (!ev.length) return;
