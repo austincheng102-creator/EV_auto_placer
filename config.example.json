@@ -14,7 +14,14 @@
   },
   "sharp": {
     "maxSpreadPts": 3,
+    "spreadBooks": [
+      "pinnacle",
+      "kalshi",
+      "polymarket",
+      "novig"
+    ],
     "liveMaxAgeSec": 5,
+    "livePropMaxAgeSec": 30,
     "liveMainlineNeeds": [
       "pinnacle",
       "kalshi",

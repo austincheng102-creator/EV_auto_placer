@@ -72,10 +72,11 @@ setting in `config.json`; one that isn't there gets the default below, and `null
 | Favorites: nothing shorter than -300 (-300 itself is fine) | -300 | `"minOdds"` or `--min-odds -250` |
 | Underdogs: nothing longer than +250 | +250 | `"maxOdds"` (above) |
 | Nothing above 25% EV | 25 | `"maxEvPct"` or `--max-ev 20` |
-| Sharp books' no-vig win probabilities within 3 points of each other | 3 | `"sharp": {"maxSpreadPts"}` |
+| Sharp books' no-vig win probabilities within 3 points of each other (Pinnacle, Kalshi, Polymarket, Novig; not FanDuel) | 3 | `"sharp": {"maxSpreadPts", "spreadBooks"}` |
 | Live mainlines need Pinnacle, Kalshi, Polymarket or Novig listed | | `"sharp": {"liveMainlineNeeds"}` |
 | Live player props need FanDuel listed | | `"sharp": {"livePropNeeds"}` |
 | Live: a sharp price changed within the last 5 seconds | 5 | `"sharp": {"liveMaxAgeSec"}` |
+| Live player props: FanDuel's price changed within the last 30 seconds | 30 | `"sharp": {"livePropMaxAgeSec"}` |
 | Same game + market + period + side = one group: one bet, $1 total | 1 bet, $1 | `"group": {"maxBets", "maxStake"}` |
 
 - **Sharp agreement:** each sharp book with both sides listed is de-vigged on its own (Pinnacle comes

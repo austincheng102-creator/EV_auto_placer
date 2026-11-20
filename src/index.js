@@ -23,7 +23,7 @@ import { seenBooks } from './sources/gambit-evs.js';
 import { makeBetLog, parseTime } from './betlog.js';
 import { makePriceLog } from './skiplog.js';
 import { writeSnapshot, serveReport, openInBrowser } from './report.js';
-import { applyFilterDefaults, tooShort, evTooHigh, sharpSpread, liveSharpMissing, makeSharpClock, groupKey, groupTotals, groupRoom } from './filters.js';
+import { applyFilterDefaults, tooShort, evTooHigh, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom } from './filters.js';
 
 const root = appDir;
 let args = process.argv.slice(2);
@@ -428,7 +428,7 @@ async function tick() {
   for (const p of [...state.placed, ...inflight.values()]) perEvent[p.event] = (perEvent[p.event] || 0) + 1;
   const now = Date.now();
   let farOff = 0;
-  const why = { odds: 0, evCap: 0, sharpSpread: 0, noSharp: 0, stale: 0, group: 0 };
+  const why = { odds: 0, evCap: 0, sharpSpread: 0, noSharp: 0, stale: 0, staleProp: 0, group: 0 };
   const drop = (k) => (why[k]++, false);
   const groups = groupTotals(state.placed);
   const ageMax = cfg.sharp.liveMaxAgeSec;
@@ -439,7 +439,7 @@ async function tick() {
     .filter((r) => !tooEarly(r) || (farOff++, false))
     .filter((r) => !liveSharpMissing(cfg, r) || drop('noSharp'))
     .filter((r) => sharpSpread(cfg, r).ok || drop('sharpSpread'))
-    .filter((r) => { if (!r.isLive || ageMax == null || !r.prices) return true; const a = sharpClock.ageSec(r); return (a != null && a <= ageMax) || drop('stale'); })
+    .filter((r) => { const lim = liveAgeLimit(cfg, r); if (!r.isLive || lim == null || !r.prices) return true; const a = sharpClock.ageSec(r); return (a != null && a <= lim) || drop(r.isProp ? 'staleProp' : 'stale'); })
     .filter((r) => groupRoom(cfg, groups, r) != null || drop('group'))
     .filter((r) => !inflight.has(groupKey(r)))
     .filter((r) => !placedKeys.has(selKey(r)) && (cooldown.get(r.id) || 0) < now)
@@ -458,6 +458,7 @@ async function tick() {
     why.noSharp && `${why.noSharp} live without the needed sharp book`,
     why.sharpSpread && `${why.sharpSpread} sharp books more than ${cfg.sharp.maxSpreadPts} pts apart`,
     why.stale && `${why.stale} live with no sharp move in the last ${ageMax}s`,
+    why.staleProp && `${why.staleProp} live props with no FanDuel move in the last ${cfg.sharp.livePropMaxAgeSec}s`,
     why.group && `${why.group} group already bet`,
   ].filter(Boolean).join(', ');
 
@@ -518,7 +519,7 @@ function startBet(row, scanAt) {
     });
 }
 
-log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}% novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} odds=${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)}..${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)} maxEV=${cfg.maxEvPct ?? 'off'}% sharpSpread<=${cfg.sharp.maxSpreadPts ?? 'off'}pts liveSharpAge<=${cfg.sharp.liveMaxAgeSec ?? 'off'}s group=${cfg.group.maxBets ?? 'any'} bet/$${cfg.group.maxStake ?? 'any'} pregame<=${cfg.pregameMaxHours == null ? 'any' : cfg.pregameMaxHours + 'h'} stake=$${cfg.stake.amount} poll=${pollSeconds}s atOnce=${maxInFlight} recheckWatch=${WATCH_MS / 60e3}min`);
+log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}% novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} odds=${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)}..${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)} maxEV=${cfg.maxEvPct ?? 'off'}% sharpSpread<=${cfg.sharp.maxSpreadPts ?? 'off'}pts liveSharpAge<=${cfg.sharp.liveMaxAgeSec ?? 'off'}s (props ${cfg.sharp.livePropMaxAgeSec ?? 'off'}s) group=${cfg.group.maxBets ?? 'any'} bet/$${cfg.group.maxStake ?? 'any'} pregame<=${cfg.pregameMaxHours == null ? 'any' : cfg.pregameMaxHours + 'h'} stake=$${cfg.stake.amount} poll=${pollSeconds}s atOnce=${maxInFlight} recheckWatch=${WATCH_MS / 60e3}min`);
 // Results for the P&L chart: read each book's settled bets (My Bets > Settled) every few
 // minutes while a logged bet from that book has no result yet. Works whichever book is being
 // bet today, as long as that book's tab is open. "results": {"everyMinutes": 0} turns it off.

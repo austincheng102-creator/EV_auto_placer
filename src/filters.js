@@ -2,8 +2,9 @@
 //  - odds window: nothing shorter than -300 (minOdds) or longer than +250 (maxOdds)
 //  - EV cap: nothing above 25% EV (maxEvPct), it's usually a stale or wrong price
 //  - sharp books must agree: their no-vig win probabilities within 3 points of each other
+//    (Pinnacle, Kalshi, Polymarket, Novig; FanDuel left out since 2026-11-19, sharp.spreadBooks)
 //  - live mainlines need Pinnacle, Kalshi, Polymarket or Novig listed; live props need FanDuel
-//  - live timing: a sharp price for the selection changed within the last 5 seconds
+//  - live timing: a sharp price for the selection changed within the last 5 seconds (30 for props)
 //  - groups: same game + market (period is part of the market) + side share one bet and $1
 import { impliedProb } from './ev.js';
 
@@ -19,7 +20,12 @@ export function applyFilterDefaults(cfg) {
   if (s.liveMainlineNeeds === undefined) s.liveMainlineNeeds = ['pinnacle', 'kalshi', 'polymarket', 'novig'];
   if (s.livePropNeeds === undefined) s.livePropNeeds = ['fanduel'];
   if (s.maxSpreadPts === undefined) s.maxSpreadPts = 3;
+  // Books compared by the 3-point rule. FanDuel isn't in it: it isn't sharp on props and kept
+  // knocking them out. Add "fanduel" here to compare it again on props.
+  if (s.spreadBooks === undefined) s.spreadBooks = ['pinnacle', 'kalshi', 'polymarket', 'novig'];
   if (s.liveMaxAgeSec === undefined) s.liveMaxAgeSec = 5;
+  // Live props: FanDuel's prop prices update slowly in Gambit's feed, so props get 30s.
+  if (s.livePropMaxAgeSec === undefined) s.livePropMaxAgeSec = 30;
   const g = (cfg.group ||= {});
   if (g.maxBets === undefined) g.maxBets = 1;
   if (g.maxStake === undefined) g.maxStake = 1;
@@ -45,10 +51,10 @@ export function bookFairProb(odds, oppOdds) {
   return p / (p + q);
 }
 
-/** Which sharp books count for a row: the mainline sharps, plus FanDuel (etc.) for player props. */
+/** Which sharp books the 3-point rule compares for a row (sharp.spreadBooks; FanDuel only on props). */
 export function sharpNames(cfg, row) {
-  const s = cfg.sharp;
-  return [...new Set(row.isProp ? [...s.livePropNeeds, ...s.liveMainlineNeeds] : s.liveMainlineNeeds)];
+  const list = cfg.sharp.spreadBooks || [];
+  return row.isProp ? [...new Set(list)] : [...new Set(list.filter((n) => n !== 'fanduel'))];
 }
 
 /**
@@ -78,6 +84,10 @@ export function liveSharpMissing(cfg, row) {
   if (!need?.length) return null;
   return sharpPresent(cfg, row, need).length ? null : need;
 }
+
+/** Live timing limit for a row in seconds: liveMaxAgeSec, or livePropMaxAgeSec for player props. null = off. */
+export const liveAgeLimit = (cfg, row) => (row.isProp && cfg.sharp.livePropMaxAgeSec !== undefined
+  ? cfg.sharp.livePropMaxAgeSec : cfg.sharp.liveMaxAgeSec);
 
 /** Which books' prices the live timing rule watches for a row. */
 const watched = (cfg, row) => (row.isProp ? cfg.sharp.livePropNeeds : cfg.sharp.liveMainlineNeeds);
