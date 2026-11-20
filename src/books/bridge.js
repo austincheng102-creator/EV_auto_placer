@@ -26,6 +26,7 @@ export function startBridge(port, { reloadExtension = false, quiet = false } = {
     ws.on('message', (buf) => {
       let m; try { m = JSON.parse(buf); } catch { return; }
       if (m.type === 'tabs') { tabs = m.tabs; return; }
+      if (m.type === 'reloaded') { log.warn(`Chrome extension reloaded the ${m.book} tab: ${m.why}`); return; }
       const p = pending.get(m.id);
       if (p) { pending.delete(m.id); clearTimeout(p.t); p.resolve(m); }
     });
@@ -37,6 +38,8 @@ export function startBridge(port, { reloadExtension = false, quiet = false } = {
     close: () => new Promise((r) => { for (const c of wss.clients) c.terminate(); wss.close(() => r()); }),
     connected: () => !!sock,
     hasTab: (book) => tabs.some((t) => t.book === book),
+    /** Tell the extension something without waiting for a reply (alerts, tab reloads). */
+    tell(msg) { if (sock?.readyState === 1) sock.send(JSON.stringify(msg)); },
     /** Run fetch() inside the book's tab. request = {url, method, headers, body, storageHeaders} */
     send(book, request, timeoutMs = 15000) {
       if (!sock) return Promise.reject(new Error('Chrome extension not connected'));
