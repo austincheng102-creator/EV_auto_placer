@@ -7,6 +7,13 @@
   "minOdds": -300,
   "maxOdds": 250,
   "maxEvPct": 25,
+  "freshJump": {
+    "books": [
+      "hardrock"
+    ],
+    "sec": 3,
+    "evPts": 3
+  },
   "pregameMaxHours": 12,
   "group": {
     "maxBets": 1,

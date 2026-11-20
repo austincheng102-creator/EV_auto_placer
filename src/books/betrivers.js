@@ -52,6 +52,34 @@ export function settledCoupon(c) {
   };
 }
 
+// Every error type in a Kambi FAIL reply (generalErrors, couponRowErrors, betErrors), e.g.
+// "ODDS_CHANGED, INVALID_BET". Seen live: ACCOUNT_BLOCKED, ODDS_CHANGED, NOT_BETTABLE.
+const kambiErrors = (j) => [
+  ...(j?.generalErrors || []),
+  ...(j?.couponRowErrors || []).flatMap((r) => r.errors || []),
+  ...(j?.betErrors || []).flatMap((b) => b.errors || []),
+];
+export const kambiWhy = (j) => [...new Set(kambiErrors(j).map((e) => e.type).filter(Boolean))].join(', ');
+
+// Marks a Kambi rejection the way the engine understands it:
+//  - ODDS_CHANGED: the price moved. Kambi says the new price (decimal x 1000), so the engine
+//    checks EV again at that price and tries once more; otherwise it re-checks next scan.
+//  - NOT_BETTABLE: the market is closed or suspended right now.
+// Anything else (ACCOUNT_BLOCKED included) stays a plain "place failed".
+export function classify(err, j, quote) {
+  const errs = kambiErrors(j);
+  const moved = errs.find((e) => e.type === 'ODDS_CHANGED');
+  if (moved) {
+    err.priceMoved = true;
+    const k = Number((moved.arguments || []).find((a) => a.type === 'ODDS')?.value);
+    if (Number.isFinite(k) && k > 1000 && k !== quote?.kambiOdds) {
+      err.newOdds = kambiToAmerican(k);
+      err.newQuote = { kambiOdds: k };
+    }
+  } else if (errs.some((e) => e.type === 'NOT_BETTABLE')) err.gone = true;
+  return err;
+}
+
 export function makeBetRivers(name, label, cfg, bridge) {
   const k = kambiSettings(cfg);
   const qs = (extra = '') => `lang=en_US&market=${k.market}&client_id=${k.clientId}&channel_id=1${extra}`;
@@ -195,9 +223,9 @@ export function makeBetRivers(name, label, cfg, bridge) {
         { couponRows: rows, bets, isUserLoggedIn: true });
       if (v.status === 401 || v.json?.validSession === false) throw new Error('BetRivers didn\'t accept the login token: click any odds in the BetRivers tab once, then remove it from the slip');
       if (v.status >= 400 || (v.json?.status && v.json.status !== 'SUCCESS')) {
-        const err = new Error(`validate: ${JSON.stringify(v.json || v.text).slice(0, 200)}`);
+        const err = new Error(`validate: ${kambiWhy(v.json) || JSON.stringify(v.json || v.text).slice(0, 200)}`);
         err.detail = `Kambi validate response (HTTP ${v.status}): ${JSON.stringify(v.json ?? v.text)}`;
-        throw err;
+        throw classify(err, v.json, quote);
       }
 
       const requestId = crypto.randomUUID();
@@ -216,22 +244,28 @@ export function makeBetRivers(name, label, cfg, bridge) {
       const j = res.json || {};
       const ref = j.couponRef ?? j.coupon?.couponRef;
       if (!ref || !['SUCCESS', 'LIVE_DELAY_PENDING'].includes(j.status)) {
-        const err = new Error(`rejected: ${j.status || `HTTP ${res.status}`} ${JSON.stringify(j.generalErrors || j.couponRowErrors || j.betErrors || j).slice(0, 200)}`);
+        const err = new Error(`rejected: ${j.status || `HTTP ${res.status}`} ${kambiWhy(j) || JSON.stringify(j.generalErrors || j.couponRowErrors || j.betErrors || j).slice(0, 200)}`);
         err.detail = `Kambi coupon response (HTTP ${res.status}): ${JSON.stringify(res.json ?? res.text)}`;
-        throw err;
+        throw classify(err, j, quote);
       }
-      let status = j.coupon?.bets?.[0]?.betStatus;
+      let status = j.coupon?.bets?.[0]?.betStatus, last = null;
 
       // Live bets wait out Kambi's delay; poll until accepted or rejected (max ~20s).
       if (j.status === 'LIVE_DELAY_PENDING') {
         await new Promise((r) => setTimeout(r, ((j.delayBeforeAcceptingBet || 1) * 1000) + 300));
         for (let i = 0; i < 20 && (!status || status === 'WAITING_FOR_APPROVAL'); i++) {
           const h = await inTab('status', `${k.authHost}/player/api/v2019/${k.offering}/coupon/history/${ref}.json?${qs('&liveDelayPoll=true')}`);
+          last = h;
           status = (Array.isArray(h.json) ? h.json[0] : h.json)?.bets?.[0]?.betStatus || status;
           if (status === 'WAITING_FOR_APPROVAL') await new Promise((r) => setTimeout(r, 1000));
         }
       }
-      if (status !== 'OPEN') throw new Error(`not accepted (coupon ${ref}, status ${status || 'unknown'})`);
+      if (status !== 'OPEN') {
+        // Kept in debug.log: until now this one left no trace of what BetRivers said.
+        const err = new Error(`not accepted (coupon ${ref}, status ${status || 'unknown'})`);
+        err.detail = `Kambi coupon response: ${JSON.stringify(j)}; last status check (HTTP ${last?.status ?? '-'}): ${JSON.stringify(last?.json ?? last?.text ?? null)}`;
+        throw err;
+      }
       // Kambi odds are decimal x 1000 (e.g. 2150 = +115).
       const ko = Number(j.coupon?.couponRows?.[0]?.odds ?? j.coupon?.bets?.[0]?.odds);
       return { betId: `coupon:${ref}`, confirmedOdds: Number.isFinite(ko) && ko > 1000 ? decimalToAmerican(ko / 1000) : null,
