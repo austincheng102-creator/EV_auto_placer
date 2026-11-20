@@ -72,6 +72,7 @@ setting in `config.json`; one that isn't there gets the default below, and `null
 | Favorites: nothing shorter than -300 (-300 itself is fine) | -300 | `"minOdds"` or `--min-odds -250` |
 | Underdogs: nothing longer than +250 | +250 | `"maxOdds"` (above) |
 | Nothing above 25% EV | 25 | `"maxEvPct"` or `--max-ev 20` |
+| Hard Rock: skip when its price changed under 3s before the scan and shows 3+ points more EV than Gambit's copy (the game likely moved before the sharp prices caught up) | 3s, 3 pts | `"freshJump": {"books", "sec", "evPts"}`, `false` turns it off |
 | Sharp books' no-vig win probabilities within 3 points of each other (Pinnacle, Kalshi, Polymarket, Novig; not FanDuel) | 3 | `"sharp": {"maxSpreadPts", "spreadBooks"}` |
 | Live mainlines need Pinnacle, Kalshi, Polymarket or Novig listed | | `"sharp": {"liveMainlineNeeds"}` |
 | Live player props need FanDuel listed | | `"sharp": {"livePropNeeds"}` |

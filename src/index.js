@@ -294,7 +294,29 @@ async function tryBet(row, ctx) {
     lg.warn(`${BOOK_LABELS[row.book]}: line moved (Gambit priced ${row.line}, ${book.label} line is now ${quote.line}) — skipped, nothing placed`);
     return false;
   }
+  // Price that only just jumped our way (Austin, 2026-11-20): when the book changed its price under
+  // freshJump.sec before our scan and the real price shows freshJump.evPts+ more EV than Gambit's copy
+  // of it, the jump is likely the game moving before the sharp prices behind "fair" caught up.
+  const fj = freshJump(row, quote, ctx);
+  if (fj) {
+    ctx.outcome = 'fresh jump';
+    lg.warn(`${book.label}: price jumped to ${fmtAmerican(quote.odds)} ${fj.sec.toFixed(1)}s ago (${fmtPct(fj.ev)} EV vs ${fmtPct(fj.gambitEv)} at Gambit's ${fmtAmerican(row.gambitOdds ?? row.odds)}), fair price may not have caught up — skipped, nothing placed`);
+    return false;
+  }
   return placeAt(row, book, quote, ctx);
+}
+
+// Config "freshJump": { books, sec, evPts }; false turns it off. Defaults: Hard Rock, 3s, 3 points.
+function freshJump(row, quote, ctx) {
+  const f = cfg.freshJump === false ? null : { books: ['hardrock'], sec: 3, evPts: 3, ...(cfg.freshJump || {}) };
+  if (!f || !f.books.includes(row.book)) return null;
+  const at = Date.parse(quote.changedAt);
+  if (!Number.isFinite(at)) return null;
+  const sec = ((ctx.scanAt ?? Date.now()) - at) / 1000;
+  const gambitEv = row.gambitEv ?? row.ev;
+  const ev = evPct(quote.odds, row.fairOdds);
+  if (sec >= f.sec || !Number.isFinite(gambitEv) || ev - gambitEv < f.evPts) return null;
+  return { sec: Math.max(0, sec), ev, gambitEv };
 }
 
 // EV, Novig, stake limits, then place. If the book says the price changed and tells us the new
