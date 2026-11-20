@@ -170,6 +170,9 @@ the edge is real; that's the standard check, and it doesn't need hundreds of res
 - **Profit and loss**: running total of settled bets, next to the expected profit (stake x EV of
   every bet). Over many bets the two should track each other; a short gap is normal luck.
 - **Bets placed per day**, split by book.
+- **Calendar**: each day shows the settled profit (green up, red down) and how many bets were
+  placed, plus the best and worst day. Click a day to show only that day's bets in the tiles,
+  chart and table; **Show all days** goes back. Use the arrows to see earlier months.
 - Tiles: bets and $ staked, settled profit and ROI, expected profit, average CLV, bets still waiting.
 - **All books** is the default view; click **Hard Rock Bet** or **BetRivers** to see one book.
   Also 30 days / 7 days.
