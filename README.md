@@ -121,13 +121,6 @@ all the rules above), and nothing is placed at a price that didn't pass.
 - `prices.csv` next to the app gets a line for each check: Gambit's price, how long Gambit had shown
   it, the book's real price and EV, how long ago BetRivers last changed that price, and what happened. This shows how far behind Gambit is.
 
-## The app window
-Each scan prints one short line: `[19:32:21]  [SCAN] no bets | 1504 rows | BR 31 live (11 moved) |
-HR 22 live (15 moved) | closest: HR Over 224.5 +120 +7.80%`. Bets, re-checks and warnings print
-as their own lines. The full scan breakdown (skip reasons per rule) goes to debug.log every 30
-seconds. In config.json, `"verboseScan": true` prints the full breakdown on every scan instead,
-and `"scanInPlace": true` keeps a single status line that each scan rewrites.
-
 ## Novig has to agree (on by default)
 A bet is only placed when Novig's price also shows it at **2% EV or more**, on top of Gambit's
 `minEvPct`. It's checked twice: when scanning Gambit's rows, and again at the live price after the
