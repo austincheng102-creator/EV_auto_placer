@@ -76,6 +76,7 @@ setting in `config.json`; one that isn't there gets the default below, and `null
 | Live mainlines need Pinnacle, Kalshi, Polymarket or Novig listed | | `"sharp": {"liveMainlineNeeds"}` |
 | Live player props need FanDuel listed | | `"sharp": {"livePropNeeds"}` |
 | Live: a sharp price changed within the last 5 seconds | 5 | `"sharp": {"liveMaxAgeSec"}` |
+| Live player props: FanDuel's price changed within the last 30 seconds | 30 | `"sharp": {"livePropMaxAgeSec"}` |
 | Same game + market + period + side = one group: one bet, $1 total | 1 bet, $1 | `"group": {"maxBets", "maxStake"}` |
 
 - **Sharp agreement:** each sharp book with both sides listed is de-vigged on its own (Pinnacle comes

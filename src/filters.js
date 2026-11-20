@@ -4,7 +4,7 @@
 //  - sharp books must agree: their no-vig win probabilities within 3 points of each other
 //    (Pinnacle, Kalshi, Polymarket, Novig; FanDuel left out since 2026-11-19, sharp.spreadBooks)
 //  - live mainlines need Pinnacle, Kalshi, Polymarket or Novig listed; live props need FanDuel
-//  - live timing: a sharp price for the selection changed within the last 5 seconds
+//  - live timing: a sharp price for the selection changed within the last 5 seconds (30 for props)
 //  - groups: same game + market (period is part of the market) + side share one bet and $1
 import { impliedProb } from './ev.js';
 
@@ -24,6 +24,8 @@ export function applyFilterDefaults(cfg) {
   // knocking them out. Add "fanduel" here to compare it again on props.
   if (s.spreadBooks === undefined) s.spreadBooks = ['pinnacle', 'kalshi', 'polymarket', 'novig'];
   if (s.liveMaxAgeSec === undefined) s.liveMaxAgeSec = 5;
+  // Live props: FanDuel's prop prices update slowly in Gambit's feed, so props get 30s.
+  if (s.livePropMaxAgeSec === undefined) s.livePropMaxAgeSec = 30;
   const g = (cfg.group ||= {});
   if (g.maxBets === undefined) g.maxBets = 1;
   if (g.maxStake === undefined) g.maxStake = 1;
@@ -82,6 +84,10 @@ export function liveSharpMissing(cfg, row) {
   if (!need?.length) return null;
   return sharpPresent(cfg, row, need).length ? null : need;
 }
+
+/** Live timing limit for a row in seconds: liveMaxAgeSec, or livePropMaxAgeSec for player props. null = off. */
+export const liveAgeLimit = (cfg, row) => (row.isProp && cfg.sharp.livePropMaxAgeSec !== undefined
+  ? cfg.sharp.livePropMaxAgeSec : cfg.sharp.liveMaxAgeSec);
 
 /** Which books' prices the live timing rule watches for a row. */
 const watched = (cfg, row) => (row.isProp ? cfg.sharp.livePropNeeds : cfg.sharp.liveMainlineNeeds);
