@@ -135,6 +135,29 @@ td.what { white-space: normal; min-width: 220px; }
 .pos { color: var(--good); } .neg { color: var(--bad); }
 select { font: inherit; font-size: 12px; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 3px 4px; }
 .note { color: var(--text-2); font-size: 12px; }
+.cal-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.cal-nav { display: inline-flex; align-items: center; gap: 6px; }
+.cal-nav button, .daychip button { border: 1px solid var(--border); background: var(--surface); color: var(--text); font: inherit; border-radius: 7px; padding: 3px 10px; cursor: pointer; }
+.cal-nav button:disabled { opacity: .4; cursor: default; }
+.cal-nav .m { min-width: 120px; text-align: center; font-weight: 600; }
+.cal-best { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--text-2); font-size: 12px; margin: 2px 0 8px; }
+.cal-best button { border: 0; background: none; padding: 0; font: inherit; color: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; margin-bottom: 10px; }
+.cal .wd { color: var(--text-3); font-size: 11px; text-align: center; padding-bottom: 2px; }
+.cal .day { min-height: 64px; border: 1px solid var(--border); border-radius: 8px; padding: 4px 6px; background: var(--surface); color: var(--text); font: inherit; text-align: left; display: flex; flex-direction: column; gap: 1px; font-variant-numeric: tabular-nums; }
+.cal .day.out { visibility: hidden; }
+.cal .day.none { color: var(--text-3); background: transparent; }
+.cal .day.has { cursor: pointer; }
+.cal .day.has:hover { border-color: var(--text-3); }
+.cal .day.sel { outline: 2px solid var(--text); outline-offset: -1px; }
+.cal .day.today .d { font-weight: 700; text-decoration: underline; }
+.cal .d { font-size: 11px; color: var(--text-2); }
+.cal .p { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cal .c { font-size: 11px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.daychip { display: none; align-items: center; gap: 8px; background: var(--chip); border-radius: 9px; padding: 4px 4px 4px 12px; font-size: 13px; }
+.daychip.on { display: inline-flex; }
+.cal .short { display: none; }
+@media (max-width: 520px) { .cal .day { min-height: 52px; padding: 3px 4px; } .cal .p { font-size: 11px; } .cal .c { font-size: 10px; } .cal .long { display: none; } .cal .short { display: block; } }
 .pill { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 10px; background: var(--chip); color: var(--text-2); }
 </style>
 </head>
@@ -145,8 +168,18 @@ select { font: inherit; font-size: 12px; background: var(--surface); color: var(
   <div class="controls">
     <div class="seg" id="bookSeg" role="group" aria-label="Book"></div>
     <div class="seg" id="rangeSeg" role="group" aria-label="Time range"></div>
+    <div class="daychip" id="dayChip"><span id="dayChipText"></span><button type="button" id="dayClear">Show all days</button></div>
   </div>
   <div class="tiles" id="tiles"></div>
+  <section class="card" id="calCard">
+    <div class="cal-head">
+      <h2>Calendar</h2>
+      <div class="cal-nav"><button type="button" id="calPrev" aria-label="Previous month">‹</button><span class="m" id="calMonth"></span><button type="button" id="calNext" aria-label="Next month">›</button></div>
+    </div>
+    <p class="desc">Profit from settled bets on the day they were placed. Click a day to see only that day's bets.</p>
+    <div class="cal-best" id="calBest"></div>
+    <div class="cal" id="cal"></div>
+  </section>
   <section class="card" id="pnlCard">
     <h2>Profit and loss</h2>
     <p class="desc">Running total by when each bet was placed. Actual counts bets with a result; expected is stake × EV for every bet.</p>
@@ -171,8 +204,10 @@ let DATA = __DATA__;
 const LIVE = __LIVE__;
 const NS = 'http://www.w3.org/2000/svg';
 const state = { book: 'all', range: 'all' };
-try { Object.assign(state, JSON.parse(localStorage.getItem('evp-view') || '{}')); } catch {}
-const saveView = () => { try { localStorage.setItem('evp-view', JSON.stringify(state)); } catch {} };
+try { const v = JSON.parse(localStorage.getItem('evp-view') || '{}'); state.book = v.book || 'all'; state.range = v.range || 'all'; } catch {}
+const saveView = () => { try { localStorage.setItem('evp-view', JSON.stringify({ book: state.book, range: state.range })); } catch {} };
+// Calendar: the day picked (YYYY-MM-DD, or null for all days) and the month shown (YYYY-MM).
+state.day = null; state.month = null;
 
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const colorOf = (b) => b === 'all' ? 'var(--all)' : b === 'hardrock' ? 'var(--hardrock)' : b === 'betrivers' ? 'var(--betrivers)' : 'var(--other)';
@@ -186,9 +221,87 @@ const dayLabel = (k) => new Date(k + 'T12:00:00').toLocaleDateString(undefined, 
 const when = (t) => new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
 function booksPresent() { return [...new Set(DATA.bets.map((b) => b.book))].sort((a, b) => (a === 'hardrock' ? -1 : b === 'hardrock' ? 1 : a.localeCompare(b))); }
-function filtered(book = state.book) {
-  const cut = state.range === 'all' ? 0 : Date.now() - Number(state.range) * 864e5;
-  return DATA.bets.filter((b) => (book === 'all' || b.book === book) && Date.parse(b.placedAt) >= cut);
+// A picked day wins over the time range.
+function filtered(book = state.book, { day = state.day, range = !day } = {}) {
+  const cut = !range || state.range === 'all' ? 0 : Date.now() - Number(state.range) * 864e5;
+  return DATA.bets.filter((b) => (book === 'all' || b.book === book) && Date.parse(b.placedAt) >= cut && (!day || dayKey(b.placedAt) === day));
+}
+
+function pickDay(k) {
+  state.day = state.day === k ? null : k;
+  if (state.day) state.month = k.slice(0, 7);
+  render();
+  if (state.day) document.getElementById('tiles').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function calendar() {
+  // All of the book's bets, whatever the time range, so every month can be browsed.
+  const list = filtered(state.book, { day: null, range: false });
+  const by = {};
+  for (const b of list) {
+    const d = by[dayKey(b.placedAt)] ||= { n: 0, settled: 0, pnl: 0, stake: 0, expected: 0 };
+    d.n++; d.stake += b.stake || 0; d.expected += b.expected || 0;
+    if (b.profit != null) { d.settled++; d.pnl += b.profit; }
+  }
+  const today = dayKey(Date.now()), thisMonth = today.slice(0, 7);
+  const months = Object.keys(by).map((k) => k.slice(0, 7)).concat(thisMonth).sort();
+  const firstMonth = months[0];
+  if (!state.month || state.month < firstMonth || state.month > thisMonth) state.month = state.day ? state.day.slice(0, 7) : thisMonth;
+  const [y, mo] = state.month.split('-').map(Number);
+  document.getElementById('calMonth').textContent = new Date(y, mo - 1, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  const step = (n) => { const d = new Date(y, mo - 1 + n, 1); state.month = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); calendar(); };
+  const prev = document.getElementById('calPrev'), next = document.getElementById('calNext');
+  prev.disabled = state.month <= firstMonth; next.disabled = state.month >= thisMonth;
+  prev.onclick = () => step(-1); next.onclick = () => step(1);
+
+  // Best and worst days, over all time for this book.
+  const settledDays = Object.entries(by).filter(([, d]) => d.settled);
+  const best = document.getElementById('calBest');
+  best.replaceChildren();
+  if (settledDays.length) {
+    const top = settledDays.reduce((a, b) => (b[1].pnl > a[1].pnl ? b : a));
+    const low = settledDays.reduce((a, b) => (b[1].pnl < a[1].pnl ? b : a));
+    const up = settledDays.filter(([, d]) => d.pnl > 0).length;
+    const item = (text, k, d) => {
+      const s = document.createElement('span'); s.append(text + ': ');
+      const btn = document.createElement('button'); btn.type = 'button';
+      btn.textContent = new Date(k + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) + ' ' + money(d.pnl, true);
+      btn.className = cls(d.pnl); btn.onclick = () => pickDay(k);
+      s.append(btn); return s;
+    };
+    best.append(item('Best day', top[0], top[1]));
+    if (low[0] !== top[0]) best.append(item('Worst day', low[0], low[1]));
+    const s = document.createElement('span'); s.textContent = up + ' of ' + settledDays.length + ' days with results were up'; best.append(s);
+  }
+
+  // Month grid, weeks starting Sunday; cell color strength follows the day's profit.
+  const maxAbs = Math.max(1e-9, ...Object.values(by).map((d) => Math.abs(d.pnl)));
+  const cells = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((w) => { const d = document.createElement('div'); d.className = 'wd'; d.textContent = w; return d; });
+  const lead = new Date(y, mo - 1, 1).getDay(), nDays = new Date(y, mo, 0).getDate();
+  for (let i = 0; i < lead; i++) { const d = document.createElement('div'); d.className = 'day out'; cells.push(d); }
+  for (let day = 1; day <= nDays; day++) {
+    const k = state.month + '-' + String(day).padStart(2, '0'), d = by[k];
+    const c = document.createElement(d ? 'button' : 'div');
+    c.className = 'day ' + (d ? 'has' : 'none') + (k === state.day ? ' sel' : '') + (k === today ? ' today' : '');
+    const add = (cl, t) => { const s = document.createElement('span'); s.className = cl; s.textContent = t; c.append(s); return s; };
+    add('d', String(day));
+    if (d) {
+      c.type = 'button';
+      c.onclick = () => pickDay(k);
+      if (d.settled) {
+        // Whole dollars on a phone, where cells are narrow.
+        const short = (d.pnl > 0 ? '+' : d.pnl < 0 ? '−' : '') + '$' + (Math.abs(d.pnl) < 0.995 ? Math.abs(d.pnl).toFixed(2).slice(1) : Math.round(Math.abs(d.pnl)));
+        add('p long ' + cls(d.pnl), money(d.pnl, true)); add('p short ' + cls(d.pnl), short);
+        const a = Math.round(8 + 30 * Math.abs(d.pnl) / maxAbs);
+        if (d.pnl) c.style.background = 'color-mix(in srgb, var(' + (d.pnl > 0 ? '--good' : '--bad') + ') ' + a + '%, var(--surface))';
+      } else add('p', '—');
+      add('c long', d.n + ' bet' + (d.n === 1 ? '' : 's') + (d.n > d.settled ? ' · ' + (d.n - d.settled) + ' open' : ''));
+      add('c short', d.n + ' bet' + (d.n === 1 ? '' : 's'));
+      c.title = d.n + ' bets, $' + d.stake.toFixed(2) + ' staked, expected ' + money(d.expected, true) + (d.settled ? ', settled P&L ' + money(d.pnl, true) : ', no results yet');
+    }
+    cells.push(c);
+  }
+  document.getElementById('cal').replaceChildren(...cells);
 }
 
 function seg(el, items, cur, on) {
@@ -434,10 +547,16 @@ function render() {
   const books = booksPresent();
   if (state.book !== 'all' && !books.includes(state.book)) state.book = 'all';
   seg(document.getElementById('bookSeg'), [['all', 'All books (' + filtered('all').length + ')', null], ...books.map((b) => [b, label(b) + ' (' + filtered(b).length + ')', colorOf(b)])], state.book, (v) => { state.book = v; saveView(); render(); });
-  seg(document.getElementById('rangeSeg'), [['all', 'All time'], ['30', '30 days'], ['7', '7 days']], state.range, (v) => { state.range = v; saveView(); render(); });
+  seg(document.getElementById('rangeSeg'), [['all', 'All time'], ['30', '30 days'], ['7', '7 days']], state.day ? null : state.range, (v) => { state.range = v; state.day = null; saveView(); render(); });
+  const chip = document.getElementById('dayChip');
+  chip.classList.toggle('on', !!state.day);
+  if (state.day) document.getElementById('dayChipText').textContent = 'Showing ' + new Date(state.day + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+  document.getElementById('dayClear').onclick = () => { state.day = null; render(); };
   document.getElementById('sub').textContent = (DATA.dryRun ? 'Demo bets (dry run). ' : '') + 'Updated ' + when(DATA.generatedAt) + ' · ' + DATA.bets.length + ' bets in the log';
   const list = filtered();
-  tiles(list); pnlChart(list); countChart(list); table(list);
+  // Bets per day says nothing new once one day is picked.
+  document.getElementById('countCard').hidden = !!state.day;
+  calendar(); tiles(list); pnlChart(list); countChart(list); table(list);
 }
 render();
 let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(render, 150); });
