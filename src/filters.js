@@ -9,7 +9,7 @@
 //    Both sides count as one group (Over and Under, either team's spread), unless group.bothSides is true.
 //    Player props: per player, so Over/Under on one player's stat are one group.
 //    group.perBook (default on): each book gets its own maxBets/maxStake in the group, so the same side
-//    can go on BetRivers and Hard Rock once each, but never the other side on another book.
+//    can go on BetRivers and Hard Rock once each. The other side waits out the cooldown (group.otherSide).
 //    group.cooldownSec (default 60): a repeat bet in the same group (same book with perBook) waits this
 //    long after the last one, and must still pass every rule. Different markets in one game don't wait.
 import { impliedProb } from './ev.js';
@@ -38,6 +38,9 @@ export function applyFilterDefaults(cfg) {
   if (g.bothSides === undefined) g.bothSides = false;
   if (g.perBook === undefined) g.perBook = true;
   if (g.cooldownSec === undefined) g.cooldownSec = 60;
+  // The opposite side (Under after an Over, the other team): "afterCooldown" (default) lets it go once the
+  // group's last bet, on any book, is cooldownSec old and it passes every rule; "block" = never that game.
+  if (g.otherSide === undefined) g.otherSide = 'afterCooldown';
   bothSides = !!g.bothSides;
   return cfg;
 }
@@ -204,7 +207,7 @@ export function groupTotals(placed, now = Date.now()) {
  */
 export function groupRoom(cfg, totals, row, now = Date.now()) {
   const all = totals.get(groupKey(row));
-  if (cfg.group.perBook && all && [...all.sides].some((s) => s !== sideOf(row))) return null;
+  if (otherSideBlocked(cfg, all, row, now)) return null;
   const g = (cfg.group.perBook ? all?.byBook.get(row.book) : all) || { bets: 0, staked: 0, lastAt: 0 };
   if (cfg.group.maxBets != null && g.bets >= cfg.group.maxBets) return null;
   if (groupWaitSec(cfg, g, now) > 0) return null;
@@ -223,7 +226,17 @@ export function groupWaitSec(cfg, g, now = Date.now()) {
 export function groupCoolingDown(cfg, totals, row, now = Date.now()) {
   const all = totals.get(groupKey(row));
   const g = cfg.group.perBook ? all?.byBook.get(row.book) : all;
-  return groupWaitSec(cfg, g, now) > 0;
+  if (groupWaitSec(cfg, g, now) > 0) return true;
+  return hasOtherSide(cfg, all, row) && cfg.group.otherSide !== 'block' && groupWaitSec(cfg, all, now) > 0;
+}
+
+const hasOtherSide = (cfg, all, row) => cfg.group.perBook && !!all && [...all.sides].some((s) => s !== sideOf(row));
+
+/** Opposite side of a bet already in the group: blocked for good with otherSide "block", else until the cooldown ends. */
+function otherSideBlocked(cfg, all, row, now) {
+  if (!hasOtherSide(cfg, all, row)) return false;
+  if (cfg.group.otherSide === 'block' || !Number(cfg.group.cooldownSec)) return true;
+  return groupWaitSec(cfg, all, now) > 0;
 }
 
 /** Two bets that can't run side by side: same group, and (per book) same book or opposite sides. */
