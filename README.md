@@ -78,7 +78,7 @@ setting in `config.json`; one that isn't there gets the default below, and `null
 | Live player props need FanDuel listed | | `"sharp": {"livePropNeeds"}` |
 | Live: a sharp price changed within the last 5 seconds | 5 | `"sharp": {"liveMaxAgeSec"}` |
 | Live player props: FanDuel's price changed within the last 30 seconds | 30 | `"sharp": {"livePropMaxAgeSec"}` |
-| Same game + market + period + side = one group: up to 3 bets, $3 total | 3 bets, $3 | `"group": {"maxBets", "maxStake"}` |
+| Same game + market + period = one group (both sides): one bet, $1 total | 1 bet, $1 | `"group": {"maxBets", "maxStake", "bothSides"}` |
 
 - **Sharp agreement:** each sharp book with both sides listed is de-vigged on its own (Pinnacle comes
   through Gambit as PS3838). For player props FanDuel counts as a sharp book too. If fewer than two
@@ -87,10 +87,12 @@ setting in `config.json`; one that isn't there gets the default below, and `null
   prices itself from poll to poll. A change is dated to the previous poll (the earliest it could have
   happened), so while this rule is on the app polls every 3 seconds. A live selection seen for the
   first time has no known age and waits for its next move.
-- **Groups:** the line and the book don't matter (Over 220.5 and Over 221.5 on the full-game total are one
-  group). The period is part of the market (1H Moneyline is its own group). Bets from the last 24 hours count.
-  The same side can be bet again, on the same book too, up to `maxBets`, with at most one bet per group per
-  scan, and each bet is still checked at the book's real price first. `maxBetsPerEvent` still caps the whole game.
+- **Groups:** the line, the book and the side don't matter (Over 214.5 and Under 212.5 on the full-game total
+  are one group, so are Bowling Green +19.5 and Toledo -23.5). The period is part of the market (1H Moneyline is
+  its own group). Player props group per player and stat (Trae Young assists Over/Under). Bets from the last
+  24 hours count. `"bothSides": true` makes each side its own group again. With `maxBets` above 1 the group
+  can be bet again, at most once per scan, and each bet is still checked at the book's real price first.
+  `maxBetsPerEvent` still caps the whole game.
 - The `[SCAN]` line says how many rows each rule skipped.
 - Not done yet: no bets in the last 2 minutes of a game. Gambit's feed has no game clock.
 

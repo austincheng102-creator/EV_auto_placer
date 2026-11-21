@@ -347,7 +347,7 @@ async function placeAt(row, book, quote, ctx, retried = false) {
     lg.bet(`Novig OK: ${fmtAmerican(quote.odds)} vs Novig ${fmtNovig(nc.nv)} -> ${fmtPct(nc.ev)} EV`);
   }
 
-  // Same game + market + side as earlier bets share the group's bet count and $ cap.
+  // Same game + market (both sides, unless group.bothSides) as earlier bets share the group's bet count and $ cap.
   const room = groupRoom(cfg, groupTotals(state.placed), row);
   if (room == null) { ctx.outcome = 'group full'; lg.warn(`group full: ${cfg.group.maxBets ?? 'any'} bets / $${cfg.group.maxStake ?? 'any'} already on (${row.event}, ${row.market}, ${row.selection}) — skipped`); return false; }
   const stake = Math.floor(Math.min(stakeFor(quote), room) * 100) / 100;

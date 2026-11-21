@@ -5,7 +5,9 @@
 //    (Pinnacle, Kalshi, Polymarket, Novig; FanDuel left out since 2026-11-19, sharp.spreadBooks)
 //  - live mainlines need Pinnacle, Kalshi, Polymarket or Novig listed; live props need FanDuel
 //  - live timing: a sharp price for the selection changed within the last 5 seconds (30 for props)
-//  - groups: same game + market (period is part of the market) + side share 3 bets and $3 (was 1 and $1)
+//  - groups: same game + market (period is part of the market) share group.maxBets bets and group.maxStake $.
+//    Both sides count as one group (Over and Under, either team's spread), unless group.bothSides is true.
+//    Player props: per player, so Over/Under on one player's stat are one group.
 import { impliedProb } from './ev.js';
 
 // Gambit sportsbook ids. PS3838 is Pinnacle's feed. Polymarket has two listings.
@@ -27,8 +29,10 @@ export function applyFilterDefaults(cfg) {
   // Live props: FanDuel's prop prices update slowly in Gambit's feed, so props get 30s.
   if (s.livePropMaxAgeSec === undefined) s.livePropMaxAgeSec = 30;
   const g = (cfg.group ||= {});
-  if (g.maxBets === undefined) g.maxBets = 3;
-  if (g.maxStake === undefined) g.maxStake = 3;
+  if (g.maxBets === undefined) g.maxBets = 1;
+  if (g.maxStake === undefined) g.maxStake = 1;
+  if (g.bothSides === undefined) g.bothSides = false;
+  bothSides = !!g.bothSides;
   return cfg;
 }
 
@@ -123,16 +127,24 @@ export function makeSharpClock(cfg) {
   };
 }
 
-/** Group: same game, market (period is part of it, e.g. 1H Moneyline), side. Line and book don't matter. */
+/**
+ * Group: same game and market (period is part of it, e.g. 1H Moneyline). Line and book don't matter.
+ * By default both sides share the group: Over/Under on a total, either team's spread or moneyline,
+ * and Over/Under on one player's prop (the player stays in the key). group.bothSides: true = per side.
+ */
+let bothSides = false;
 const norm = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9+-]/g, '');
-export const groupKey = (r) => `${norm(r.event)}|${norm(r.market)}|${norm(r.selection)}`;
+const SIDE = /\s*\b(over|under|yes|no)$/i;
+// "Over" -> "", "Trae Young Over" -> "Trae Young", a team name (spread/moneyline) -> "".
+const sideless = (sel) => { const s = String(sel ?? '').trim(); return SIDE.test(s) ? s.replace(SIDE, '') : ''; };
+export const groupKey = (r) => `${norm(r.event)}|${norm(r.market)}|${norm(bothSides ? r.selection : sideless(r.selection))}`;
 
 /** What's already been bet in each group over the last day (state.placed entries). */
 export function groupTotals(placed, now = Date.now()) {
   const out = new Map();
   for (const p of placed) {
     if (now - Date.parse(p.at) > 24 * 3600e3) continue;
-    const k = p.group || groupKey(p);
+    const k = p.market != null ? groupKey(p) : p.group;   // recomputed, so older bets follow the current grouping
     const g = out.get(k) || { bets: 0, staked: 0 };
     g.bets++; g.staked += Number(p.stake) || 0;
     out.set(k, g);
