@@ -1,7 +1,7 @@
 // Watches that Gambit and each book are still logged in, keeps the books' sessions active, and
 // raises a loud alert (bell + red banner here, a notification that stays up in Chrome) the
 // moment one isn't. It never stops the app: scanning and betting carry on, and it says so when
-// the login works again. It never types a password.
+// the login works again. It never types a password (Gambit auto login uses the password Chrome fills in).
 //
 // Why sites log out during a run (from Austin's recordings, 2026-11-17 and 2026-11-19):
 //  - Hard Rock's login token lasts 28 minutes. Its page renews it every 10 seconds (keepAlive).
@@ -12,7 +12,9 @@
 //  renewing and the login runs out. The extension now keeps these tabs loaded and reloads a
 //  stalled one; this file sends BetRivers' keepalive itself and checks each login once a minute.
 //
-// config.json "session": { "checkSeconds": 60, "remindMinutes": 2, "reloadTabs": true, "gambitAlertSeconds": 20 }
+// config.json "session": { "checkSeconds": 60, "remindMinutes": 2, "reloadTabs": true, "gambitAlertSeconds": 20, "gambitAutoLogin": true }
+//   gambitAutoLogin: when Gambit is logged out, the extension logs back in with the password saved
+//   in Chrome (Chrome fills it in; the app and extension never see or store it).
 //   checkSeconds 0 turns the checks off.
 
 const LOGIN_RE = /login|logged|log in|token|HTTP 40[13]|session|not seen yet/i;
@@ -22,9 +24,12 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
   const every = Number(s.checkSeconds ?? 60) * 1000;
   const remindMs = Number(s.remindMinutes ?? 2) * 60e3;
   const reloadTabs = s.reloadTabs !== false;
+  const gambitAutoLogin = s.gambitAutoLogin !== false;
+  // Gambit: log back in (the extension reloads the tab first if the page still looks logged in).
+  const fixGambit = (why) => bridge?.tell({ type: 'login', book: 'gambit', why });
   const down = new Map();   // site -> { since, why, remindedAt }
   const label = (site) => (site === 'gambit' ? 'Gambit' : labels[site] || site);
-  const howToFix = (site) => site === 'gambit' ? 'Log in again in the Gambit tab'
+  const howToFix = (site) => site === 'gambit' ? (s.gambitAutoLogin !== false ? 'The extension is logging back in with your Chrome-saved password; if that keeps failing, log in again in the Gambit tab' : 'Log in again in the Gambit tab')
     : site === 'hardrock' ? 'Log in again in the Hard Rock tab, then place one small bet by hand for the location check'
     : `Log in again in the ${label(site)} tab`;
 
@@ -44,11 +49,13 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
       down.set(site, { since: Date.now(), why, remindedAt: Date.now() });
       alarm(site, why);
       // The site may still have you logged in under the hood: a reload lets it renew from its cookies.
-      if (reloadTabs && !needsGeo(why)) bridge?.tell({ type: 'reloadTab', book: site, why: `the app found it logged out (${why})` });
+      if (site === 'gambit' && gambitAutoLogin) fixGambit(`the app found it logged out (${why})`);
+      else if (reloadTabs && !needsGeo(why)) bridge?.tell({ type: 'reloadTab', book: site, why: `the app found it logged out (${why})` });
     } else if (Date.now() - d.remindedAt >= remindMs) {
       d.remindedAt = Date.now(); d.why = why;
       alarm(site, `${why}, for ${Math.round((Date.now() - d.since) / 60e3)} min`);
-      if (reloadTabs && !needsGeo(why)) bridge?.tell({ type: 'reloadTab', book: site, why: 'still logged out' });   // the extension allows one per 5 min
+      if (site === 'gambit' && gambitAutoLogin) fixGambit(`the app found it still logged out (${why})`);
+      else if (reloadTabs && !needsGeo(why)) bridge?.tell({ type: 'reloadTab', book: site, why: 'still logged out' });   // the extension allows one per 5 min
     }
   }
 

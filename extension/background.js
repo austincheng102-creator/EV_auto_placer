@@ -138,6 +138,136 @@ const jwtExp = (tok) => {
   try { return Number(JSON.parse(atob(String(tok).replace(/^Bearer\s+/i, '').split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).exp) || 0; } catch { return 0; }
 };
 
+// ---- Gambit auto login (Chrome's saved password) ----
+// When Gambit's session ends, its tab lands on the home page (/welcome) with a "Login" button.
+// We open that login box and let Chrome's password manager fill it, then press Login.
+// The extension never reads, keeps or sends your password: Chrome fills it and the Gambit page
+// itself sends it, exactly as when you log in by hand.
+// Catch: Chrome hides a filled-in password from page scripts until a real click or key press, so
+// a script's click would log in with an empty password. So the clicks go through Chrome's
+// debugger (chrome.debugger), which Chrome treats as real mouse/keyboard input. While it runs
+// (a few seconds) Chrome shows a bar "EV Placer Bridge started debugging this browser"; it goes
+// away by itself. Off with config.json "session": {"gambitAutoLogin": false}.
+let settings = { gambitAutoLogin: true };
+chrome.storage.local.get('settings').then((v) => { if (v?.settings) settings = { ...settings, ...v.settings }; }).catch(() => {});
+let lastLogin = null;          // { at, ok, why } for the popup
+let loginBusy = false;
+let loginTriedAt = 0;
+let loginFails = 0;            // failed tries in a row: wait longer between them
+const say = (o) => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'login', book: 'gambit', ...o })); };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Runs in the Gambit page. Opens the login box if needed and says where its fields are.
+async function gambitLoginForm(open) {
+  const vis = (el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+  const pw = () => [...document.querySelectorAll('input[type=password]')].find(vis);
+  const loginBtn = () => [...document.querySelectorAll('button, a')].find((b) => vis(b) && /^\s*(log\s?in|sign\s?in)\s*$/i.test(b.textContent || ''));
+  if (!pw()) {
+    const b = loginBtn();
+    if (!b) return { state: 'logged-in' };          // no Login button and no form: nothing to do
+    if (!open) return { state: 'logged-out' };
+    b.click();
+    for (let i = 0; i < 40 && !pw(); i++) await new Promise((r) => setTimeout(r, 250));
+    if (!pw()) return { state: 'no-form' };
+  }
+  const p = pw();
+  const scope = p.form || p.closest('form, [role=dialog]') || document;
+  const user = scope.querySelector('input[name=username], input[type=email], input[autocomplete=username], input[type=text]');
+  const btns = [...scope.querySelectorAll('button')].filter(vis);
+  const submit = btns.find((b) => b.type === 'submit' && /log\s?in|sign\s?in/i.test(b.textContent || '')) || btns.find((b) => b.type === 'submit');
+  p.scrollIntoView({ block: 'center' });
+  const at = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; };
+  const captcha = !!document.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="turnstile"], .cf-turnstile');
+  return { state: 'form', user: at(user), pass: at(p), submit: at(submit), userLen: (user?.value || '').length, passLen: p.value.length, captcha };
+}
+
+const dbgCmd = (target, method, params = {}) => Promise.race([
+  new Promise((res, rej) => chrome.debugger.sendCommand(target, method, params, (r) => (chrome.runtime.lastError ? rej(new Error(chrome.runtime.lastError.message)) : res(r)))),
+  sleep(5000).then(() => { throw new Error(`${method} got no answer`); }),
+]);
+async function realClick(target, p) {
+  await dbgCmd(target, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x, y: p.y });
+  await dbgCmd(target, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: p.x, y: p.y, button: 'left', clickCount: 1 });
+  await dbgCmd(target, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: p.x, y: p.y, button: 'left', clickCount: 1 });
+}
+async function realKey(target, key, code, vk, text) {
+  await dbgCmd(target, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
+  if (text) await dbgCmd(target, 'Input.dispatchKeyEvent', { type: 'char', key, code, text, windowsVirtualKeyCode: vk });
+  await dbgCmd(target, 'Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
+}
+const inPage = async (tabId, open) => (await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: gambitLoginForm, args: [open] }))[0]?.result || { state: 'no-page' };
+
+async function autoLoginGambit(why) {
+  if (!settings.gambitAutoLogin || loginBusy) return;
+  // At most one try every 2 minutes; after 3 failures in a row, every 10 minutes (it keeps trying).
+  const gap = loginFails >= 3 ? 10 * 60e3 : 2 * 60e3;
+  if (Date.now() - loginTriedAt < gap) return;
+  const t = (await bookTabs()).find((x) => x.book === 'gambit' && !/api/.test(new URL(x.url).hostname));
+  if (!t || t.discarded) return;
+  if (!chrome.debugger) return say({ ok: false, why: 'the extension is missing the "debugger" permission: reload it in chrome://extensions' });
+  loginBusy = true;
+  const done = (ok, msg) => {
+    lastLogin = { at: Date.now(), ok, why: msg };
+    loginFails = ok ? 0 : loginFails + 1;
+    say({ ok, why: msg });
+  };
+  const target = { tabId: t.id };
+  let attached = false;
+  try {
+    const first = await inPage(t.id, false);
+    if (first.state === 'logged-in') {
+      // Page looks logged in but Gambit refuses its token: a reload lets it renew or show the login.
+      if (/app found|refused|HTTP 40/.test(why)) reloadTab('gambit', `Gambit refused the login (${why})`);
+      return;
+    }
+    if (first.state === 'no-page') return;
+    loginTriedAt = Date.now();
+    say({ start: true, why });
+    const before = gambitAuth;
+    const f = await inPage(t.id, true);
+    if (f.state !== 'form' || !f.pass) return done(false, f.state === 'no-form' ? 'clicked Login but no login box showed up' : `couldn't find the login box (${f.state})`);
+    if (f.captcha) return done(false, 'Gambit is showing a "are you a robot" check: log in by hand');
+    await new Promise((res, rej) => chrome.debugger.attach(target, '1.3', () => (chrome.runtime.lastError ? rej(new Error(chrome.runtime.lastError.message)) : res())));
+    attached = true;
+    await dbgCmd(target, 'Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
+    // A real click in the password box: Chrome now lets the page see what it filled in.
+    await realClick(target, f.pass);
+    await sleep(500);
+    let g = await inPage(t.id, true);
+    if (!g.passLen && g.user) {
+      // Chrome didn't fill it on its own: click the email box and pick the saved login from Chrome's list.
+      await realClick(target, g.user);
+      await sleep(800);
+      await realKey(target, 'ArrowDown', 'ArrowDown', 40);
+      await sleep(300);
+      await realKey(target, 'Enter', 'Enter', 13, '\r');
+      await sleep(800);
+      g = await inPage(t.id, true);
+    }
+    if (g.state !== 'form') {
+      // Picking the login with Enter can already submit it.
+      if (g.state === 'logged-in') return done(true, 'logged back in to Gambit with Chrome\'s saved password');
+      return done(false, `the login box closed unexpectedly (${g.state})`);
+    }
+    if (!g.passLen || !g.userLen) return done(false, `Chrome didn't fill in the saved ${!g.userLen ? 'email' : 'password'}. Check chrome://password-manager has a login for gambitodds.com`);
+    if (!g.submit) return done(false, 'couldn\'t find the Login button in the login box');
+    await realClick(target, g.submit);
+    // Logged in when the page sends a new token or the login box goes away.
+    for (let i = 0; i < 20; i++) {
+      await sleep(1000);
+      if (gambitAuth !== before && gambitTokenOk(gambitAuth)) return done(true, 'logged back in to Gambit with Chrome\'s saved password');
+      const h = await inPage(t.id, false).catch(() => ({}));
+      if (h.state === 'logged-in') return done(true, 'logged back in to Gambit with Chrome\'s saved password');
+    }
+    done(false, 'pressed Login but Gambit still shows the login box (wrong saved password, or Gambit wants a code)');
+  } catch (e) {
+    done(false, String(e?.message || e).includes('Another debugger') ? 'Chrome DevTools is open on the Gambit tab: close it' : `auto login failed: ${e?.message || e}`);
+  } finally {
+    if (attached) chrome.debugger.detach(target, () => void chrome.runtime.lastError);
+    loginBusy = false;
+  }
+}
+
 let ws = null;
 let status = 'disconnected';
 
@@ -178,6 +308,8 @@ async function reloadTab(book, why) {
   lastReload = { book, why, at: Date.now() };
   chrome.tabs.reload(t.id).catch(() => {});
   if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'reloaded', book, why }));
+  // If the reload lands on Gambit's logged-out home page, log back in with Chrome's saved password.
+  if (book === 'gambit') setTimeout(() => autoLoginGambit('after reloading the Gambit tab').catch(() => {}), 12e3);
   return true;
 }
 
@@ -217,6 +349,8 @@ async function watchLogins() {
   // really logged out, so stop reloading (the app keeps alerting until you log in).
   // Gambit: only once its token has been out for a minute with no new one from the page. Reloading
   // earlier can land while the page is renewing its own login and knock it out.
+  // Gambit's tab sitting on its logged-out home page: log back in.
+  if (settings.gambitAutoLogin && !loginBusy && (await bookTabs()).some((t) => t.book === 'gambit' && /gambitodds\.com\/welcome/.test(t.url || ''))) autoLoginGambit('the Gambit tab is on its logged-out home page').catch(() => {});
   const gExp = jwtExp(gambitAuth);
   if (gExp && now - gExp > 60 && now - gExp < 600) reloadTab('gambit', 'its login token ran out and the page hasn\'t renewed it');
   const fExp = jwtExp(fdAuth.auth);
@@ -378,6 +512,8 @@ function connect() {
     else if (m.type === 'alert') showAlert(m);
     else if (m.type === 'clearAlert') clearAlert(m);
     else if (m.type === 'reloadTab') reloadTab(m.book, m.why || 'the app found it logged out');
+    else if (m.type === 'login' && m.book === 'gambit') autoLoginGambit(m.why || 'the app found it logged out').catch(() => {});
+    else if (m.type === 'settings') { settings = { ...settings, ...m.settings }; chrome.storage.local.set({ settings }).catch(() => {}); }
   };
   ws.onclose = () => { status = 'disconnected'; ws = null; setTimeout(connect, 3000); };
   ws.onerror = () => {};
@@ -390,7 +526,7 @@ chrome.tabs.onRemoved.addListener(sendTabs);
 chrome.runtime.onMessage.addListener((m, _s, respond) => {
   if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth, betriversLogin: !!kambiAuth, hardrockLogin: !!hrAuth.session, hardrockGeo: hrAuth.geoAt || 0,
     fanduelExp: jwtExp(fdAuth.auth), fanduelGeoExp: fdGeoExp(fdAuth.geo),
-    gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, alert: alertText, lastReload })); return true; }
+    gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, alert: alertText, lastReload, lastLogin, autoLogin: settings.gambitAutoLogin })); return true; }
 });
 // Keep the service worker alive while the engine runs.
 chrome.alarms?.create('keepalive', { periodInMinutes: 0.5 });

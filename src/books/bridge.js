@@ -3,7 +3,7 @@
 import { WebSocketServer } from 'ws';
 import { log } from '../log.js';
 
-export function startBridge(port, { reloadExtension = false, quiet = false } = {}) {
+export function startBridge(port, { reloadExtension = false, quiet = false, hello = null } = {}) {
   const wss = new WebSocketServer({ host: '127.0.0.1', port });
   wss.on('error', (e) => log.err(e.code === 'EADDRINUSE' ? `Port ${port} for the Chrome extension is in use: is another ev-placer window open (Show bets checking results lets go within 90s)? Close it and start again` : `Chrome extension link on port ${port} failed: ${e.message}`));
   let sock = null;
@@ -23,10 +23,17 @@ export function startBridge(port, { reloadExtension = false, quiet = false } = {
     }
     sock = ws;
     if (!quiet) log.info('Chrome extension connected');
+    if (hello) ws.send(JSON.stringify(hello));   // settings the extension needs (Gambit auto login on/off)
     ws.on('message', (buf) => {
       let m; try { m = JSON.parse(buf); } catch { return; }
       if (m.type === 'tabs') { tabs = m.tabs; return; }
       if (m.type === 'reloaded') { log.warn(`Chrome extension reloaded the ${m.book} tab: ${m.why}`); return; }
+      if (m.type === 'login') {
+        if (m.start) log.warn(`Logging back in to Gambit with Chrome's saved password (${m.why})`);
+        else if (m.ok) log.good(m.why);
+        else log.warn(`Gambit auto login didn't work: ${m.why}. It tries again in a few minutes; or log in by hand in the Gambit tab`);
+        return;
+      }
       const p = pending.get(m.id);
       if (p) { pending.delete(m.id); clearTimeout(p.t); p.resolve(m); }
     });
