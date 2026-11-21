@@ -138,9 +138,37 @@ async function reloadTab(book, why) {
   return true;
 }
 
+// Hard Rock logs you out after about 30 minutes with no mouse or keyboard use in its tab, even
+// while its page keeps renewing the login (Austin's test, 2026-11-20: clicking around every 10
+// minutes kept it logged in past 50 minutes). So every few minutes we give each site's tab a
+// small, harmless sign of use: the pointer moves and Shift is tapped. Nothing is clicked or typed.
+const NUDGE_MS = 4 * 60e3;
+const NUDGE_BOOKS = ['hardrock', 'gambit'];
+const nudgedAt = {};
+function nudgePage() {
+  const x = 40 + Math.round(Math.random() * 300), y = 40 + Math.round(Math.random() * 200);
+  const targets = [window, document, document.body, document.elementFromPoint(x, y)].filter(Boolean);
+  const mouse = { bubbles: true, cancelable: true, clientX: x, clientY: y, screenX: x, screenY: y + 80, view: window };
+  for (const t of targets) {
+    for (const type of ['pointermove', 'mousemove']) t.dispatchEvent(new (type.startsWith('pointer') ? PointerEvent : MouseEvent)(type, mouse));
+    for (const type of ['keydown', 'keyup']) t.dispatchEvent(new KeyboardEvent(type, { bubbles: true, key: 'Shift', code: 'ShiftLeft', shiftKey: type === 'keydown' }));
+  }
+  window.dispatchEvent(new Event('scroll'));
+  window.dispatchEvent(new Event('focus'));
+  return true;
+}
+async function nudgeTabs() {
+  for (const t of await bookTabs()) {
+    if (!NUDGE_BOOKS.includes(t.book) || t.discarded || Date.now() - (nudgedAt[t.id] || 0) < NUDGE_MS) continue;
+    nudgedAt[t.id] = Date.now();
+    chrome.scripting.executeScript({ target: { tabId: t.id }, world: 'MAIN', func: nudgePage }).catch(() => {});
+  }
+}
+
 // Every 30 seconds: is each site still renewing its own login? If not, its page has stalled.
 async function watchLogins() {
   await keepTabsLoaded();
+  await nudgeTabs();
   const now = Date.now() / 1000;
   // A token that ran out over 10 minutes ago means reloading didn't bring the login back: you're
   // really logged out, so stop reloading (the app keeps alerting until you log in).
