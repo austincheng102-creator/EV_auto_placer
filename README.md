@@ -162,6 +162,10 @@ data is in `bets.json`). Dry runs go to `bets.dry.csv`. Each row has:
   Hard Rock bets are sent with price changes refused, so it can't fill you at a different price.
   If the book doesn't report its price, the column says `not reported` and the raw reply is in
   `debug.log`.
+- **Other books' odds**: every other book Gambit listed for that selection, as `our side/other side`
+  (sharp books first: Pinnacle, Kalshi, Polymarket, Novig, FanDuel), then each sharp book's no-vig
+  win % and how many points apart they were. These are the prices behind the fair odds. Bets placed
+  before this was added have these columns empty.
 - **Fair odds**: the one we used (the lowest of Gambit's four no-vig methods), plus each method
   (Power, Multiplicative, Additive, Shin) and how many books are behind it. If Gambit's page shows a
   higher EV than the log, it's using a different method than the lowest one; find it in those columns.
