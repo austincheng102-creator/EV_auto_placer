@@ -267,12 +267,14 @@ export function makeFanDuel(name, label, cfg, bridge) {
     // Once a minute (session.js): read the balance, like the site does, to tell whether you're
     // still logged in.
     async sessionCheck() {
-      const res = await bridge.send(name, { kind: 'session', url: 'https://api.fanduel.com/account/wallet', method: 'GET',
-        headers: { accept: 'application/json, text/plain, */*', 'x-brand': 'FANDUEL' }, useFanDuelAuth: true, walletAuth: true }, 15000);
-      const bal = (res.json?.wallet_balances || []).find((w) => w.account_type === 'SPORTSBOOK_PLAYABLE_NO_BONUS');
-      if (res.status < 400 && bal) return { ok: true, balance: Number(bal.balance).toFixed(2) };
-      if (authFail(res)) return { ok: false, why: `FanDuel balance check answered HTTP ${res.status}` };
-      throw new Error(`FanDuel balance check HTTP ${res.status}: ${JSON.stringify(res.json || res.text).slice(0, 120)}`);
+      // Once a minute (session.js): read your open bets (one record, read-only, the same list as
+      // My Bets) with the sportsbook login the bets use. Not the balance on api.fanduel.com: that
+      // server answers a refused login with a browser "Sign in" box (seen 2026-11-21).
+      const res = await send('session', `https://api.sportsbook.fanduel.com/my-bets/search-bets?isSettled=false&fromRecord=1&toRecord=1&sortDir=DESC&sortParam=PLACEMENT_DATE&rewardsClubEnabled=false&_ak=${appKey}`,
+        'GET', null, { 'x-sportsbook-region': st.toUpperCase() }, 15000);
+      if (res.status < 400 && Array.isArray(res.json?.bets)) return { ok: true };
+      if (authFail(res)) return { ok: false, why: `FanDuel My Bets check answered HTTP ${res.status}` };
+      throw new Error(`FanDuel login check HTTP ${res.status}: ${JSON.stringify(res.json || res.text).slice(0, 120)}`);
     },
   };
 }
