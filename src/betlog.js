@@ -51,18 +51,24 @@ const MAX_TRACK_MS = 36 * 60 * 60 * 1000;    // give up on a close after this lo
 
 const COLUMNS = [
   ['placedAt', 'placed at (UTC)'], ['betId', 'bet id'], ['book', 'book'], ['gambitBookId', 'Gambit book id'],
+  ['sourceLabel', 'Gambit table'],
   ['league', 'league'], ['event', 'event'], ['live', 'live'], ['startDate', 'game start'],
   ['market', 'market'], ['selection', 'selection'], ['line', 'line'],
   ['gambitOdds', 'Gambit listed odds'], ['sentOdds', 'odds we checked and sent'], ['confirmedOdds', 'book confirmed odds'],
   ['oddsMatch', 'confirmed = sent'], ['fairOdds', 'fair odds used (lowest method)'],
   ['fairPower', 'fair Power'], ['fairMultiplicative', 'fair Multiplicative'], ['fairAdditive', 'fair Additive'], ['fairShin', 'fair Shin'],
   ['fairBooks', 'books behind fair'], ['fairSource', 'fair source'],
-  ['otherBooks', "other books' odds (our side/other side)"], ['sharpNoVig', 'sharp books no-vig win %'], ['sharpSpreadPts', 'sharp spread pts'],
+  ['otherBooks', "other books' odds (our side/other side)"], ['sharpNoVig', 'sharp books no-vig win % (arb: reference books)'], ['sharpSpreadPts', 'sharp spread pts (arb: reference books)'],
   ['gambitEv', 'EV at Gambit price %'], ['ev', 'EV at placed price %'],
   ['novigOdds', 'Novig odds'], ['novigOppOdds', 'Novig other side'], ['novigEv', 'Novig EV %'],
   ['stake', 'stake $'], ['maxStake', 'book max stake $'],
   ['closeFairOdds', 'closing fair odds'], ['closeKind', 'close type'], ['closeAt', 'close seen at (UTC)'], ['clv', 'CLV %'],
 ];
+/** Which Gambit table a bet came from: 'arb' (arbitrage table) or 'ev' (+EV table). Bets logged
+ *  before this was recorded are all from the +EV table unless they carry the arb flag. */
+export const betSource = (b) => (b?.source === 'arb' || b?.source === 'ev' ? b.source : b?.arb ? 'arb' : 'ev');
+export const SOURCE_LABELS = { ev: '+EV', arb: 'Arb' };
+const cellOf = (b, k) => (k === 'sourceLabel' ? SOURCE_LABELS[betSource(b)] : b[k]);
 const csvCell = (v) => {
   if (v == null) return '';
   const s = typeof v === 'number' ? String(Math.round(v * 100) / 100) : String(v);
@@ -82,7 +88,7 @@ export function makeBetLog(dir, { dryRun = false, log } = {}) {
     try {
       fs.writeFileSync(jsonPath, JSON.stringify(bets, null, 2));
       const lines = [COLUMNS.map(([, h]) => csvCell(h)).join(',')];
-      for (const b of bets) lines.push(COLUMNS.map(([k]) => csvCell(b[k])).join(','));
+      for (const b of bets) lines.push(COLUMNS.map(([k]) => csvCell(cellOf(b, k))).join(','));
       fs.writeFileSync(csvPath, lines.join('\n') + '\n');
     } catch (e) {
       // bets.csv open in Excel on Windows locks it: the JSON still has everything.
@@ -93,8 +99,12 @@ export function makeBetLog(dir, { dryRun = false, log } = {}) {
   /** Record a placed bet. Returns the record. */
   function record({ row, quote, stake, betId, confirmedOdds, ev, novig, sharp }) {
     const dv = row.devig || {};
+    // Arbitrage-table bets: the books that set the fair price are the reference books (DK/FD/Caesars).
+    if (row.arb && row.refProbs) sharp = { probs: row.refProbs, spread: row.refSpread ?? null };
     const b = {
       placedAt: new Date().toISOString(), betId, book: row.book, gambitBookId: row.gambitBookId ?? null,
+      // Which Gambit table the bet came from (also shown on the Show bets page).
+      source: row.arb ? 'arb' : 'ev',
       league: row.league ?? null, event: row.event, live: !!row.isLive, startDate: row.startDate ?? null,
       market: row.market, marketKey: row.marketKey ?? null, selection: row.selection, line: row.line ?? null,
       gambitOdds: row.odds, sentOdds: quote.odds, confirmedOdds: confirmedOdds ?? null,
