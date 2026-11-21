@@ -10,6 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { americanToDecimal } from './ev.js';
+import { betSource } from './betlog.js';
 
 export const RESULTS = ['won', 'lost', 'push', 'void', 'half-won', 'half-lost', 'cashout'];
 
@@ -109,7 +110,7 @@ export function loadBets(dir, { dryRun = false } = {}) {
       const stake = Number(b.stake) || 0;
       return {
         key, placedAt: b.placedAt, book: b.book, event: b.event, market: b.market, selection: b.selection, line: b.line,
-        live: b.live, odds, stake, ev: b.ev ?? null, clv: b.clv ?? null,
+        live: b.live, source: betSource(b), otherBooks: b.otherBooks ?? null, sharpNoVig: b.sharpNoVig ?? null, odds, stake, ev: b.ev ?? null, clv: b.clv ?? null,
         // Expected profit: what the bet is worth on average at the fair price we had.
         expected: Number.isFinite(b.ev) ? stake * b.ev / 100 : null,
         result: r?.result || null, resultSource: r?.source || null, settledAt: r?.settledAt || null,

@@ -167,10 +167,16 @@ select { font: inherit; font-size: 12px; background: var(--surface); color: var(
   <p class="sub" id="sub"></p>
   <div class="controls">
     <div class="seg" id="bookSeg" role="group" aria-label="Book"></div>
+    <div class="seg" id="srcSeg" role="group" aria-label="Gambit table"></div>
     <div class="seg" id="rangeSeg" role="group" aria-label="Time range"></div>
     <div class="daychip" id="dayChip"><span id="dayChipText"></span><button type="button" id="dayClear">Show all days</button></div>
   </div>
   <div class="tiles" id="tiles"></div>
+  <section class="card" id="srcCard" hidden>
+    <h2>By Gambit table</h2>
+    <p class="desc">Where each bet came from on Gambit: the +EV table or the arbitrage table (player props priced off DraftKings, FanDuel and Caesars). Follows the book, time range and day picked.</p>
+    <div class="tablewrap"><table id="srcTable"></table></div>
+  </section>
   <section class="card" id="calCard">
     <div class="cal-head">
       <h2>Calendar</h2>
@@ -203,9 +209,12 @@ select { font: inherit; font-size: 12px; background: var(--surface); color: var(
 let DATA = __DATA__;
 const LIVE = __LIVE__;
 const NS = 'http://www.w3.org/2000/svg';
-const state = { book: 'all', range: 'all' };
-try { const v = JSON.parse(localStorage.getItem('evp-view') || '{}'); state.book = v.book || 'all'; state.range = v.range || 'all'; } catch {}
-const saveView = () => { try { localStorage.setItem('evp-view', JSON.stringify({ book: state.book, range: state.range })); } catch {} };
+const state = { book: 'all', range: 'all', src: 'all' };
+try { const v = JSON.parse(localStorage.getItem('evp-view') || '{}'); state.book = v.book || 'all'; state.range = v.range || 'all'; state.src = v.src || 'all'; } catch {}
+const saveView = () => { try { localStorage.setItem('evp-view', JSON.stringify({ book: state.book, range: state.range, src: state.src })); } catch {} };
+// Which Gambit table a bet came from. Bets from before this was logged are all +EV table bets.
+const SRC = { ev: '+EV', arb: 'Arb' };
+const srcOf = (b) => b.source === 'arb' ? 'arb' : 'ev';
 // Calendar: the day picked (YYYY-MM-DD, or null for all days) and the month shown (YYYY-MM).
 state.day = null; state.month = null;
 
@@ -222,9 +231,9 @@ const when = (t) => new Date(t).toLocaleString(undefined, { month: 'short', day:
 
 function booksPresent() { return [...new Set(DATA.bets.map((b) => b.book))].sort((a, b) => ['hardrock', 'betrivers', 'fanduel'].indexOf(a) - ['hardrock', 'betrivers', 'fanduel'].indexOf(b) || a.localeCompare(b)); }
 // A picked day wins over the time range.
-function filtered(book = state.book, { day = state.day, range = !day } = {}) {
+function filtered(book = state.book, { day = state.day, range = !day, src = state.src } = {}) {
   const cut = !range || state.range === 'all' ? 0 : Date.now() - Number(state.range) * 864e5;
-  return DATA.bets.filter((b) => (book === 'all' || b.book === book) && Date.parse(b.placedAt) >= cut && (!day || dayKey(b.placedAt) === day));
+  return DATA.bets.filter((b) => (book === 'all' || b.book === book) && (src === 'all' || srcOf(b) === src) && Date.parse(b.placedAt) >= cut && (!day || dayKey(b.placedAt) === day));
 }
 
 function pickDay(k) {
@@ -346,6 +355,26 @@ function stats(list) {
     open: list.length - settled.length,
     record: [['won', 'half-won'], ['lost', 'half-lost'], ['push', 'void']].map((rs) => list.filter((b) => rs.includes(b.result)).length),
   };
+}
+
+// Side by side: +EV table vs arbitrage table, for the book / range / day picked.
+function srcTable() {
+  const all = filtered(state.book, { src: 'all' });
+  const tb = document.getElementById('srcTable');
+  tb.innerHTML = '<tr><th>Table</th><th class="num">Bets</th><th class="num">Staked</th><th class="num">Settled</th><th class="num">Profit</th><th class="num">ROI</th><th class="num">Expected</th><th class="num">Avg EV</th><th class="num">Avg CLV</th></tr>';
+  for (const k of ['ev', 'arb']) {
+    const s = stats(all.filter((b) => srcOf(b) === k));
+    const tr = document.createElement('tr');
+    const cells = [[SRC[k] + ' table'], [String(s.n)], [money(s.staked)], [s.settled ? s.settled + ' (' + s.record[0] + '-' + s.record[1] + (s.record[2] ? '-' + s.record[2] : '') + ')' : '0'],
+      [money(s.settled ? s.pnl : null, true), s.pnl], [pct(s.roi), s.roi], [money(s.n ? s.expected : null, true)], [pct(s.avgEv)], [pct(s.clv), s.clv]];
+    cells.forEach(([t, v], i) => {
+      const td = document.createElement('td');
+      if (i) td.className = 'num';
+      if (v != null && cls(v)) td.classList.add(cls(v));
+      td.textContent = t; tr.append(td);
+    });
+    tb.append(tr);
+  }
 }
 
 function tiles(list) {
@@ -514,19 +543,22 @@ function table(list) {
   document.getElementById('tableNote').textContent = LIVE
     ? 'Results fill in by themselves from Hard Rock, BetRivers and FanDuel while the placer runs. You can also pick one by hand; it saves to results.json and the charts update.'
     : 'Read-only copy. Run Show bets to mark results.';
-  const head = '<tr><th>Placed</th><th>Book</th><th>Bet</th><th class="num">Odds</th><th class="num">Stake</th><th class="num">EV</th><th class="num">CLV</th><th>Result</th><th class="num">Profit</th></tr>';
+  const head = '<tr><th>Placed</th><th>Book</th><th>Table</th><th>Bet</th><th class="num">Odds</th><th class="num">Stake</th><th class="num">EV</th><th class="num">CLV</th><th>Result</th><th class="num">Profit</th></tr>';
   tb.innerHTML = head;
   for (const b of [...list].reverse()) {
     const tr = document.createElement('tr');
-    const cells = [when(b.placedAt), label(b.book), '', odds(b.odds), '$' + b.stake, pct(b.ev), pct(b.clv), '', money(b.profit, true)];
+    const cells = [when(b.placedAt), label(b.book), SRC[srcOf(b)], '', odds(b.odds), '$' + b.stake, pct(b.ev), pct(b.clv), '', money(b.profit, true)];
     cells.forEach((c, i) => {
       const td = document.createElement('td');
-      if ([3, 4, 5, 6, 8].includes(i)) td.className = 'num';
-      if (i === 2) {
+      if ([4, 5, 6, 7, 9].includes(i)) td.className = 'num';
+      if (i === 3) {
         td.className = 'what';
         td.textContent = (b.event || '') + ': ' + (b.market || '') + ' ' + (b.selection || '') + (b.line != null ? ' ' + b.line : '');
         if (b.live) { const p = document.createElement('span'); p.className = 'pill'; p.textContent = 'live'; td.append(' ', p); }
-      } else if (i === 7) {
+        // Hover: every book's odds at the time of the bet (our side/other side) and the no-vig % used.
+        const tip = [b.otherBooks && "Odds when placed (our side/other side): " + b.otherBooks.replace(/; /g, '\n'), b.sharpNoVig && (srcOf(b) === 'arb' ? 'Reference books no-vig win %: ' : 'Sharp books no-vig win %: ') + b.sharpNoVig].filter(Boolean).join('\n\n');
+        if (tip) td.title = tip;
+      } else if (i === 8) {
         if (LIVE) {
           const sel = document.createElement('select');
           for (const [v, t] of [['', 'not settled'], ['won', 'won'], ['lost', 'lost'], ['push', 'push'], ['void', 'void'], ['half-won', 'half won'], ['half-lost', 'half lost'], ['cashout', 'cashed out']]) {
@@ -536,7 +568,7 @@ function table(list) {
           td.append(sel);
         } else td.textContent = b.result || 'not settled';
       } else td.textContent = c;
-      if (i === 8 && b.profit != null) td.classList.add(cls(b.profit) || 'num');
+      if (i === 9 && b.profit != null) td.classList.add(cls(b.profit) || 'num');
       tr.append(td);
     });
     tb.append(tr);
@@ -547,6 +579,14 @@ function render() {
   const books = booksPresent();
   if (state.book !== 'all' && !books.includes(state.book)) state.book = 'all';
   seg(document.getElementById('bookSeg'), [['all', 'All books (' + filtered('all').length + ')', null], ...books.map((b) => [b, label(b) + ' (' + filtered(b).length + ')', colorOf(b)])], state.book, (v) => { state.book = v; saveView(); render(); });
+  // The table picker only shows once there are arbitrage-table bets to compare with.
+  const hasArb = DATA.bets.some((b) => srcOf(b) === 'arb');
+  if (!hasArb) state.src = 'all';
+  const srcEl = document.getElementById('srcSeg');
+  srcEl.hidden = !hasArb;
+  if (hasArb) seg(srcEl, [['all', 'All tables'], ['ev', '+EV table (' + filtered(state.book, { src: 'ev' }).length + ')'], ['arb', 'Arb table (' + filtered(state.book, { src: 'arb' }).length + ')']], state.src, (v) => { state.src = v; saveView(); render(); });
+  document.getElementById('srcCard').hidden = !hasArb;
+  if (hasArb) srcTable();
   seg(document.getElementById('rangeSeg'), [['all', 'All time'], ['30', '30 days'], ['7', '7 days']], state.day ? null : state.range, (v) => { state.range = v; state.day = null; saveView(); render(); });
   const chip = document.getElementById('dayChip');
   chip.classList.toggle('on', !!state.day);
