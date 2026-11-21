@@ -60,7 +60,10 @@ function events(json) {
 
 /** Opportunities in an event: arbitrageOpportunities entries (or evOpportunities), each with its bets. */
 function opportunities(ev) {
-  const list = [].concat(ev.arbitrageOpportunities || [], ev.arbOpportunities || [], ev.arbs || []);
+  let list = [].concat(ev.arbitrageOpportunities || [], ev.arbOpportunities || [], ev.arbs || []);
+  // No list of opportunities: each row may be one arb itself, with the event's fields and its
+  // legs on the same object (arbs.json's top-level key is "odds", not "evs").
+  if (!list.length) list = [ev];
   const out = [];
   for (const op of list) {
     if (!op || typeof op !== 'object') continue;
@@ -73,7 +76,7 @@ function opportunities(ev) {
       for (const [k, v] of Object.entries(o)) if (!/^(comparableBets|opposingBets|devig)$/.test(k)) walk(v, depth + 1);
     };
     walk(op, 0);
-    if (legs.length) out.push({ marketName: op.marketName || legs[0].marketName || op.market || '', legs, raw: op });
+    if (legs.length) out.push({ marketName: op.marketName || op.market_name || legs[0].marketName || legs[0].market_name || op.market || '', legs, raw: op });
   }
   return out;
 }
