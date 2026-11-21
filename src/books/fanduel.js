@@ -251,7 +251,10 @@ export function makeFanDuel(name, label, cfg, bridge) {
     // Not a main line: look for exactly this line among FanDuel CO's alternate lines (main page,
     // then tabs that can hold them). "fanduel": {"altLines": false} turns this off.
     if (f.altLines !== false) {
-      const altTabs = tabs.filter((t) => /alt|spread|total|line|handicap|points|goals|runs/i.test(t) && !/player|prop|same game/i.test(t));
+      // Likely tabs first, then any other non-player tab (titles differ by sport), at most 10.
+      const likely = tabs.filter((t) => /alt|spread|total|line|handicap|points|goals|runs/i.test(t) && !/player|prop|same game/i.test(t));
+      const other = tabs.filter((t) => !/player|prop|same game|odd\/even|margin|scorer|touchdown/i.test(t));
+      const altTabs = [...new Set([...likely, ...other])].slice(0, 10);
       // The Same Game Parlay tab often carries every alternate line too (NFL), so look there last.
       for (const t of [...new Set([null, ...altTabs, ...tabs.filter((x) => /same game/i.test(x))])]) {
         const j = t == null ? first : await getJson(`${base}&tab=${slug(t)}`, 5 * 60e3);
@@ -262,7 +265,7 @@ export function makeFanDuel(name, label, cfg, bridge) {
     }
     // Say what FanDuel CO does have, so a mismatch can be fixed from one log line.
     const list = (set) => [...set].slice(0, 4).join(', ') || 'none';
-    throw new Error(`FanDuel CO: no ${row.market || row.marketKey} market with this selection in "${row.event}" (event ${eventId}, Gambit line ${row.line}, selection ${sel} is in: ${list(seenIn)}; markets of that kind: ${list(kindTypes)}; tabs tried: ${[...new Set(tries)].map((t) => t ?? 'main').join(', ')})`);
+    throw new Error(`FanDuel CO: no ${row.market || row.marketKey} market with this selection in "${row.event}" (event ${eventId}, Gambit line ${row.line}, selection ${sel} is in: ${list(seenIn)}; markets of that kind: ${list(kindTypes)}; tabs tried: ${[...new Set(tries)].map((t) => t ?? 'main').join(', ')}; tabs on the page: ${tabs.join(', ') || 'none listed'})`);
   }
 
   // A runner's line: its handicap; on an alternate-line market with no handicap, the line we matched.
