@@ -107,11 +107,15 @@ export function makeFanDuel(name, label, cfg, bridge) {
   const appKey = f.appKey || 'FhMFpcPWXMeyZxOx';   // FanDuel's site key, the same for everyone
   const json = { accept: 'application/json', 'content-type': 'application/json', 'x-application': appKey };
   const loginMsg = 'FanDuel didn\'t accept the login: refresh the FanDuel tab and stay logged in';
+  // api.sportsbook.fanduel.com (game pages, My Bets) allows the CO site's requests only without
+  // cookies (no Access-Control-Allow-Credentials), the way the site makes them; with cookies the
+  // browser blocks them ("Failed to fetch"). The *.co.sportsbook hosts take cookies.
+  const creds = (url) => (/^https:\/\/api\.sportsbook\.fanduel\.com\//.test(url) ? 'omit' : 'include');
   // Only the headers the site itself sends to each host (the login only where it sends one).
   const send = (kind, url, method, body, extra = {}, ms = 20000, auth = true) => {
     const headers = { ...json, ...extra };
     if (body == null) delete headers['content-type'];
-    return bridge.send(name, { kind, url, method, headers, body, ...(auth ? { useFanDuelAuth: true } : {}) }, ms);
+    return bridge.send(name, { kind, url, method, headers, body, credentials: creds(url), ...(auth ? { useFanDuelAuth: true } : {}) }, ms);
   };
   const authFail = (res) => res.status === 401 || res.status === 403;
 
@@ -133,7 +137,7 @@ export function makeFanDuel(name, label, cfg, bridge) {
     return p;
   }
   async function readJson(url) {
-    const res = await bridge.send(name, { kind: 'recheck', url, method: 'GET', headers: { accept: 'application/json', 'x-sportsbook-region': st.toUpperCase() } }, 30000);
+    const res = await bridge.send(name, { kind: 'recheck', url, method: 'GET', credentials: creds(url), headers: { accept: 'application/json', 'x-sportsbook-region': st.toUpperCase() } }, 30000);
     if (res.status >= 400 || !res.json) throw new Error(`FanDuel page HTTP ${res.status}: ${String(res.text || '').slice(0, 120)}`);
     cache.set(url, { at: Date.now(), json: res.json });
     if (cache.size > 200) cache.delete(cache.keys().next().value);

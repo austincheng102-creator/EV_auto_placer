@@ -512,7 +512,9 @@ async function pageFetch(req) {
     method: req.method || 'GET',
     headers,
     body: req.body == null ? undefined : typeof req.body === 'string' ? req.body : JSON.stringify(req.body),
-    credentials: 'include',
+    // Some APIs (FanDuel's api.sportsbook.fanduel.com) refuse cross-site requests that carry
+    // cookies; the site itself calls them without, so the app asks for 'omit' there.
+    credentials: req.credentials || 'include',
   });
   const text = await res.text();
   let json = null; try { json = JSON.parse(text); } catch {}
