@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { evPct, fmtAmerican, fmtPct } from './ev.js';
+import { evPct, fmtAmerican, fmtPct, decimalToAmerican, americanToDecimal } from './ev.js';
 import { log } from './log.js';
 import { makeGambitSource } from './sources/gambit.js';
 import { arbStats } from './sources/gambit-arbs.js';
@@ -264,6 +264,10 @@ const propFunnel = makePropFunnel(cfg, root, { dryRun, log });
 if (cfg.maxPropStatsPerPlayer === undefined) cfg.maxPropStatsPerPlayer = 2;
 // Arbitrage-table props carry their own minimum (arbProps.minEvPct); everything else uses minEvPct.
 const minEv = (r) => r.minEv ?? cfg.minEvPct;
+// "fanduel": {"sharpRules": false}: that book skips the sharp-book rules (sharp book needed live,
+// sharp move in the last few seconds, sharp books within N points). Price re-check, odds range,
+// max EV, groups and the daily limit still apply.
+const freeLive = (r) => cfg[r.book]?.sharpRules === false;
 const inEventCap = (p) => cfg.propsInEventCap === true || !isPropBet(p);
 const overEventCap = (r, perEvent) => inEventCap(r) && (perEvent[r.event] || 0) >= (cfg.maxBetsPerEvent ?? Infinity);
 
@@ -275,10 +279,10 @@ function propStage(r, { groups, perEvent, stats, now }) {
   if (tooLong(r.odds) || tooShort(cfg, r.odds)) return 'odds';
   if (evTooHigh(cfg, r.ev)) return 'evCap';
   if (tooEarly(r)) return 'pregameFar';
-  if (liveSharpMissing(cfg, r)) return 'noSharp';
-  if (!sharpSpread(cfg, r).ok) return 'sharpSpread';
+  if (!freeLive(r) && liveSharpMissing(cfg, r)) return 'noSharp';
+  if (!freeLive(r) && !sharpSpread(cfg, r).ok) return 'sharpSpread';
   const lim = liveAgeLimit(cfg, r);
-  if (r.isLive && lim != null && r.prices) { const a = sharpClock.ageSec(r); if (a == null || a > lim) return 'stale'; }
+  if (!freeLive(r) && r.isLive && lim != null && r.prices) { const a = sharpClock.ageSec(r); if (a == null || a > lim) return 'stale'; }
   if (groupRoom(cfg, groups, r) == null) return groupCoolingDown(cfg, groups, r) ? 'groupCooldown' : 'group';
   if ([...inflight.values()].some((f) => groupClash(cfg, r, f))) return 'groupInFlight';
   if ((cooldown.get(r.id) || 0) >= now) return 'cooldown';
@@ -483,6 +487,16 @@ async function tick() {
   }
 
   rows = rows.filter((r) => books[r.book]);
+  // Per-book de-vig method ("fanduel": {"devigMethod": "power"}): that book's EV from Gambit's
+  // Power / Multiplicative / Additive / Shin number, or "best" (highest), instead of the lowest.
+  for (const r of rows) {
+    const m = String(cfg[r.book]?.devigMethod || '').toLowerCase();
+    if (!m || m === 'worst' || !r.devig) continue;
+    const ps = Object.entries(r.devig).filter(([, v]) => Number.isFinite(v) && v > 0 && v < 1);
+    const p = m === 'best' ? Math.max(...ps.map(([, v]) => v)) : ps.find(([k]) => k.toLowerCase() === m)?.[1];
+    if (!Number.isFinite(p)) continue;
+    r.fairProb = p; r.fairOdds = decimalToAmerican(1 / p); r.ev = (p * americanToDecimal(r.odds) - 1) * 100;
+  }
   const scanAt = Date.now();
   sharpClock.update(rows);
   { const ids = new Set();
@@ -525,9 +539,9 @@ async function tick() {
     .filter((r) => (!tooLong(r.odds) && !tooShort(cfg, r.odds)) || drop('odds'))
     .filter((r) => !evTooHigh(cfg, r.ev) || drop('evCap'))
     .filter((r) => !tooEarly(r) || (farOff++, false))
-    .filter((r) => !liveSharpMissing(cfg, r) || drop('noSharp'))
-    .filter((r) => { const sp = sharpSpread(cfg, r); if (sp.ok) return true; logSpreadSkip(r, sp); return drop('sharpSpread'); })
-    .filter((r) => { const lim = liveAgeLimit(cfg, r); if (!r.isLive || lim == null || !r.prices) return true; const a = sharpClock.ageSec(r); return (a != null && a <= lim) || drop(r.isProp ? 'staleProp' : 'stale'); })
+    .filter((r) => freeLive(r) || !liveSharpMissing(cfg, r) || drop('noSharp'))
+    .filter((r) => { if (freeLive(r)) return true; const sp = sharpSpread(cfg, r); if (sp.ok) return true; logSpreadSkip(r, sp); return drop('sharpSpread'); })
+    .filter((r) => { const lim = liveAgeLimit(cfg, r); if (freeLive(r) || !r.isLive || lim == null || !r.prices) return true; const a = sharpClock.ageSec(r); return (a != null && a <= lim) || drop(r.isProp ? 'staleProp' : 'stale'); })
     .filter((r) => groupRoom(cfg, groups, r) != null || drop(groupCoolingDown(cfg, groups, r) ? 'groupCooldown' : 'group'))
     .filter((r) => ![...inflight.values()].some((f) => groupClash(cfg, r, f)))
     .filter((r) => (cooldown.get(r.id) || 0) < now)   // repeats on one side are capped by the group rule
