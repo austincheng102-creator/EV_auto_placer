@@ -1,0 +1,8 @@
+config.json
+.env
+state.json
+data/
+logs/
+*.log
+*.csv
+node_modules/

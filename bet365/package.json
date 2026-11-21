@@ -1,0 +1,1 @@
+{"name":"ev-auto-placer-bet365","version":"0.1.0","private":true,"type":"module","engines":{"node":">=18"},"scripts":{"init":"node src/index.js --init","start":"node src/index.js","dry":"node src/index.js --dry","dry:once":"node src/index.js --dry --once","test":"node --test"},"dependencies":{"ws":"^8.18.0"}}
