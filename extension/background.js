@@ -254,6 +254,31 @@ async function realKey(target, key, code, vk, text) {
   if (text) await dbgCmd(target, 'Input.dispatchKeyEvent', { type: 'char', key, code, text, windowsVirtualKeyCode: vk });
   await dbgCmd(target, 'Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
 }
+// Runs in the Gambit page: presses a visible "Log out" / "Sign out" button if there is one.
+function clickLogout() {
+  const b = [...document.querySelectorAll('button, a, [role=menuitem]')].find((e) => e.getClientRects().length && /^\s*(log\s?out|sign\s?out)\s*$/i.test(e.textContent || ''));
+  if (b) { b.click(); return true; }
+  return false;
+}
+async function openWelcome(tabId) {
+  await chrome.tabs.update(tabId, { url: 'https://www.gambitodds.com/welcome' });
+  for (let i = 0; i < 30; i++) {
+    await sleep(1000);
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (tab?.status === 'complete') break;
+  }
+  await sleep(3000);
+  const r = await inPage(tabId, false).catch(() => ({ state: 'no-page' }));
+  return { ...r, url: 'https://www.gambitodds.com/welcome' };
+}
+// The Gambit page you use while logged in (not the home page), to go back to after logging in.
+let gambitHomeUrl = null;
+chrome.storage.local.get('gambitHomeUrl').then((v) => { if (v?.gambitHomeUrl) gambitHomeUrl = v.gambitHomeUrl; }).catch(() => {});
+async function rememberGambitPage() {
+  if (gambitRefused || !gambitTokenOk(gambitAuth)) return;
+  const t = (await bookTabs()).find((x) => x.book === 'gambit' && /^https:\/\/(www\.)?gambitodds\.com\/./.test(x.url || '') && !/\/welcome/.test(x.url));
+  if (t && t.url !== gambitHomeUrl) { gambitHomeUrl = t.url; chrome.storage.local.set({ gambitHomeUrl }).catch(() => {}); }
+}
 const inPage = async (tabId, open) => (await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: gambitLoginForm, args: [open] }))[0]?.result || { state: 'no-page' };
 
 async function autoLoginGambit(why) {
@@ -262,7 +287,8 @@ async function autoLoginGambit(why) {
   const gap = loginFails >= 3 ? 10 * 60e3 : 2 * 60e3;
   if (Date.now() - loginTriedAt < gap) return;
   const t = (await bookTabs()).find((x) => x.book === 'gambit' && !/api/.test(new URL(x.url).hostname));
-  if (!t || t.discarded) return;
+  if (!t) return say({ note: 'auto login: no Gambit tab open (open gambitodds.com in Chrome)' });
+  if (t.discarded) return;
   if (!chrome.debugger) return say({ ok: false, why: 'the extension is missing the "debugger" permission: reload it in chrome://extensions' });
   loginBusy = true;
   const done = (ok, msg) => {
@@ -273,15 +299,34 @@ async function autoLoginGambit(why) {
   const target = { tabId: t.id };
   let attached = false;
   try {
-    const first = await inPage(t.id, false);
+    let first = await inPage(t.id, false);
+    if (first.state === 'no-page') return say({ note: `auto login: couldn't read the Gambit tab (${why}); trying again shortly` });
     if (first.state === 'logged-in') {
-      // Page looks logged in but Gambit refuses its token: a reload lets it renew or show the login.
-      if (/app found|refused|HTTP 40/.test(why)) reloadTab('gambit', `Gambit refused the login (${why})`);
-      return;
+      const refused = gambitRefused >= 5 || /app found|refused|HTTP 40/.test(why);
+      if (!refused) return;
+      // The page still looks logged in but Gambit refuses its login. First a reload (it may renew).
+      // If the tab was already reloaded and it still looks logged in, its saved login is dead: open
+      // Gambit's home page, where the Login button is, and log in from there.
+      const sinceReload = Date.now() - (reloadedAt.gambit || 0);
+      if (sinceReload > 10 * 60e3) {
+        if (await reloadTab('gambit', `Gambit refused the login (${why})`)) say({ note: 'auto login: Gambit tab still looks logged in, reloaded it first; logging in after that if needed' });
+        return;
+      }
+      if (sinceReload < 10e3) return;     // the reload is still loading; the after-reload check runs soon
+      loginTriedAt = Date.now();
+      say({ start: true, why: `${why}; the Gambit tab still looks logged in after a reload, so opening Gambit's home page to log in` });
+      first = await openWelcome(t.id);
+      if (first.state === 'logged-in') {
+        // Gambit's home page still thinks we're logged in: log out the dead login, then log in.
+        const lo = (await chrome.scripting.executeScript({ target: { tabId: t.id }, world: 'MAIN', func: clickLogout }).catch(() => []))[0]?.result;
+        if (lo) { await sleep(3000); first = await inPage(t.id, false).catch(() => ({ state: 'no-page' })); }
+        if (first.state !== 'logged-out') return done(false, `Gambit's home page shows no Login button${lo ? ' even after pressing Log out' : ' and no Log out button'} (page: ${first.url || t.url}). Send Claude a screenshot of the Gambit tab`);
+      }
+    } else {
+      loginTriedAt = Date.now();
+      say({ start: true, why });
     }
-    if (first.state === 'no-page') return;
-    loginTriedAt = Date.now();
-    say({ start: true, why });
+    if (first.state !== 'logged-out' && first.state !== 'form') return done(false, `unexpected Gambit page (${first.state})`);
     const before = gambitAuth;
     const f = await inPage(t.id, true);
     if (f.state !== 'form' || !f.pass) return done(false, f.state === 'no-form' ? 'clicked Login but no login box showed up' : `couldn't find the login box (${f.state})`);
@@ -324,6 +369,13 @@ async function autoLoginGambit(why) {
   } finally {
     if (attached) chrome.debugger.detach(target, () => void chrome.runtime.lastError);
     loginBusy = false;
+    // Logged in from the home page: go back to the Gambit page you had open, so it keeps renewing the login.
+    if (lastLogin?.ok && Date.now() - lastLogin.at < 30e3 && gambitHomeUrl) {
+      setTimeout(async () => {
+        const g = (await bookTabs()).find((x) => x.id === t.id);
+        if (g && /\/welcome/.test(g.url || '')) chrome.tabs.update(t.id, { url: gambitHomeUrl }).catch(() => {});
+      }, 4000);
+    }
   }
 }
 
@@ -408,6 +460,7 @@ async function watchLogins() {
   // really logged out, so stop reloading (the app keeps alerting until you log in).
   // Gambit: only once its token has been out for a minute with no new one from the page. Reloading
   // earlier can land while the page is renewing its own login and knock it out.
+  await rememberGambitPage().catch(() => {});
   // Gambit's tab sitting on its logged-out home page: log back in.
   if (settings.gambitAutoLogin && !loginBusy && (await bookTabs()).some((t) => t.book === 'gambit' && /gambitodds\.com\/welcome/.test(t.url || ''))) autoLoginGambit('the Gambit tab is on its logged-out home page').catch(() => {});
   const gExp = jwtExp(gambitAuth);
@@ -575,7 +628,7 @@ async function handle(msg) {
 
 function connect() {
   try { ws = new WebSocket(`ws://127.0.0.1:${PORT}`); } catch { return setTimeout(connect, 3000); }
-  ws.onopen = () => { status = 'connected'; sendTabs(); };
+  ws.onopen = () => { status = 'connected'; ws.send(JSON.stringify({ type: 'hello', version: chrome.runtime.getManifest().version })); sendTabs(); };
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
     if (m.type === 'fetch') handle(m);
