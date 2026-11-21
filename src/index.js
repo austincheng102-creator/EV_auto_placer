@@ -8,7 +8,7 @@ import { log } from './log.js';
 import { makeGambitSource } from './sources/gambit.js';
 import { makeMockSource } from './sources/mock.js';
 import { startBridge } from './books/bridge.js';
-import { makeBooks, parseBooks, BOOK_LABELS } from './books/index.js';
+import { makeBooks, parseBooks, BOOK_LABELS, propsOff } from './books/index.js';
 import { makeResultSync } from './resultsync.js';
 import { allBets } from './results.js';
 import readline from 'node:readline/promises';
@@ -187,7 +187,7 @@ else if (args[0] === 'update' || !flag('--no-update')) {
 // Which book(s) this run bets: --book / --books win over config.json "books".
 // "books": "ask" in config asks at startup.
 async function askBook() {
-  const names = Object.keys(BOOK_LABELS).filter((b) => b !== 'fanduel');
+  const names = Object.keys(BOOK_LABELS);
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   console.log('Which book today?');
   names.forEach((b, i) => console.log(`  ${i + 1}) ${BOOK_LABELS[b]}`));
@@ -465,12 +465,13 @@ async function tick() {
   for (const p of [...state.placed, ...inflight.values()]) perEvent[p.event] = (perEvent[p.event] || 0) + 1;
   const now = Date.now();
   let farOff = 0;
-  const why = { odds: 0, evCap: 0, sharpSpread: 0, noSharp: 0, stale: 0, staleProp: 0, group: 0 };
+  const why = { noProps: 0, odds: 0, evCap: 0, sharpSpread: 0, noSharp: 0, stale: 0, staleProp: 0, group: 0 };
   const drop = (k) => (why[k]++, false);
   const groups = groupTotals(state.placed);
   const ageMax = cfg.sharp.liveMaxAgeSec;
   let ev = rows
     .filter((r) => Number.isFinite(r.ev) && r.ev >= cfg.minEvPct)
+    .filter((r) => !(r.isProp && propsOff(cfg, r.book)) || drop('noProps'))
     .filter((r) => (!tooLong(r.odds) && !tooShort(cfg, r.odds)) || drop('odds'))
     .filter((r) => !evTooHigh(cfg, r.ev) || drop('evCap'))
     .filter((r) => !tooEarly(r) || (farOff++, false))
@@ -490,6 +491,7 @@ async function tick() {
   // One bet per group per scan: keep the first (best-EV new) row of each group. Later scans can add more, up to group.maxBets.
   { const kept = []; ev = ev.filter((r) => { if (kept.some((k) => groupClash(cfg, r, k))) return false; kept.push(r); return true; }); }
   const whyText = [
+    why.noProps && `${why.noProps} props on a book with props off`,
     why.odds && `${why.odds} outside ${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)} to ${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)}`,
     why.evCap && `${why.evCap} above ${cfg.maxEvPct}% EV`,
     why.noSharp && `${why.noSharp} live without the needed sharp book`,

@@ -2,6 +2,12 @@ import { makeTemplateBook } from './template.js';
 import { makeSimBook } from './sim.js';
 import { makeBetRivers } from './betrivers.js';
 import { makeHardRock } from './hardrock.js';
+import { makeFanDuel } from './fanduel.js';
+
+/** Books that skip player props unless config "<book>": {"props": true}. FanDuel is the live-prop
+ *  sharp reference, so a FanDuel prop would be checked against itself (Austin, 2026-11-21). */
+export const NO_PROPS_DEFAULT = ['fanduel'];
+export const propsOff = (cfg, book) => (cfg[book]?.props ?? !NO_PROPS_DEFAULT.includes(book)) === false;
 
 export const BOOK_LABELS = { betrivers: 'BetRivers', fanduel: 'FanDuel', hardrock: 'Hard Rock Bet' };
 
@@ -32,6 +38,7 @@ export function makeBooks(cfg, bridge, dryRun) {
     else if (cfg[name]?.place) out[name] = makeTemplateBook(name, label, cfg[name], bridge);  // request templates from config
     else if (name === 'betrivers') out[name] = makeBetRivers(name, label, cfg, bridge);       // built-in Kambi
     else if (name === 'hardrock') out[name] = makeHardRock(name, label, cfg, bridge);
+    else if (name === 'fanduel') out[name] = makeFanDuel(name, label, cfg, bridge);
     else out[name] = makeTemplateBook(name, label, cfg[name], bridge);
   }
   return out;
