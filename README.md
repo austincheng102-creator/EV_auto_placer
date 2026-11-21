@@ -212,6 +212,9 @@ runs out. What the app and extension do now:
   Hard Rock's page stops renewing its token, the extension reloads that tab so the site can renew
   the login from its cookies. Never while a bet is being sent from that tab, and at most once
   every 5 minutes per site.
+- **Hard Rock and Gambit see you as active.** Hard Rock logs you out after about 30 minutes with
+  no mouse or keyboard use in its tab, even while the app is running. Every 4 minutes the extension
+  moves the pointer and taps Shift inside the Hard Rock and Gambit tabs. It never clicks or types.
 - **BetRivers keepalive.** Once a minute the app sends the same "still here" call co.betrivers.com
   makes, from your BetRivers tab, so it doesn't time you out for inactivity.
 - **Login check once a minute.** BetRivers (that keepalive) and Hard Rock (a balance read) are
