@@ -467,7 +467,7 @@ async function tick() {
   catch (e) { log.err(`Gambit fetch failed: ${e.message}`); session.gambit(e); return; }
   // Closing line value: follow Gambit's fair price for bets already placed.
   if (source.fairIndex) {
-    const closed = betLog.track(source.fairIndex());
+    const closed = betLog.track(source.fairIndex(), Date.now(), source.arbFairIndex?.());
     for (const b of closed) {
       if (b.clv == null) log.info(`CLV: ${betLog.describe(b)}: Gambit stopped listing it after we bet, no close to compare`);
       else log.info(`CLV: ${betLog.describe(b)} vs close ${fmtAmerican(b.closeFairOdds)} (${b.closeKind}) -> ${fmtPct(b.clv)}`);

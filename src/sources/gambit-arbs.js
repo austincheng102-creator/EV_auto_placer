@@ -115,7 +115,11 @@ export function refFair(a, prices) {
 /** Counts from the last parse, for the scan line and the props funnel. */
 export const arbStats = { events: 0, bets: 0, ours: 0, refsMissing: 0, refSpread: 0, passed: 0 };
 
-export function arbsToRows(json, g, a) {
+/**
+ * `fairOut` (optional Map) collects the DK/FD/Caesars fair price of every prop in the table, from any
+ * book, keyed by fairKey, for closing line value on bets placed from this table (betlog.js track).
+ */
+export function arbsToRows(json, g, a, fairOut = null) {
   detectBookIds(json);
   const nameById = {};
   const idLists = bookIdLists(g);
@@ -139,8 +143,8 @@ export function arbsToRows(json, g, a) {
       }
       for (const leg of op.legs) {
         const book = nameById[leg.sportsbook_id];
-        if (!book) continue;
-        st.ours++;
+        if (!book && !fairOut) continue;
+        if (book) st.ours++;
         const mySide = sideOf(leg), myLine = lineOf(leg);
         const same = (x) => x.player === leg.player_name && (x.line == null || myLine == null || x.line === myLine);
         const prices = {};
@@ -151,8 +155,14 @@ export function arbsToRows(json, g, a) {
           if ((prices[x.b.sportsbook_id] ||= {})[k] == null) prices[x.b.sportsbook_id][k] = Number(x.b.odds);
         }
         const rf = refFair(a, prices);
-        if (!rf.ok) { st[rf.why]++; continue; }
         const parts = rowParts(ev, { marketName }, leg, book);
+        if (fairOut && rf.ok) {
+          const k = fairKey({ event: ev.event_name, marketKey: marketName, selection: parts.selection, line: parts.line });
+          const had = fairOut.get(k);
+          if (!had || rf.prob < had.prob) fairOut.set(k, { prob: rf.prob, isLive: !!ev.isLive });
+        }
+        if (!book) continue;
+        if (!rf.ok) { st[rf.why]++; continue; }
         const id = `arb:${leg.id ?? `${book}:${parts.bookRef}`}`;
         if (seen.has(id)) continue;
         seen.add(id);

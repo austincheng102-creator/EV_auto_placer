@@ -109,6 +109,8 @@ export function makeBetLog(dir, { dryRun = false, log } = {}) {
       novigOdds: novig?.nv?.odds ?? null, novigOppOdds: novig?.nv?.oppOdds ?? null, novigEv: novig?.ev ?? null,
       stake, maxStake: quote.maxStake ?? null,
       key: fairKey(row),
+      // Bets from the arbitrage table close against the same DK/FD/Caesars fair price they were placed on.
+      arb: !!row.arb,
       lastFairProb: row.fairProb ?? null, lastSeenAt: new Date().toISOString(), seenAgain: false,
       closeFairOdds: null, closeKind: null, closeAt: null, clv: null,
     };
@@ -132,16 +134,17 @@ export function makeBetLog(dir, { dryRun = false, log } = {}) {
 
   /**
    * Called every poll with Gambit's fair prices for every selection in the feed
-   * (fairKey -> {prob, isLive}). Updates open bets and records closes.
+   * (fairKey -> {prob, isLive}). Updates open bets and records closes. Bets placed from the
+   * arbitrage table follow `arbIndex` instead (its DK/FD/Caesars fair prices).
    * Returns the bets that closed this poll.
    */
-  function track(fairIndex, now = Date.now()) {
+  function track(fairIndex, now = Date.now(), arbIndex = null) {
     const closed = [];
     for (const b of bets) {
       if (b.closeKind) continue;
       const start = parseTime(b.startDate);
       const preGame = !b.live && Number.isFinite(start);
-      const seen = fairIndex?.get(b.key);
+      const seen = (b.arb ? arbIndex : fairIndex)?.get(b.key);
       // Pre-game: only prices from before the start count; live: anything while it's listed.
       if (seen && (!preGame || now < start) && (preGame ? !seen.isLive : true)) {
         b.lastFairProb = seen.prob;

@@ -68,10 +68,12 @@ export function makeGambitSource(cfg, bridge, { root = null, log = null } = {}) 
   const arbBooks = arb ? arb.books.filter((b) => (cfg.books || []).includes(b)) : [];
   const arbIds = arb ? Object.values(arb.refBooks).flat() : [];
   let arbErrAt = 0, sampled = false;
+  let arbFair = new Map();   // DK/FD/Caesars fair price of every prop in the arbitrage table (closing line value)
   const arbState = { error: null, rows: 0 };
   async function fetchArbs() {
     if (!arb || !arbBooks.length || !arb.urls.length) return [];
     const out = [];
+    const nextArbFair = new Map();   // kept from the last good fetch if this one fails
     try {
       for (const url of arb.urls) {
         const json = await fetchOne(withBookIds(url, arbIds));
@@ -80,8 +82,9 @@ export function makeGambitSource(cfg, bridge, { root = null, log = null } = {}) 
           sampled = true;   // one real response, so the reading of arbs.json can be checked
           try { fs.writeFileSync(path.join(root, 'arbs-sample.json'), JSON.stringify(json, null, 1)); } catch {}
         }
-        out.push(...arbsToRows(json, g, { ...arb, books: arbBooks }));
+        out.push(...arbsToRows(json, g, { ...arb, books: arbBooks }, nextArbFair));
       }
+      arbFair = nextArbFair;
       arbState.error = null;
     } catch (e) {
       arbState.error = e.message;
@@ -94,6 +97,7 @@ export function makeGambitSource(cfg, bridge, { root = null, log = null } = {}) 
   return {
     needsBridge: via === 'extension',
     fairIndex: () => fair,
+    arbFairIndex: () => arbFair,
     arb: arb ? { cfg: arb, books: arbBooks, state: arbState } : null,
     async fetchRows() {
       const list = urls();
