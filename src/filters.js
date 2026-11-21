@@ -10,6 +10,8 @@
 //    Player props: per player, so Over/Under on one player's stat are one group.
 //    group.perBook (default on): each book gets its own maxBets/maxStake in the group, so the same side
 //    can go on BetRivers and Hard Rock once each, but never the other side on another book.
+//    group.cooldownSec (default 60): a repeat bet in the same group (same book with perBook) waits this
+//    long after the last one, and must still pass every rule. Different markets in one game don't wait.
 import { impliedProb } from './ev.js';
 
 // Gambit sportsbook ids. PS3838 is Pinnacle's feed. Polymarket has two listings.
@@ -31,10 +33,11 @@ export function applyFilterDefaults(cfg) {
   // Live props: FanDuel's prop prices update slowly in Gambit's feed, so props get 30s.
   if (s.livePropMaxAgeSec === undefined) s.livePropMaxAgeSec = 30;
   const g = (cfg.group ||= {});
-  if (g.maxBets === undefined) g.maxBets = 1;
-  if (g.maxStake === undefined) g.maxStake = 1;
+  if (g.maxBets === undefined) g.maxBets = 3;
+  if (g.maxStake === undefined) g.maxStake = 3;
   if (g.bothSides === undefined) g.bothSides = false;
   if (g.perBook === undefined) g.perBook = true;
+  if (g.cooldownSec === undefined) g.cooldownSec = 60;
   bothSides = !!g.bothSides;
   return cfg;
 }
@@ -184,11 +187,11 @@ export function groupTotals(placed, now = Date.now()) {
   for (const p of placed) {
     if (now - Date.parse(p.at) > 24 * 3600e3) continue;
     const k = p.market != null ? groupKey(p) : p.group;   // recomputed, so older bets follow the current grouping
-    const g = out.get(k) || { bets: 0, staked: 0, byBook: new Map(), sides: new Set() };
-    const stake = Number(p.stake) || 0;
-    g.bets++; g.staked += stake;
-    const b = g.byBook.get(p.book) || { bets: 0, staked: 0 };
-    b.bets++; b.staked += stake; g.byBook.set(p.book, b);
+    const g = out.get(k) || { bets: 0, staked: 0, lastAt: 0, byBook: new Map(), sides: new Set() };
+    const stake = Number(p.stake) || 0, at = Date.parse(p.at) || 0;
+    g.bets++; g.staked += stake; g.lastAt = Math.max(g.lastAt, at);
+    const b = g.byBook.get(p.book) || { bets: 0, staked: 0, lastAt: 0 };
+    b.bets++; b.staked += stake; b.lastAt = Math.max(b.lastAt, at); g.byBook.set(p.book, b);
     if (p.selection != null) g.sides.add(sideOf(p));
     out.set(k, g);
   }
@@ -199,13 +202,28 @@ export function groupTotals(placed, now = Date.now()) {
  * Room left in a row's group: null = group is full. With group.perBook the bet count and $ cap are
  * per book, and a group that already has a bet on one side takes no bet on the other side, any book.
  */
-export function groupRoom(cfg, totals, row) {
+export function groupRoom(cfg, totals, row, now = Date.now()) {
   const all = totals.get(groupKey(row));
   if (cfg.group.perBook && all && [...all.sides].some((s) => s !== sideOf(row))) return null;
-  const g = (cfg.group.perBook ? all?.byBook.get(row.book) : all) || { bets: 0, staked: 0 };
+  const g = (cfg.group.perBook ? all?.byBook.get(row.book) : all) || { bets: 0, staked: 0, lastAt: 0 };
   if (cfg.group.maxBets != null && g.bets >= cfg.group.maxBets) return null;
+  if (groupWaitSec(cfg, g, now) > 0) return null;
   const left = cfg.group.maxStake == null ? Infinity : cfg.group.maxStake - g.staked;
   return left > 0.0001 ? left : null;
+}
+
+/** Seconds until the group's cooldown ends (0 = no wait). */
+export function groupWaitSec(cfg, g, now = Date.now()) {
+  const cd = Number(cfg.group.cooldownSec) || 0;
+  if (!cd || !g?.lastAt) return 0;
+  return Math.max(0, cd - (now - g.lastAt) / 1000);
+}
+
+/** True when a row's group is only waiting out its cooldown (it has bet room otherwise). */
+export function groupCoolingDown(cfg, totals, row, now = Date.now()) {
+  const all = totals.get(groupKey(row));
+  const g = cfg.group.perBook ? all?.byBook.get(row.book) : all;
+  return groupWaitSec(cfg, g, now) > 0;
 }
 
 /** Two bets that can't run side by side: same group, and (per book) same book or opposite sides. */

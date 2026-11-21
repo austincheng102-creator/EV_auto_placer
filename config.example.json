@@ -26,8 +26,9 @@
     "minArbPercentage": -5
   },
   "group": {
-    "maxBets": 1,
-    "maxStake": 1,
+    "maxBets": 3,
+    "maxStake": 3,
+    "cooldownSec": 60,
     "bothSides": false,
     "perBook": true
   },
