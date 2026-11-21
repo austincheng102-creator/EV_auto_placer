@@ -347,9 +347,9 @@ async function placeAt(row, book, quote, ctx, retried = false) {
     lg.bet(`Novig OK: ${fmtAmerican(quote.odds)} vs Novig ${fmtNovig(nc.nv)} -> ${fmtPct(nc.ev)} EV`);
   }
 
-  // Same game + market + side as an earlier bet share one bet and the group's $ cap.
+  // Same game + market + side as earlier bets share the group's bet count and $ cap.
   const room = groupRoom(cfg, groupTotals(state.placed), row);
-  if (room == null) { ctx.outcome = 'group full'; lg.warn(`already bet this group (${row.event}, ${row.market}, ${row.selection}) — skipped`); return false; }
+  if (room == null) { ctx.outcome = 'group full'; lg.warn(`group full: ${cfg.group.maxBets ?? 'any'} bets / $${cfg.group.maxStake ?? 'any'} already on (${row.event}, ${row.market}, ${row.selection}) — skipped`); return false; }
   const stake = Math.floor(Math.min(stakeFor(quote), room) * 100) / 100;
   if (stake <= 0) { ctx.outcome = 'stake 0'; lg.warn('stake is 0 — skipped'); return false; }
   if (cfg.dailyStakeLimit && state.staked + pendingStake + stake > cfg.dailyStakeLimit) {
@@ -445,7 +445,6 @@ async function tick() {
       }
     }
   }
-  const placedKeys = new Set(state.placed.map((p) => p.key));
   const perEvent = {};
   for (const p of [...state.placed, ...inflight.values()]) perEvent[p.event] = (perEvent[p.event] || 0) + 1;
   const now = Date.now();
@@ -464,7 +463,7 @@ async function tick() {
     .filter((r) => { const lim = liveAgeLimit(cfg, r); if (!r.isLive || lim == null || !r.prices) return true; const a = sharpClock.ageSec(r); return (a != null && a <= lim) || drop(r.isProp ? 'staleProp' : 'stale'); })
     .filter((r) => groupRoom(cfg, groups, r) != null || drop('group'))
     .filter((r) => !inflight.has(groupKey(r)))
-    .filter((r) => !placedKeys.has(selKey(r)) && (cooldown.get(r.id) || 0) < now)
+    .filter((r) => (cooldown.get(r.id) || 0) < now)   // repeats on one side are capped by the group rule
     .filter((r) => (perEvent[r.event] || 0) < (cfg.maxBetsPerEvent ?? Infinity))
     .filter((r) => dryRun || bridge.hasTab(r.book))
     // New bets first, then ones being watched after a failed price check.
@@ -472,7 +471,7 @@ async function tick() {
   const gambitCount = ev.length;
   if (novig) ev = ev.filter((r) => novig.check(r, r.odds).ok);
   const novigDropped = gambitCount - ev.length;
-  // One bet per group: keep the first (best-EV new) row of each group this scan.
+  // One bet per group per scan: keep the first (best-EV new) row of each group. Later scans can add more, up to group.maxBets.
   { const g = new Set(); ev = ev.filter((r) => { const k = groupKey(r); if (g.has(k)) return false; g.add(k); return true; }); }
   const whyText = [
     why.odds && `${why.odds} outside ${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)} to ${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)}`,

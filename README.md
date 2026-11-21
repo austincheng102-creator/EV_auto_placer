@@ -78,7 +78,7 @@ setting in `config.json`; one that isn't there gets the default below, and `null
 | Live player props need FanDuel listed | | `"sharp": {"livePropNeeds"}` |
 | Live: a sharp price changed within the last 5 seconds | 5 | `"sharp": {"liveMaxAgeSec"}` |
 | Live player props: FanDuel's price changed within the last 30 seconds | 30 | `"sharp": {"livePropMaxAgeSec"}` |
-| Same game + market + period + side = one group: one bet, $1 total | 1 bet, $1 | `"group": {"maxBets", "maxStake"}` |
+| Same game + market + period + side = one group: up to 3 bets, $3 total | 3 bets, $3 | `"group": {"maxBets", "maxStake"}` |
 
 - **Sharp agreement:** each sharp book with both sides listed is de-vigged on its own (Pinnacle comes
   through Gambit as PS3838). For player props FanDuel counts as a sharp book too. If fewer than two
@@ -89,6 +89,8 @@ setting in `config.json`; one that isn't there gets the default below, and `null
   first time has no known age and waits for its next move.
 - **Groups:** the line and the book don't matter (Over 220.5 and Over 221.5 on the full-game total are one
   group). The period is part of the market (1H Moneyline is its own group). Bets from the last 24 hours count.
+  The same side can be bet again, on the same book too, up to `maxBets`, with at most one bet per group per
+  scan, and each bet is still checked at the book's real price first. `maxBetsPerEvent` still caps the whole game.
 - The `[SCAN]` line says how many rows each rule skipped.
 - Not done yet: no bets in the last 2 minutes of a game. Gambit's feed has no game clock.
 
