@@ -66,6 +66,10 @@ One app runs either book; the Gambit feed, Novig check, EV math and limits are s
   (NBA, NCAAB, NFL, NCAAF, NHL, MLB, WNBA; `"fanduel": {"leaguePages": {...}}` adds others) and
   the matching Colorado market (same kind and period: spread, total, moneyline; full game,
   halves, quarters). Alternate lines, 3-way and team markets are never used.
+- **Colorado prices for EV**: every scan the app reads FanDuel CO's own price (no login needed)
+  for each FanDuel row within 5 points of min EV and recomputes EV from it, so the 8% rule uses
+  Colorado's price, not New Jersey's. The [SCAN] line shows "FanDuel prices read directly: N
+  (M moved since Gambit)". `"fanduel": {"coPrices": false}` goes back to Gambit's NJ price.
 - **Price re-check**: FanDuel CO's own current price, line and max stake (its bet-slip check,
   no bet is made, so it also runs while disarmed). EV and every rule are checked at that price.
 - **Bet**: sent at exactly that price with lower odds refused. If FanDuel says the price moved,

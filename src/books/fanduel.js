@@ -13,7 +13,7 @@
 // Player props are not bet on FanDuel (Austin, 2026-11-21): FanDuel is the live-prop sharp
 // reference, so a FanDuel prop would be checked against itself. "fanduel": {"props": true} allows them.
 
-import { decimalToAmerican } from '../ev.js';
+import { decimalToAmerican, americanToDecimal } from '../ev.js';
 
 const GEO = '{{fdGeo}}';
 
@@ -123,9 +123,16 @@ export function makeFanDuel(name, label, cfg, bridge) {
   const api = 'https://api.sportsbook.fanduel.com/sbapi';
   const pages = { NBA: 'nba', NCAAB: 'ncaab', NFL: 'nfl', NCAAF: 'ncaaf', NHL: 'nhl', MLB: 'mlb', WNBA: 'wnba', ...(f.leaguePages || {}) };
   const cache = new Map();   // url -> { at, json }
+  const pending = new Map(); // url -> promise, so rows of the same game share one page read
   async function getJson(url, maxAgeMs) {
     const c = cache.get(url);
     if (c && Date.now() - c.at < maxAgeMs) return c.json;
+    if (pending.has(url)) return pending.get(url);
+    const p = readJson(url).finally(() => pending.delete(url));
+    pending.set(url, p);
+    return p;
+  }
+  async function readJson(url) {
     const res = await bridge.send(name, { kind: 'recheck', url, method: 'GET', headers: { accept: 'application/json', 'x-sportsbook-region': st.toUpperCase() } }, 30000);
     if (res.status >= 400 || !res.json) throw new Error(`FanDuel page HTTP ${res.status}: ${String(res.text || '').slice(0, 120)}`);
     cache.set(url, { at: Date.now(), json: res.json });
@@ -172,18 +179,53 @@ export function makeFanDuel(name, label, cfg, bridge) {
   }
 
   const runnerOf = (m, sel) => (m?.runnerDetails || []).find((r) => String(r.selectionId) === String(sel));
+  const marketPrices = async (ids) => {
+    const res = await send('recheck', `${host('smp')}/api/sports/fixedodds/readonly/v1/getMarketPrices?priceHistory=0`, 'POST', { marketIds: ids }, {}, 20000, false);
+    if (res.status >= 400) throw new Error(`price check HTTP ${res.status}: ${JSON.stringify(res.json || res.text).slice(0, 200)}`);
+    return Array.isArray(res.json) ? res.json : [];
+  };
 
   return {
     name, label,
     freePriceCheck: true,   // the slip check makes no bet, so a failed check can be watched and retried
 
+    // Every scan: swap Gambit's New Jersey price for FanDuel Colorado's own price (no login
+    // needed) on the FanDuel rows near or above min EV, and recompute EV from it. A row whose
+    // Colorado market can't be found keeps Gambit's price; the re-check before a bet still uses
+    // Colorado's price. "fanduel": {"coPrices": false} turns this off.
+    async livePrices(rows, minEvPct) {
+      const st = { read: 0, moved: 0, gone: 0 };
+      if (f.coPrices === false) return st;
+      const margin = f.directMarginPts ?? 5, max = f.directMax ?? 60;
+      const want = rows.filter((r) => r.book === name && r.bookRef && !(r.isProp && f.props !== true)
+        && Number.isFinite(r.ev) && r.ev >= minEvPct - margin).sort((x, y) => y.ev - x.ev).slice(0, max);
+      const mapped = [];
+      await Promise.all(want.map(async (r) => {
+        try { r.coMarket = await coMarket(r); mapped.push(r); } catch { /* keeps Gambit's NJ price */ }
+      }));
+      if (!mapped.length) return st;
+      const ids = [...new Set(mapped.map((r) => r.coMarket.marketId))];
+      const got = new Map();
+      for (let i = 0; i < ids.length; i += 50) for (const m of await marketPrices(ids.slice(i, i + 50))) got.set(m.marketId, m);
+      for (const r of mapped) {
+        const mk = got.get(r.coMarket.marketId), rn = runnerOf(mk, r.coMarket.selectionId);
+        const odds = fdAmerican(rn?.winRunnerOdds);
+        r.gambitOdds = r.odds; r.gambitEv = r.ev;
+        const lineOff = r.line != null && rn && Math.abs(Number(rn.handicap)) !== Math.abs(Number(r.line));
+        if (!rn || odds == null || mk.marketStatus !== 'OPEN' || rn.runnerStatus !== 'ACTIVE' || lineOff) { r.direct = 'gone'; r.ev = -Infinity; st.gone++; continue; }
+        st.read++;
+        if (odds !== r.odds) st.moved++;
+        r.direct = true; r.odds = odds;
+        r.ev = (r.fairProb * americanToDecimal(odds) - 1) * 100;
+      }
+      return st;
+    },
+
     // Live price, line and max stake from FanDuel Colorado, plus the betReference placeBet needs.
     async recheck(row) {
       if (row.isProp && f.props !== true) throw new Error('player props are off for FanDuel');
       const m = await coMarket(row);
-      const prices = await send('recheck', `${host('smp')}/api/sports/fixedodds/readonly/v1/getMarketPrices?priceHistory=0`, 'POST', { marketIds: [m.marketId] }, {}, 20000, false);
-      if (prices.status >= 400) throw new Error(`price check HTTP ${prices.status}: ${JSON.stringify(prices.json || prices.text).slice(0, 200)}`);
-      const mk = (Array.isArray(prices.json) ? prices.json : []).find((x) => x.marketId === m.marketId);
+      const mk = (await marketPrices([m.marketId])).find((x) => x.marketId === m.marketId);
       const rn = runnerOf(mk, m.selectionId);
       if (!mk || !rn) return { odds: null, suspended: true };
       const line = row.line == null ? null : Number(rn.handicap);
