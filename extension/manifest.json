@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "EV Placer Bridge",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Runs bet re-check/place requests from the local EV placer inside your logged-in sportsbook tab.",
   "permissions": ["scripting", "tabs", "storage", "alarms", "webRequest", "notifications"],
   "host_permissions": [
