@@ -95,23 +95,21 @@ chrome.webRequest.onBeforeRequest.addListener((d) => {
 
 // FanDuel: its bet requests carry the login in an x-authentication header (lasts about an hour,
 // the page renews it) and, for placing, the location check in x-geo-packet (lasts 20 minutes).
-// The balance check (api.fanduel.com) uses a different login token, x-auth-token. We keep the
-// newest of each that your FanDuel tab sent. The page gets a fresh location check every 20 minutes
+// We keep the newest of each that your FanDuel tab sent. The page gets a fresh location check every 20 minutes
 // and only sends it with a bet, so fd-geo.js also keeps a copy of each one the page receives.
-let fdAuth = { auth: null, wallet: null, geo: null, authAt: 0 };
+let fdAuth = { auth: null, geo: null, authAt: 0 };
 store.get('fdAuth').then((v) => { if (v?.fdAuth && !fdAuth.auth) fdAuth = v.fdAuth; });
 const fdGeoExp = (tok) => {
   try { return Date.parse(JSON.parse(atob(String(tok).split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).expires) || 0; } catch { return 0; }
 };
 chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
   const get = (n) => (d.requestHeaders || []).find((x) => x.name.toLowerCase() === n)?.value;
-  const auth = get('x-authentication'), wallet = get('x-auth-token'), geo = get('x-geo-packet');
+  const auth = get('x-authentication'), geo = get('x-geo-packet');
   const next = { ...fdAuth };
-  if (auth && auth !== fdAuth.auth && (!fdAuth.auth || jwtExp(auth) >= jwtExp(fdAuth.auth) || jwtExp(fdAuth.auth) < Date.now() / 1000)) { next.auth = auth; next.authAt = Date.now(); }
-  if (wallet && wallet !== fdAuth.wallet) next.wallet = wallet;
+  if (auth && /^eyJ/.test(auth) && auth !== fdAuth.auth && (!fdAuth.auth || jwtExp(auth) >= jwtExp(fdAuth.auth) || jwtExp(fdAuth.auth) < Date.now() / 1000)) { next.auth = auth; next.authAt = Date.now(); }
   if (geo && fdGeoExp(geo) > fdGeoExp(fdAuth.geo)) next.geo = geo;
-  if (next.auth !== fdAuth.auth || next.wallet !== fdAuth.wallet || next.geo !== fdAuth.geo) { fdAuth = next; store.set({ fdAuth }); }
-}, { urls: ['https://*.sportsbook.fanduel.com/*', 'https://api.fanduel.com/*'] }, ['requestHeaders', 'extraHeaders']);
+  if (next.auth !== fdAuth.auth || next.geo !== fdAuth.geo) { fdAuth = next; store.set({ fdAuth }); }
+}, { urls: ['https://*.sportsbook.fanduel.com/*'] }, ['requestHeaders', 'extraHeaders']);
 
 // fd-geo.js has to be in the FanDuel page from the start to see its location checks.
 async function registerFdGeo() {
@@ -331,10 +329,9 @@ async function handle(msg) {
       }
     }
     if (msg.request.useFanDuelAuth) {
-      const tok = msg.request.walletAuth ? fdAuth.wallet : fdAuth.auth;
+      const tok = fdAuth.auth;
       if (!tok) return reply({ error: 'FanDuel login not seen yet: refresh the FanDuel tab (stay logged in)' });
-      if (msg.request.walletAuth) msg.request.headers['x-auth-token'] = tok;
-      else msg.request.headers['x-authentication'] = tok;
+      msg.request.headers['x-authentication'] = tok;
       if (msg.request.headers['x-geo-packet'] === '{{fdGeo}}') {
         // Newest location check: the one the page last received, or the one its last bet sent.
         const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: 'MAIN', func: readFdGeo }).catch(() => []);
