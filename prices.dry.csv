@@ -1,0 +1,5 @@
+time,book,live,event,market,selection,line,gambitOdds,gambitEvPct,gambitShownSec,gambitPriceAgeSec,bookOdds,bookLine,bookEvPct,fairOdds,msScanToCheck,bookChangedSec,source,watching,outcome
+2026-11-21T19:11:38.021Z,betrivers,pre-game,Leafs @ Canadiens,Moneyline,Home,,210,24,0,,117,,-13.2,150,303,,gambit,,EV too low
+2026-11-21T19:11:44.028Z,hardrock,pre-game,Leafs @ Canadiens,Moneyline,Home,,234,17.19,0,,231,,16.14,185,301,,gambit,,placed
+2026-11-21T19:11:47.029Z,betrivers,pre-game,James Madison Dukes @ Southern Miss Golden Eagles,Total,Over,71.5,172,17.75,0,,171,71.5,17.32,131,301,,gambit,,placed
+2026-11-21T19:11:53.038Z,hardrock,pre-game,Cal Poly Mustangs @ Arizona Wildcats,Total,Under,180.5,153,20.48,0,,150,180.5,19.05,110,301,,gambit,,placed
