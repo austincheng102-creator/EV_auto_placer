@@ -70,6 +70,11 @@ One app runs either book; the Gambit feed, Novig check, EV math and limits are s
   for each FanDuel row within 5 points of min EV and recomputes EV from it, so the 8% rule uses
   Colorado's price, not New Jersey's. The [SCAN] line shows "FanDuel prices read directly: N
   (M moved since Gambit)". `"fanduel": {"coPrices": false}` goes back to Gambit's NJ price.
+- **Looser rules for one book** (off unless set): `"fanduel": {"devigMethod": "power"}` scores that
+  book's EV with Gambit's Power number (or "multiplicative", "additive", "shin", "best") instead of
+  the lowest of the 4; `"fanduel": {"sharpRules": false}` skips the sharp-book rules for it (sharp
+  book needed live, sharp move in the last 5s, sharp books within 3 pts). Price re-check, odds range,
+  max EV, groups and the daily limit still apply. Works for any book key.
 - **Alternate lines**: if the line Gambit shows isn't FanDuel CO's main line, the app looks for that exact
   line (same side, same sign) in FanDuel CO's alternate spreads/totals. `"fanduel": {"altLines": false}` turns it off.
 - **Price re-check**: FanDuel CO's own current price, line and max stake (its bet-slip check,
