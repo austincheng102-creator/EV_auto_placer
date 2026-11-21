@@ -28,8 +28,10 @@ export function startBridge(port, { reloadExtension = false, quiet = false, hell
       let m; try { m = JSON.parse(buf); } catch { return; }
       if (m.type === 'tabs') { tabs = m.tabs; return; }
       if (m.type === 'reloaded') { log.warn(`Chrome extension reloaded the ${m.book} tab: ${m.why}`); return; }
+      if (m.type === 'hello') { if (!quiet) log.info(`Chrome extension version ${m.version}`); return; }
       if (m.type === 'login') {
-        if (m.start) log.warn(`Logging back in to Gambit with Chrome's saved password (${m.why})`);
+        if (m.note) log.warn(m.note);
+        else if (m.start) log.warn(`Logging back in to Gambit with Chrome's saved password (${m.why})`);
         else if (m.ok) log.good(m.why);
         else log.warn(`Gambit auto login didn't work: ${m.why}. It tries again in a few minutes; or log in by hand in the Gambit tab`);
         return;
