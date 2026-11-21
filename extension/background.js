@@ -279,18 +279,26 @@ async function rememberGambitPage() {
   const t = (await bookTabs()).find((x) => x.book === 'gambit' && /^https:\/\/(www\.)?gambitodds\.com\/./.test(x.url || '') && !/\/welcome/.test(x.url));
   if (t && t.url !== gambitHomeUrl) { gambitHomeUrl = t.url; chrome.storage.local.set({ gambitHomeUrl }).catch(() => {}); }
 }
-const inPage = async (tabId, open) => (await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: gambitLoginForm, args: [open] }))[0]?.result || { state: 'no-page' };
+const inPage = async (tabId, open) => (await Promise.race([
+  chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: gambitLoginForm, args: [open] }),
+  sleep(20000).then(() => { throw new Error('the Gambit tab did not answer for 20s'); }),
+]))[0]?.result || { state: 'no-page' };
 
+let loginBusyAt = 0;
 async function autoLoginGambit(why) {
-  if (!settings.gambitAutoLogin || loginBusy) return;
+  const fromApp = /app found/.test(why);
+  if (!settings.gambitAutoLogin) return fromApp && say({ note: 'auto login is turned off (session.gambitAutoLogin)' });
+  // A try that got stuck (a tab that never answered) must not block every later one.
+  if (loginBusy && Date.now() - loginBusyAt < 2 * 60e3) return fromApp && say({ note: 'auto login: a try is already running' });
   // At most one try every 2 minutes; after 3 failures in a row, every 10 minutes (it keeps trying).
   const gap = loginFails >= 3 ? 10 * 60e3 : 2 * 60e3;
-  if (Date.now() - loginTriedAt < gap) return;
+  if (Date.now() - loginTriedAt < gap) return fromApp && say({ note: `auto login: last try was ${Math.round((Date.now() - loginTriedAt) / 1000)}s ago (${lastLogin?.why || 'running'}); next try in ${Math.round((gap - (Date.now() - loginTriedAt)) / 1000)}s` });
   const t = (await bookTabs()).find((x) => x.book === 'gambit' && !/api/.test(new URL(x.url).hostname));
   if (!t) return say({ note: 'auto login: no Gambit tab open (open gambitodds.com in Chrome)' });
   if (t.discarded) return;
   if (!chrome.debugger) return say({ ok: false, why: 'the extension is missing the "debugger" permission: reload it in chrome://extensions' });
-  loginBusy = true;
+  loginBusy = true; loginBusyAt = Date.now();
+  if (fromApp) say({ note: `auto login: checking the Gambit tab (${t.url})` });
   const done = (ok, msg) => {
     lastLogin = { at: Date.now(), ok, why: msg };
     loginFails = ok ? 0 : loginFails + 1;
