@@ -194,14 +194,17 @@ export function makeFanDuel(name, label, cfg, bridge) {
     // Colorado market can't be found keeps Gambit's price; the re-check before a bet still uses
     // Colorado's price. "fanduel": {"coPrices": false} turns this off.
     async livePrices(rows, minEvPct) {
-      const st = { read: 0, moved: 0, gone: 0 };
+      const st = { read: 0, moved: 0, gone: 0, unmatched: 0, why: '' };
       if (f.coPrices === false) return st;
       const margin = f.directMarginPts ?? 5, max = f.directMax ?? 60;
-      const want = rows.filter((r) => r.book === name && r.bookRef && !(r.isProp && f.props !== true)
-        && Number.isFinite(r.ev) && r.ev >= minEvPct - margin).sort((x, y) => y.ev - x.ev).slice(0, max);
+      const near = rows.filter((r) => r.book === name && !(r.isProp && f.props !== true)
+        && Number.isFinite(r.ev) && r.ev >= minEvPct - margin);
+      const want = near.sort((x, y) => y.ev - x.ev).slice(0, max);
       const mapped = [];
+      // A row we can't match to a Colorado market keeps Gambit's NJ price; the scan line says why.
+      const miss = (r, msg) => { st.unmatched++; if (!st.why) st.why = `${r.event} ${r.market || r.marketKey}: ${msg}`; };
       await Promise.all(want.map(async (r) => {
-        try { r.coMarket = await coMarket(r); mapped.push(r); } catch { /* keeps Gambit's NJ price */ }
+        try { r.coMarket = await coMarket(r); mapped.push(r); } catch (e) { miss(r, e.message); }
       }));
       if (!mapped.length) return st;
       const ids = [...new Set(mapped.map((r) => r.coMarket.marketId))];
