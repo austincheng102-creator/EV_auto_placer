@@ -94,7 +94,9 @@ setting in `config.json`; one that isn't there gets the default below, and `null
   can be bet again, at most once per scan, and each bet is still checked at the book's real price first.
   `maxBetsPerEvent` caps game lines (spreads, totals, moneylines, any period) per game. Player props don't
   count toward it: each player + stat is its own group, so Trae Young points, points + rebounds and steals
-  can each get one bet, but points Under can't go twice. `"propsInEventCap": true` puts props back under the cap.
+  can each get one bet, but points Under can't go twice. `maxPropStatsPerPlayer` (default 2) caps how many
+  different stats one player gets per game: points and rebounds placed, then steals is skipped. The same stat
+  on both books counts once. `"propsInEventCap": true` puts props back under the cap.
   With `"perBook": true` (default) the count and $ cap are per book: Over 214.5 on Hard Rock and Over 215.5
   on BetRivers can both be placed (each passing every rule on its own), but not Over twice on one book,
   and once either book has the Over, neither book takes the Under. `"perBook": false` = one bet across both books.

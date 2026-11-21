@@ -148,6 +148,33 @@ export const groupKey = (r) => `${norm(r.event)}|${norm(r.market)}|${norm(bothSi
  */
 export const isPropBet = (p) => p.isProp ?? (sideless(p.selection) !== '' && !/total|spread|moneyline/i.test(p.market || ''));
 
+/** Game + player of a prop bet, for maxPropStatsPerPlayer ("Trae Young Over" -> "...|traeyoung"). */
+export const playerKey = (p) => `${norm(p.event)}|${norm(sideless(p.selection))}`;
+export const statKey = (p) => norm(p.market);
+
+/**
+ * Stats already bet per game + player (placed in the last day, or being placed now): key -> Set of markets.
+ * The same stat on both books counts once.
+ */
+export function playerStats(bets, now = Date.now()) {
+  const out = new Map();
+  for (const p of bets) {
+    if (!isPropBet(p) || (p.at && now - Date.parse(p.at) > 24 * 3600e3)) continue;
+    const k = playerKey(p);
+    if (!out.has(k)) out.set(k, new Set());
+    out.get(k).add(statKey(p));
+  }
+  return out;
+}
+
+/** A prop on a new stat for a player who already has maxPropStatsPerPlayer stats bet. */
+export function tooManyStats(cfg, stats, row) {
+  const max = cfg.maxPropStatsPerPlayer;
+  if (max == null || !isPropBet(row)) return false;
+  const have = stats.get(playerKey(row));
+  return !!have && !have.has(statKey(row)) && have.size >= max;
+}
+
 /** The side within a group ("over", a team name, "trae young over"). */
 const sideOf = (r) => norm(r.selection);
 

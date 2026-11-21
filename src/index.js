@@ -24,7 +24,7 @@ import { makeBetLog, parseTime } from './betlog.js';
 import { makePriceLog, makeSpreadSkipLog } from './skiplog.js';
 import { makePropFunnel } from './propfunnel.js';
 import { writeSnapshot, serveReport, openInBrowser } from './report.js';
-import { applyFilterDefaults, tooShort, evTooHigh, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom, groupClash, isPropBet } from './filters.js';
+import { applyFilterDefaults, tooShort, evTooHigh, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom, groupClash, isPropBet, playerStats, tooManyStats, playerKey, statKey } from './filters.js';
 
 const root = appDir;
 let args = process.argv.slice(2);
@@ -257,11 +257,14 @@ const propFunnel = makePropFunnel(cfg, root, { dryRun, log });
 // maxBetsPerEvent caps game lines (spreads, totals, moneylines) per game. Player props don't count
 // toward it and aren't capped by it: each player + stat is still its own group (one bet, see group).
 // "propsInEventCap": true puts props back under the cap.
+// Player props: at most maxPropStatsPerPlayer different stats per player per game (default 2), e.g.
+// points and rebounds, then steals is skipped. The same stat on both books counts once. null = no limit.
+if (cfg.maxPropStatsPerPlayer === undefined) cfg.maxPropStatsPerPlayer = 2;
 const inEventCap = (p) => cfg.propsInEventCap === true || !isPropBet(p);
 const overEventCap = (r, perEvent) => inEventCap(r) && (perEvent[r.event] || 0) >= (cfg.maxBetsPerEvent ?? Infinity);
 
 /** First rule a prop row fails in this scan (same order as the scan filters in tick()). */
-function propStage(r, { groups, perEvent, now }) {
+function propStage(r, { groups, perEvent, stats, now }) {
   if (r.direct === 'gone') return 'gone';
   if (!Number.isFinite(r.ev) || r.ev < cfg.minEvPct - 3) return 'evLow';
   if (r.ev < cfg.minEvPct) return 'evNear';
@@ -276,6 +279,7 @@ function propStage(r, { groups, perEvent, now }) {
   if ([...inflight.values()].some((f) => groupClash(cfg, r, f))) return 'groupInFlight';
   if ((cooldown.get(r.id) || 0) >= now) return 'cooldown';
   if (overEventCap(r, perEvent)) return 'perEvent';
+  if (tooManyStats(cfg, stats, r)) return 'playerStats';
   if (!dryRun && !bridge.hasTab(r.book)) return 'noTab';
   if (novig && !novig.check(r, r.odds).ok) return 'novig';
   return 'dupInScan';
@@ -490,11 +494,12 @@ async function tick() {
       }
     }
   }
+  const stats = playerStats([...state.placed, ...inflight.values()]);
   const perEvent = {};
   for (const p of [...state.placed, ...inflight.values()]) if (inEventCap(p)) perEvent[p.event] = (perEvent[p.event] || 0) + 1;
   const now = Date.now();
   let farOff = 0;
-  const why = { odds: 0, evCap: 0, sharpSpread: 0, noSharp: 0, stale: 0, staleProp: 0, group: 0 };
+  const why = { odds: 0, evCap: 0, sharpSpread: 0, noSharp: 0, stale: 0, staleProp: 0, group: 0, playerStats: 0 };
   const drop = (k) => (why[k]++, false);
   const groups = groupTotals(state.placed);
   const ageMax = cfg.sharp.liveMaxAgeSec;
@@ -510,6 +515,7 @@ async function tick() {
     .filter((r) => ![...inflight.values()].some((f) => groupClash(cfg, r, f)))
     .filter((r) => (cooldown.get(r.id) || 0) < now)   // repeats on one side are capped by the group rule
     .filter((r) => !overEventCap(r, perEvent))
+    .filter((r) => !tooManyStats(cfg, stats, r) || drop('playerStats'))
     .filter((r) => dryRun || bridge.hasTab(r.book))
     // New bets first, then ones being watched after a failed price check.
     .sort((a, b) => (watch.has(a.id) - watch.has(b.id)) || b.ev - a.ev);
@@ -517,10 +523,17 @@ async function tick() {
   if (novig) ev = ev.filter((r) => novig.check(r, r.odds).ok);
   const novigDropped = gambitCount - ev.length;
   // One bet per group per scan: keep the first (best-EV new) row of each group. Later scans can add more, up to group.maxBets.
-  { const kept = []; ev = ev.filter((r) => { if (kept.some((k) => groupClash(cfg, r, k))) return false; kept.push(r); return true; }); }
+  // Also counts each kept prop's stat, so one scan can't send a player past maxPropStatsPerPlayer.
+  { const kept = [];
+    ev = ev.filter((r) => {
+      if (kept.some((k) => groupClash(cfg, r, k)) || tooManyStats(cfg, stats, r)) return false;
+      kept.push(r);
+      if (isPropBet(r)) { const k = playerKey(r); if (!stats.has(k)) stats.set(k, new Set()); stats.get(k).add(statKey(r)); }
+      return true;
+    }); }
   if (propFunnel) {
     const sent = new Set(ev.map((r) => r.id));
-    for (const r of rows) if (r.isProp) propFunnel.note(r, sent.has(r.id) ? 'sent' : propStage(r, { groups, perEvent, now }));
+    for (const r of rows) if (r.isProp) propFunnel.note(r, sent.has(r.id) ? 'sent' : propStage(r, { groups, perEvent, stats, now }));
     propFunnel.tick();
   }
   const whyText = [
@@ -531,6 +544,7 @@ async function tick() {
     why.stale && `${why.stale} live with no sharp move in the last ${ageMax}s`,
     why.staleProp && `${why.staleProp} live props with no FanDuel move in the last ${cfg.sharp.livePropMaxAgeSec}s`,
     why.group && `${why.group} group already bet`,
+    why.playerStats && `${why.playerStats} player already has ${cfg.maxPropStatsPerPlayer} stats bet`,
   ].filter(Boolean).join(', ');
 
   const nBooks = new Set(rows.map((r) => r.book)).size;
