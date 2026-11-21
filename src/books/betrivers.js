@@ -9,6 +9,7 @@
 // Kambi units: odds and stake are x1000 (odds 1630 = 1.63 decimal, stake 1000 = $1), lines x1000.
 
 import { decimalToAmerican, americanToDecimal } from '../ev.js';
+import { log } from '../log.js';
 
 const STATE = (cfg) => String(cfg.region || 'CO').toLowerCase();
 
@@ -221,7 +222,9 @@ export function makeBetRivers(name, label, cfg, bridge) {
       // Same pre-check the bet slip does; also tells us if the BetRivers session is still valid.
       const v = await inTab('validate', `${k.authHost}/player/api/v2019/${k.offering}/coupon/validate.json?${qs()}`, 'POST',
         { couponRows: rows, bets, isUserLoggedIn: true });
-      if (v.status === 401 || v.json?.validSession === false) throw new Error('BetRivers didn\'t accept the login token: click any odds in the BetRivers tab once, then remove it from the slip');
+      if (v.renewed && !v.renewError) log.bet('BetRivers: login token was stale, got a fresh one from the BetRivers tab');
+      // The extension already tried a fresh sportsbook login in the tab (renewError says why that failed).
+      if (v.status === 401 || v.json?.validSession === false) throw new Error(`BetRivers didn't accept the login token, and getting a fresh one failed (${v.renewError || 'no reason given'}): reload the BetRivers tab and check you're logged in`);
       if (v.status >= 400 || (v.json?.status && v.json.status !== 'SUCCESS')) {
         const err = new Error(`validate: ${kambiWhy(v.json) || JSON.stringify(v.json || v.text).slice(0, 200)}`);
         err.detail = `Kambi validate response (HTTP ${v.status}): ${JSON.stringify(v.json ?? v.text)}`;

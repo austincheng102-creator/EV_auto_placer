@@ -69,6 +69,65 @@ chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
   if (h?.value && h.value !== kambiAuth) { kambiAuth = h.value; store.set({ kambiAuth }); }
 }, { urls: ['https://*.kambicdn.org/*', 'https://*.kambicdn.com/*'] }, ['requestHeaders', 'extraHeaders']);
 
+// The page gets that token by logging in to Kambi itself: it asks co.betrivers.com for a one-time
+// ticket (gamelaunch), then sends it to Kambi's punter/login, which answers with the token.
+// The token it hands us can stop working (Kambi ends it, the page logs in again, or the one we
+// kept on disk is from an older session), and the page only sends a new one when you touch the
+// bet slip. So we keep what the page sends to punter/login (account id, market, device hash)
+// and, when Kambi turns our token down, log in the same way ourselves to get a fresh one.
+let kambiLogin = null;   // { url, body } of the page's last punter/login (ticket left out)
+let kambiPunter = null;  // "<cageCode>-<playerId>", from the site's own requests, as a fallback
+store.get(['kambiLogin', 'kambiPunter']).then((v) => {
+  if (v?.kambiLogin && !kambiLogin) kambiLogin = v.kambiLogin;
+  if (v?.kambiPunter && !kambiPunter) kambiPunter = v.kambiPunter;
+});
+chrome.webRequest.onBeforeRequest.addListener((d) => {
+  const raw = d.requestBody?.raw?.[0]?.bytes;
+  if (!raw) return;
+  try {
+    const { ticket, ...body } = JSON.parse(new TextDecoder().decode(raw));
+    if (body?.punterId) { kambiLogin = { url: d.url, body }; kambiPunter = body.punterId; store.set({ kambiLogin, kambiPunter }); }
+  } catch {}
+}, { urls: ['https://*.kambicdn.org/*punter/login*'] }, ['requestBody']);
+chrome.webRequest.onBeforeRequest.addListener((d) => {
+  const q = new URL(d.url).searchParams, cage = q.get('cageCode'), id = q.get('cagePlayerId');
+  if (cage && id && `${cage}-${id}` !== kambiPunter) { kambiPunter = `${cage}-${id}`; store.set({ kambiPunter }); }
+}, { urls: ['https://*.betrivers.com/api/*cagePlayerId*'] });
+
+let kambiRenewing = null, kambiRenewedAt = 0;
+// Gets a fresh Kambi token the way the page does, from inside your logged-in BetRivers tab.
+// reqUrl is the Kambi request that was turned down (tells us the host, brand and market).
+function renewKambi(tab, reqUrl) {
+  if (!kambiRenewing) kambiRenewing = (async () => {
+    const punterId = kambiLogin?.body?.punterId || kambiPunter;
+    if (!punterId) return { error: 'BetRivers account id not seen yet: reload the BetRivers tab once (stay logged in)' };
+    const origin = new URL(tab.url).origin;
+    const u = new URL(reqUrl);
+    const market = u.searchParams.get('market') || kambiLogin?.body?.market || `US-${new URL(origin).hostname.split('.')[0].toUpperCase()}`;
+    const g = await runInTab(tab.id, {
+      method: 'GET', url: `${origin}/api/service/gamelaunch/providers/KAMBI/games/sportsbook/launch?gameMode=REAL&channel=DESKTOP&clientType=HTML&cageCode=${String(punterId).split('-')[0]}&t=${Date.now()}`,
+      headers: { accept: 'application/json, text/plain, */*', ...(rsiAuth ? { 'x-auth-token': rsiAuth } : {}) },
+    });
+    const ticket = g.json?.token;
+    if (!ticket) return { error: `BetRivers wouldn't give a sportsbook ticket (${g.error || `HTTP ${g.status}`}): check you're logged in in the BetRivers tab` };
+    const loginUrl = kambiLogin?.url || `${u.origin}${u.pathname.replace(/(\/player\/api\/v\d+\/[^/]+\/).*$/, '$1')}punter/login.json?market=${encodeURIComponent(market)}&lang=en_US&channel_id=1&client_id=200&settings=true`;
+    const l = await runInTab(tab.id, {
+      method: 'POST', url: loginUrl, headers: { accept: '*/*', 'content-type': 'application/json' },
+      body: { requestStreaming: true, channel: 'WEB', market, ...(kambiLogin?.body || {}), punterId, ticket },
+    });
+    const token = l.json?.token;
+    if (!token) return { error: `BetRivers sportsbook login failed (${l.error || `HTTP ${l.status}`} ${JSON.stringify(l.json ?? l.text ?? '').slice(0, 120)})` };
+    // Same form as the header the page sends ("Bearer <token>").
+    const prefix = kambiAuth && /\s/.test(kambiAuth.trim()) ? kambiAuth.trim().replace(/\S+$/, '') : 'Bearer ';
+    kambiAuth = prefix + token;
+    kambiRenewedAt = Date.now();
+    store.set({ kambiAuth });
+    return { ok: true };
+  })().catch((e) => ({ error: `BetRivers sportsbook login failed: ${e?.message || e}` })).finally(() => { kambiRenewing = null; });
+  return kambiRenewing;
+}
+const kambiRefused = (r) => r && !r.error && (r.status === 401 || r.json?.validSession === false);
+
 // BetRivers' own site API (bet history) wants the x-auth-token header the site sends.
 let rsiAuth = null;
 store.get('rsiAuth').then((v) => { if (v?.rsiAuth && !rsiAuth) rsiAuth = v.rsiAuth; });
@@ -438,8 +497,20 @@ async function handle(msg) {
     const tab = matches.find((t) => /^https:\/\/(www\.)?[^/]+\/?/.test(t.url || '') && !/api/.test(new URL(t.url).hostname)) || matches[0];
     if (!tab) return reply({ error: msg.book === 'gambit' ? 'no open Gambit tab (open gambitodds.com and log in)' : `no open ${msg.book} tab` });
     if (msg.request.useKambiAuth) {
-      if (!kambiAuth) return reply({ error: 'BetRivers login token not seen yet: in the BetRivers tab, click any odds once (adds it to the slip), then remove it' });
+      if (!kambiAuth) {
+        const n = await renewKambi(tab, msg.request.url);
+        if (n.error) return reply({ error: `BetRivers login token not seen yet and getting one failed: ${n.error}` });
+      }
       msg.request.headers = { ...(msg.request.headers || {}), authorization: kambiAuth };
+      // Kambi turned the token down: get a fresh one and send the request once more. A refused
+      // request did nothing (no bet placed), so sending it again is safe.
+      const first = await runInTab(tab.id, msg.request);
+      if (!kambiRefused(first)) return reply(first.error ? { error: first.error } : first);
+      const n = await renewKambi(tab, msg.request.url);
+      if (n.error) return reply({ ...first, renewError: n.error });
+      msg.request.headers.authorization = kambiAuth;
+      const again = await runInTab(tab.id, msg.request);
+      return reply(again.error ? { error: again.error } : { ...again, renewed: true, ...(kambiRefused(again) ? { renewError: 'Kambi turned down the fresh token too' } : {}) });
     }
     if (msg.request.useRsiAuth) {
       if (!rsiAuth) return reply({ error: 'BetRivers login not seen yet: refresh the BetRivers tab (stay logged in)' });
@@ -524,7 +595,7 @@ chrome.tabs.onCreated.addListener(() => keepTabsLoaded());
 chrome.tabs.onUpdated.addListener((_id, info) => { if (info.url || info.status === 'complete') keepTabsLoaded(); });
 chrome.tabs.onRemoved.addListener(sendTabs);
 chrome.runtime.onMessage.addListener((m, _s, respond) => {
-  if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth, betriversLogin: !!kambiAuth, hardrockLogin: !!hrAuth.session, hardrockGeo: hrAuth.geoAt || 0,
+  if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth, betriversLogin: !!kambiAuth, betriversRenewedAt: kambiRenewedAt, hardrockLogin: !!hrAuth.session, hardrockGeo: hrAuth.geoAt || 0,
     fanduelExp: jwtExp(fdAuth.auth), fanduelGeoExp: fdGeoExp(fdAuth.geo),
     gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, alert: alertText, lastReload, lastLogin, autoLogin: settings.gambitAutoLogin })); return true; }
 });
