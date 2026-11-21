@@ -588,7 +588,7 @@ async function tick() {
     return `${BOOK_LABELS[b] || b} ${mine.length}/${mine.filter((r) => Number.isFinite(r.ev) && r.ev >= cfg.minEvPct).length}`;
   }).join(', ');
   const directText = Object.entries(direct).filter(([, d]) => d && (d.read || d.gone || d.unmatched))
-    .map(([n, d]) => `, ${BOOK_LABELS[n]} prices read directly: ${d.read} (${d.moved} moved since Gambit${d.gone ? `, ${d.gone} gone or line changed` : ''}${d.shadowNew ? `, ${d.shadowNew} +EV not listed for ${BOOK_LABELS[n]} on Gambit` : ''}${d.unmatched ? `, ${d.unmatched} not found on ${BOOK_LABELS[n]} CO, e.g. ${d.why.slice(0, 600)}` : ''})`).join('');
+    .map(([n, d]) => `, ${BOOK_LABELS[n]} prices read directly: ${d.read} (${d.moved} moved since Gambit${d.gone ? `, ${d.gone} gone or line changed` : ''}${d.shadowNew ? `, ${d.shadowNew} +EV not listed for ${BOOK_LABELS[n]} on Gambit` : ''}${d.unmatched ? `, ${d.unmatched} not found on ${BOOK_LABELS[n]} CO, e.g. ${d.why.slice(0, 900)}` : ''})`).join('');
   log.scan(`${ev.length} +EV bets from ${rows.length} rows (${nBooks} book${nBooks === 1 ? '' : 's'})` +
     (novig ? `, ${novigDropped} dropped because Novig doesn't show ${novig.minEvPct}%+` : '') +
     (farOff ? `, ${farOff} pre-game skipped (starts more than ${cfg.pregameMaxHours}h away)` : '') +
