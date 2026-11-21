@@ -28,10 +28,14 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
     : site === 'hardrock' ? 'Log in again in the Hard Rock tab, then place one small bet by hand for the location check'
     : `Log in again in the ${label(site)} tab`;
 
+  // Hard Rock's location check is missing (not a logout): bets can't go through until you place one by hand.
+  const needsGeo = (why) => /location check not seen/i.test(why || '');
   function alarm(site, why) {
-    const text = `${label(site)} is LOGGED OUT (${why}). ${howToFix(site)}. The app keeps running and retrying.`;
+    const text = needsGeo(why)
+      ? `${label(site)} needs a location check before it can place bets: place one small bet by hand in the Hard Rock tab. You are still logged in. The app keeps running and retrying.`
+      : `${label(site)} is LOGGED OUT (${why}). ${howToFix(site)}. The app keeps running and retrying.`;
     log.alarm(text);
-    bridge?.tell({ type: 'alert', book: site, title: `EV Placer: ${label(site)} logged out`, text });
+    bridge?.tell({ type: 'alert', book: site, title: `EV Placer: ${label(site)} ${needsGeo(why) ? 'needs a location check' : 'logged out'}`, text });
   }
 
   function bad(site, why) {
@@ -40,11 +44,11 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
       down.set(site, { since: Date.now(), why, remindedAt: Date.now() });
       alarm(site, why);
       // The site may still have you logged in under the hood: a reload lets it renew from its cookies.
-      if (reloadTabs) bridge?.tell({ type: 'reloadTab', book: site, why: `the app found it logged out (${why})` });
+      if (reloadTabs && !needsGeo(why)) bridge?.tell({ type: 'reloadTab', book: site, why: `the app found it logged out (${why})` });
     } else if (Date.now() - d.remindedAt >= remindMs) {
       d.remindedAt = Date.now(); d.why = why;
       alarm(site, `${why}, for ${Math.round((Date.now() - d.since) / 60e3)} min`);
-      if (reloadTabs) bridge?.tell({ type: 'reloadTab', book: site, why: 'still logged out' });   // the extension allows one per 5 min
+      if (reloadTabs && !needsGeo(why)) bridge?.tell({ type: 'reloadTab', book: site, why: 'still logged out' });   // the extension allows one per 5 min
     }
   }
 

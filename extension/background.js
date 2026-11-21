@@ -9,6 +9,19 @@ const BOOK_HOSTS = {
   gambit: [/(^|\.)gambitodds\.com$/],
 };
 
+// Saved logins: kept in memory-only storage (gone when Chrome restarts or the extension reloads)
+// and on disk, so an update that reloads the extension doesn't lose them. Hard Rock's location
+// check only comes from a bet you place by hand, so losing it stopped every Hard Rock bet.
+const store = {
+  async get(keys) {
+    const l = await chrome.storage.local.get(keys).catch(() => ({}));
+    const s = (await chrome.storage.session?.get(keys).catch(() => ({}))) || {};
+    for (const [k, v] of Object.entries(s)) if (v != null) l[k] = v;
+    return l;
+  },
+  set(o) { chrome.storage.session?.set(o).catch(() => {}); chrome.storage.local.set(o).catch(() => {}); },
+};
+
 // Gambit's login token expires about hourly and the site refreshes it on its own. We
 // watch the requests your open Gambit tab makes and reuse its current token, so the
 // engine never needs a copied one.
@@ -28,7 +41,7 @@ function takeGambitToken(v) {
   if (gambitAuth && gambitTokenOk(gambitAuth) && jwtExp(v) && jwtExp(gambitAuth) && jwtExp(v) < jwtExp(gambitAuth)) return;
   if (gambitAuth) gambitSpare = [gambitAuth, ...gambitSpare.filter((t) => t !== gambitAuth && t !== v)].slice(0, 3);
   gambitAuth = v;
-  chrome.storage.session?.set({ gambitAuth, gambitSpare });
+  store.set({ gambitAuth, gambitSpare });
 }
 // Gambit refused this token: move to the newest spare that hasn't run out. With no spare we keep
 // it (the page's next request brings a new one), so a one-off refusal can't leave us with none.
@@ -36,10 +49,10 @@ function dropGambitToken(v) {
   gambitSpare = gambitSpare.filter((t) => t !== v && gambitTokenOk(t));
   if (gambitAuth !== v || !gambitSpare.length) return false;
   gambitAuth = gambitSpare.shift();
-  chrome.storage.session?.set({ gambitAuth, gambitSpare });
+  store.set({ gambitAuth, gambitSpare });
   return true;
 }
-chrome.storage.session?.get(['gambitAuth', 'gambitSpare']).then((v) => {
+store.get(['gambitAuth', 'gambitSpare']).then((v) => {
   if (!gambitAuth && v?.gambitAuth) { gambitAuth = v.gambitAuth; gambitSpare = v.gambitSpare || []; }
 });
 chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
@@ -50,18 +63,18 @@ chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
 // BetRivers (Kambi) works the same way: its bet-slip requests carry a login token in an
 // Authorization header. We keep the latest one your BetRivers tab sent.
 let kambiAuth = null;
-chrome.storage.session?.get('kambiAuth').then((v) => { if (v?.kambiAuth && !kambiAuth) kambiAuth = v.kambiAuth; });
+store.get('kambiAuth').then((v) => { if (v?.kambiAuth && !kambiAuth) kambiAuth = v.kambiAuth; });
 chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
   const h = (d.requestHeaders || []).find((x) => x.name.toLowerCase() === 'authorization');
-  if (h?.value && h.value !== kambiAuth) { kambiAuth = h.value; chrome.storage.session?.set({ kambiAuth }); }
+  if (h?.value && h.value !== kambiAuth) { kambiAuth = h.value; store.set({ kambiAuth }); }
 }, { urls: ['https://*.kambicdn.org/*', 'https://*.kambicdn.com/*'] }, ['requestHeaders', 'extraHeaders']);
 
 // BetRivers' own site API (bet history) wants the x-auth-token header the site sends.
 let rsiAuth = null;
-chrome.storage.session?.get('rsiAuth').then((v) => { if (v?.rsiAuth && !rsiAuth) rsiAuth = v.rsiAuth; });
+store.get('rsiAuth').then((v) => { if (v?.rsiAuth && !rsiAuth) rsiAuth = v.rsiAuth; });
 chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
   const h = (d.requestHeaders || []).find((x) => x.name.toLowerCase() === 'x-auth-token');
-  if (h?.value && h.value !== rsiAuth) { rsiAuth = h.value; chrome.storage.session?.set({ rsiAuth }); }
+  if (h?.value && h.value !== rsiAuth) { rsiAuth = h.value; store.set({ rsiAuth }); }
 }, { urls: ['https://*.betrivers.com/api/*'] }, ['requestHeaders', 'extraHeaders']);
 
 // Hard Rock Bet sends no auth headers: its login token (sessionToken) and location-check
@@ -69,14 +82,14 @@ chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
 // ones your Hard Rock tab sent. The login token refreshes every few seconds; the location
 // token is only sent when you place a bet, so place one bet by hand after logging in.
 let hrAuth = { session: null, geo: null, geoAt: 0, sessionAt: 0 };
-chrome.storage.session?.get('hrAuth').then((v) => { if (v?.hrAuth && !hrAuth.session) hrAuth = v.hrAuth; });
+store.get('hrAuth').then((v) => { if (v?.hrAuth && !hrAuth.session) hrAuth = v.hrAuth; });
 chrome.webRequest.onBeforeRequest.addListener((d) => {
   const f = d.requestBody?.formData;
   if (!f) return;
   const session = f.sessionToken?.[0], geo = f.geolocationDetails?.[0];
   if ((session && session !== hrAuth.session) || geo) {
     hrAuth = { ...hrAuth, ...(session && session !== hrAuth.session ? { session, sessionAt: Date.now() } : {}), ...(geo ? { geo, geoAt: Date.now() } : {}) };
-    chrome.storage.session?.set({ hrAuth });
+    store.set({ hrAuth });
   }
 }, { urls: ['https://*.hardrocksportsbook.com/*'] }, ['requestBody']);
 
@@ -138,9 +151,37 @@ async function reloadTab(book, why) {
   return true;
 }
 
+// Hard Rock logs you out after about 30 minutes with no mouse or keyboard use in its tab, even
+// while its page keeps renewing the login (Austin's test, 2026-11-20: clicking around every 10
+// minutes kept it logged in past 50 minutes). So every few minutes we give each site's tab a
+// small, harmless sign of use: the pointer moves and Shift is tapped. Nothing is clicked or typed.
+const NUDGE_MS = 4 * 60e3;
+const NUDGE_BOOKS = ['hardrock', 'gambit'];
+const nudgedAt = {};
+function nudgePage() {
+  const x = 40 + Math.round(Math.random() * 300), y = 40 + Math.round(Math.random() * 200);
+  const targets = [window, document, document.body, document.elementFromPoint(x, y)].filter(Boolean);
+  const mouse = { bubbles: true, cancelable: true, clientX: x, clientY: y, screenX: x, screenY: y + 80, view: window };
+  for (const t of targets) {
+    for (const type of ['pointermove', 'mousemove']) t.dispatchEvent(new (type.startsWith('pointer') ? PointerEvent : MouseEvent)(type, mouse));
+    for (const type of ['keydown', 'keyup']) t.dispatchEvent(new KeyboardEvent(type, { bubbles: true, key: 'Shift', code: 'ShiftLeft', shiftKey: type === 'keydown' }));
+  }
+  window.dispatchEvent(new Event('scroll'));
+  window.dispatchEvent(new Event('focus'));
+  return true;
+}
+async function nudgeTabs() {
+  for (const t of await bookTabs()) {
+    if (!NUDGE_BOOKS.includes(t.book) || t.discarded || Date.now() - (nudgedAt[t.id] || 0) < NUDGE_MS) continue;
+    nudgedAt[t.id] = Date.now();
+    chrome.scripting.executeScript({ target: { tabId: t.id }, world: 'MAIN', func: nudgePage }).catch(() => {});
+  }
+}
+
 // Every 30 seconds: is each site still renewing its own login? If not, its page has stalled.
 async function watchLogins() {
   await keepTabsLoaded();
+  await nudgeTabs();
   const now = Date.now() / 1000;
   // A token that ran out over 10 minutes ago means reloading didn't bring the login back: you're
   // really logged out, so stop reloading (the app keeps alerting until you log in).
