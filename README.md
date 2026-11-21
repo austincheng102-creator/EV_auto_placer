@@ -129,6 +129,10 @@ all the rules above), and nothing is placed at a price that didn't pass.
   the price moved in the meantime. `"hardrock": {"directPrices": false}` turns this off.
 - `prices.csv` next to the app gets a line for each check: Gambit's price, how long Gambit had shown
   it, the book's real price and EV, how long ago BetRivers last changed that price, and what happened. This shows how far behind Gambit is.
+- `sharp-skips.csv` next to the app gets a line for each bet skipped by the sharp-books rule
+  (`sharp.maxSpreadPts`): its EV, how far apart the sharp books were, each sharp book's no-vig win %,
+  and whether it would pass at 4 or 5 points. The same bet is only written again after 5 minutes or
+  when its odds change.
 - `props-funnel.csv` next to the app shows why player props don't get bet. Every 10 minutes it
   adds a line: how many props Gambit listed for your books, and for each one the furthest step it
   got to (under 5% EV, 5-8% EV, no FanDuel move in 30s, game already has `maxBetsPerEvent` bets, ...,
@@ -163,6 +167,10 @@ data is in `bets.json`). Dry runs go to `bets.dry.csv`. Each row has:
   Hard Rock bets are sent with price changes refused, so it can't fill you at a different price.
   If the book doesn't report its price, the column says `not reported` and the raw reply is in
   `debug.log`.
+- **Other books' odds**: every other book Gambit listed for that selection, as `our side/other side`
+  (sharp books first: Pinnacle, Kalshi, Polymarket, Novig, FanDuel), then each sharp book's no-vig
+  win % and how many points apart they were. These are the prices behind the fair odds. Bets placed
+  before this was added have these columns empty.
 - **Fair odds**: the one we used (the lowest of Gambit's four no-vig methods), plus each method
   (Power, Multiplicative, Additive, Shin) and how many books are behind it. If Gambit's page shows a
   higher EV than the log, it's using a different method than the lowest one; find it in those columns.

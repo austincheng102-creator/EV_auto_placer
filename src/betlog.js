@@ -30,6 +30,22 @@ export const parseTime = (t) => {
   return Date.parse(t);
 };
 
+// Gambit sportsbook ids -> names, for the "other books' odds" column. Unknown ids show as "book <id>".
+export const GAMBIT_BOOK_NAMES = {
+  1014: 'Pinnacle', 194: 'Kalshi', 193: 'Polymarket', 1011: 'Polymarket', 192: 'Novig', 100: 'FanDuel',
+  200: 'DraftKings', 400: 'BetMGM', 1001: 'BetMGM MI', 365: 'bet365', 300: 'Caesars', 1004: 'BetRivers', 500: 'Kambi',
+  850: 'Hard Rock', 851: 'Hard Rock', 1008: 'Hard Rock', 1016: 'Hard Rock', 700: 'theScore', 1005: 'BetParx',
+  191: 'ProphetX', 1006: 'Bovada', 800: 'Fliff', 613: 'BetOnline', 385: 'PrizePicks',
+};
+const SHARP_FIRST = [1014, 194, 193, 1011, 192, 100];
+const am = (o) => (Number.isFinite(o) ? fmtAmerican(o) : '?');
+/** "Pinnacle -120/+100; Kalshi -125/+105; ..." = each book's price on our side / the other side. */
+export function otherBooksText(prices, ownId) {
+  const ids = Object.keys(prices || {}).map(Number).filter((id) => id !== Number(ownId));
+  ids.sort((a, b) => ((SHARP_FIRST.indexOf(a) + 1 || 99) - (SHARP_FIRST.indexOf(b) + 1 || 99)) || a - b);
+  return ids.map((id) => `${GAMBIT_BOOK_NAMES[id] || `book ${id}`} ${am(prices[id].odds)}/${am(prices[id].oppOdds)}`).join('; ') || null;
+}
+
 const LIVE_UNSEEN_MS = 15 * 60 * 1000;      // live bet gone from Gambit this long -> close it
 const MAX_TRACK_MS = 36 * 60 * 60 * 1000;    // give up on a close after this long
 
@@ -41,6 +57,7 @@ const COLUMNS = [
   ['oddsMatch', 'confirmed = sent'], ['fairOdds', 'fair odds used (lowest method)'],
   ['fairPower', 'fair Power'], ['fairMultiplicative', 'fair Multiplicative'], ['fairAdditive', 'fair Additive'], ['fairShin', 'fair Shin'],
   ['fairBooks', 'books behind fair'], ['fairSource', 'fair source'],
+  ['otherBooks', "other books' odds (our side/other side)"], ['sharpNoVig', 'sharp books no-vig win %'], ['sharpSpreadPts', 'sharp spread pts'],
   ['gambitEv', 'EV at Gambit price %'], ['ev', 'EV at placed price %'],
   ['novigOdds', 'Novig odds'], ['novigOppOdds', 'Novig other side'], ['novigEv', 'Novig EV %'],
   ['stake', 'stake $'], ['maxStake', 'book max stake $'],
@@ -74,7 +91,7 @@ export function makeBetLog(dir, { dryRun = false, log } = {}) {
   }
 
   /** Record a placed bet. Returns the record. */
-  function record({ row, quote, stake, betId, confirmedOdds, ev, novig }) {
+  function record({ row, quote, stake, betId, confirmedOdds, ev, novig, sharp }) {
     const dv = row.devig || {};
     const b = {
       placedAt: new Date().toISOString(), betId, book: row.book, gambitBookId: row.gambitBookId ?? null,
@@ -85,6 +102,9 @@ export function makeBetLog(dir, { dryRun = false, log } = {}) {
       fairOdds: row.fairOdds, fairProb: row.fairProb ?? null,
       fairPower: toOdds(dv.Power), fairMultiplicative: toOdds(dv.Multiplicative), fairAdditive: toOdds(dv.Additive), fairShin: toOdds(dv.Shin),
       fairBooks: row.fairBooks ?? null, fairSource: row.fairSource ?? null,
+      otherBooks: otherBooksText(row.prices, row.gambitBookId),
+      sharpNoVig: sharp?.probs ? Object.entries(sharp.probs).map(([n, p]) => `${n[0].toUpperCase()}${n.slice(1)} ${(p * 100).toFixed(1)}`).join('; ') || null : null,
+      sharpSpreadPts: sharp?.spread ?? null,
       gambitEv: row.ev, ev,
       novigOdds: novig?.nv?.odds ?? null, novigOppOdds: novig?.nv?.oppOdds ?? null, novigEv: novig?.ev ?? null,
       stake, maxStake: quote.maxStake ?? null,
