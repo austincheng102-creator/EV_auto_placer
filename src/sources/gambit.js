@@ -67,7 +67,8 @@ export function makeGambitSource(cfg, bridge, { root = null, log = null } = {}) 
   const arb = arbDefaults(cfg);
   const arbBooks = arb ? arb.books.filter((b) => (cfg.books || []).includes(b)) : [];
   const arbIds = arb ? Object.values(arb.refBooks).flat() : [];
-  let arbErrAt = 0, sampled = false;
+  let arbErrAt = 0;
+  const sampled = new Set();   // arbs.json links already saved to a sample file
   let arbFair = new Map();   // DK/FD/Caesars fair price of every prop in the arbitrage table (closing line value)
   const arbState = { error: null, rows: 0 };
   async function fetchArbs() {
@@ -77,10 +78,12 @@ export function makeGambitSource(cfg, bridge, { root = null, log = null } = {}) 
     try {
       for (const url of arb.urls) {
         const json = await fetchOne(withBookIds(url, arbIds));
-        const txt = !sampled && root ? JSON.stringify(json) : '';
-        if (txt.length > 200) {
-          sampled = true;   // one real response, so the reading of arbs.json can be checked
-          try { fs.writeFileSync(path.join(root, 'arbs-sample.json'), JSON.stringify(json, null, 1)); } catch {}
+        // One real response per link that has player props in it (live and pre-game files), so the
+        // reading of arbs.json can be checked: arbs-sample-live.json / arbs-sample-pregame.json.
+        if (root && !sampled.has(url) && /PLAYER_PROP/.test(JSON.stringify(json))) {
+          sampled.add(url);
+          const kind = /[?&]isLive=true/.test(url) ? 'live' : /[?&]isLive=false/.test(url) ? 'pregame' : String(arb.urls.indexOf(url) + 1);
+          try { fs.writeFileSync(path.join(root, `arbs-sample-${kind}.json`), JSON.stringify(json, null, 1)); } catch {}
         }
         out.push(...arbsToRows(json, g, { ...arb, books: arbBooks }, nextArbFair));
       }
