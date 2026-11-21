@@ -100,6 +100,30 @@ export function pickMarket(markets, eventId, sel, want, line) {
   return ok.find((m) => line == null || Math.abs(Number(r0(m, sel).handicap)) === Math.abs(Number(line))) || ok[0] || null;
 }
 
+/** Fallback when no market has Gambit's selection id: the same kind/period market whose runner is
+ *  our side by name (team, Over/Under), at exactly our line (spread: same sign too). Exactly one
+ *  runner of the market may match, so the other side can never be picked. Returns {m, sel} or null. */
+export function pickByName(markets, eventId, selection, want, line) {
+  const w = words(selection).filter((x) => !/^[+-]?\d/.test(x));
+  if (!w.length) return null;
+  const same = (n) => { const a = words(n).filter((x) => !/^[+-]?\d/.test(x)); const A = new Set(a), W = new Set(w);
+    return a.length > 0 && (a.every((x) => W.has(x)) || w.every((x) => A.has(x))); };
+  const spread = /HANDICAP|SPREAD|PUCK_LINE|RUN_LINE/.test(String(want.kind));
+  for (const m of markets) {
+    const t = String(m.marketType || '');
+    if ((eventId != null && m.eventId !== eventId) || BAD_TYPE.test(t) || !want.kind.test(t)) continue;
+    if (want.period ? !want.period.test(t) : ANY_PERIOD.test(t)) continue;
+    const rs = m.runners || [];
+    if (rs.length !== 2) continue;
+    const hit = rs.filter((r) => same(r.runnerName));
+    if (hit.length !== 1) continue;
+    const h = Number(hit[0].handicap);
+    if (line != null && (spread ? h !== Number(line) : Math.abs(h) !== Math.abs(Number(line)))) continue;
+    return { m, sel: hit[0].selectionId };
+  }
+  return null;
+}
+
 export function makeFanDuel(name, label, cfg, bridge) {
   const f = cfg.fanduel || {};
   const st = String(cfg.region || 'CO').toLowerCase();
@@ -174,12 +198,23 @@ export function makeFanDuel(name, label, cfg, bridge) {
     const tabs = Object.values(first.layout?.tabs || {}).map((t) => t.title || '');
     const slug = (t) => t.toLowerCase().replace(/[^a-z0-9]+/g, '-');
     const tries = [null, ...tabs.filter((t) => want.tab.test(t)), ...tabs.filter((t) => /same game/i.test(t))];
+    const seenIn = new Set(), kindTypes = new Set();
     for (const t of [...new Set(tries)]) {
       const j = t == null ? first : await getJson(`${base}&tab=${slug(t)}`, 5 * 60e3);
-      const m = pickMarket(Object.values(j.attachments?.markets || {}), eventId, sel, want, row.line);
+      const all = Object.values(j.attachments?.markets || {});
+      const m = pickMarket(all, eventId, sel, want, row.line);
       if (m) { const out = { marketId: m.marketId, selectionId: Number(sel), eventId }; cache.set(key, { at: Date.now(), json: out }); return out; }
+      const byName = pickByName(all, eventId, row.selection, want, row.line);
+      if (byName) { const out = { marketId: byName.m.marketId, selectionId: Number(byName.sel), eventId }; cache.set(key, { at: Date.now(), json: out }); return out; }
+      for (const x of all) {
+        if (x.eventId !== eventId) continue;
+        if (r0(x, sel)) seenIn.add(x.marketType);
+        if (want.kind.test(String(x.marketType || ''))) kindTypes.add(`${x.marketType}[${(x.runners || []).map((r) => r.selectionId).slice(0, 3).join('/')}]`);
+      }
     }
-    throw new Error(`FanDuel CO: no ${row.market || row.marketKey} market with this selection in "${row.event}"`);
+    // Say what FanDuel CO does have, so a mismatch can be fixed from one log line.
+    const list = (set) => [...set].slice(0, 4).join(', ') || 'none';
+    throw new Error(`FanDuel CO: no ${row.market || row.marketKey} market with this selection in "${row.event}" (event ${eventId}, selection ${sel} is in: ${list(seenIn)}; markets of that kind: ${list(kindTypes)}; tabs tried: ${[...new Set(tries)].map((t) => t ?? 'main').join(', ')})`);
   }
 
   const runnerOf = (m, sel) => (m?.runnerDetails || []).find((r) => String(r.selectionId) === String(sel));
