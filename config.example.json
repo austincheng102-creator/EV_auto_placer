@@ -18,7 +18,8 @@
   "group": {
     "maxBets": 1,
     "maxStake": 1,
-    "bothSides": false
+    "bothSides": false,
+    "perBook": true
   },
   "sharp": {
     "maxSpreadPts": 3,
