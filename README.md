@@ -111,7 +111,11 @@ setting in `config.json`; one that isn't there gets the default below, and `null
   its own group). Player props group per player and stat (Trae Young assists Over/Under). Bets from the last
   24 hours count. `"bothSides": true` makes each side its own group again. With `maxBets` above 1 the group
   can be bet again, at most once per scan, and each bet is still checked at the book's real price first.
-  `maxBetsPerEvent` still caps the whole game.
+  `maxBetsPerEvent` caps game lines (spreads, totals, moneylines, any period) per game. Player props don't
+  count toward it: each player + stat is its own group, so Trae Young points, points + rebounds and steals
+  can each get one bet, but points Under can't go twice. `maxPropStatsPerPlayer` (default 2) caps how many
+  different stats one player gets per game: points and rebounds placed, then steals is skipped. The same stat
+  on both books counts once. `"propsInEventCap": true` puts props back under the cap.
   With `"perBook": true` (default) the count and $ cap are per book: Over 214.5 on Hard Rock and Over 215.5
   on BetRivers can both be placed (each passing every rule on its own), but not Over twice on one book,
   and once either book has the Over, neither book takes the Under. `"perBook": false` = one bet across both books.
@@ -152,6 +156,11 @@ all the rules above), and nothing is placed at a price that didn't pass.
   (`sharp.maxSpreadPts`): its EV, how far apart the sharp books were, each sharp book's no-vig win %,
   and whether it would pass at 4 or 5 points. The same bet is only written again after 5 minutes or
   when its odds change.
+- `props-funnel.csv` next to the app shows why player props don't get bet. Every 10 minutes it
+  adds a line: how many props Gambit listed for your books, and for each one the furthest step it
+  got to (under 5% EV, 5-8% EV, no FanDuel move in 30s, game already has `maxBetsPerEvent` bets, ...,
+  sent to re-check), plus what the re-check did. The same summary shows on screen as a `[PROPS]` line.
+  `"propsFunnel": {"everyMinutes": 0}` turns it off.
 
 ## Novig has to agree (on by default)
 A bet is only placed when Novig's price also shows it at **2% EV or more**, on top of Gambit's

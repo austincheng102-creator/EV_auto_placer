@@ -162,3 +162,23 @@ export function evsToRows(json, g = {}, fairOut = null, { shadow = [] } = {}) {
   for (const r of shadows) { const k = `${r.book}|${r.bookRef}`; if (!have.has(k)) { have.add(k); rows.push(r); } }
   return rows;
 }
+
+/** The row fields that come from the event and the bet itself (used for arbs.json rows). */
+export function rowParts(ev, op, b, book) {
+  const own = (b.comparableBets || []).find((c) => c.sportsbook_id === b.sportsbook_id);
+  const link = b.desktop_link || b.mobile_link || own?.desktop_link || own?.mobile_link || '';
+  const refs = book === 'betrivers' ? kambiRef(link) : book === 'fanduel' ? fanduelRef(link) : book === 'hardrock' ? hardrockRef(link) : {};
+  const isTotal = /total|PLAYER_PROP/i.test(op.marketName);
+  const side = cap(b.selection_line || (isTotal ? b.selection : ''));
+  const selection = b.player_name ? `${b.player_name} ${side}`.trim() : isTotal ? side : b.selection;
+  const line = /money_line/.test(op.marketName) ? null : Number(b.points ?? b.selection_points);
+  const novig = (b.comparableBets || []).find((c) => c.sportsbook_id === NOVIG_ID);
+  const novigOpp = (b.opposingBets || []).find((c) => c.sportsbook_id === NOVIG_ID);
+  return {
+    event: ev.event_name, league: ev.league, isLive: !!ev.isLive, startDate: ev.startDate,
+    market: prettyMarket(op.marketName), marketKey: op.marketName, selection, line,
+    novigOdds: novig?.odds ?? null, novigOppOdds: novigOpp?.odds ?? null,
+    priceAt: b.updated_at ?? b.created_at ?? own?.updated_at ?? own?.created_at ?? null,
+    link, ...refs,
+  };
+}
