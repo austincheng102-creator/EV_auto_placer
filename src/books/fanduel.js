@@ -244,7 +244,7 @@ export function makeFanDuel(name, label, cfg, bridge) {
       if (byName) { const out = { marketId: byName.m.marketId, selectionId: Number(byName.sel), eventId }; cache.set(key, { at: Date.now(), json: out }); return out; }
       for (const x of all) {
         if (x.eventId !== eventId) continue;
-        if (r0(x, sel)) seenIn.add(x.marketType);
+        if (r0(x, sel)) seenIn.add(`${x.marketType} at ${altLine(r0(x, sel))}`);
         if (want.kind.test(String(x.marketType || ''))) kindTypes.add(`${x.marketType}[${(x.runners || []).map((r) => r.selectionId).slice(0, 3).join('/')}]`);
       }
     }
@@ -252,7 +252,8 @@ export function makeFanDuel(name, label, cfg, bridge) {
     // then tabs that can hold them). "fanduel": {"altLines": false} turns this off.
     if (f.altLines !== false) {
       const altTabs = tabs.filter((t) => /alt|spread|total|line|handicap|points|goals|runs/i.test(t) && !/player|prop|same game/i.test(t));
-      for (const t of [null, ...altTabs]) {
+      // The Same Game Parlay tab often carries every alternate line too (NFL), so look there last.
+      for (const t of [...new Set([null, ...altTabs, ...tabs.filter((x) => /same game/i.test(x))])]) {
         const j = t == null ? first : await getJson(`${base}&tab=${slug(t)}`, 5 * 60e3);
         const a = pickAlt(Object.values(j.attachments?.markets || {}), eventId, sel, row.selection, want, row.line);
         if (a) { const out = { marketId: a.m.marketId, selectionId: Number(a.sel), eventId, alt: true, line: a.line }; cache.set(key, { at: Date.now(), json: out }); return out; }
@@ -261,7 +262,7 @@ export function makeFanDuel(name, label, cfg, bridge) {
     }
     // Say what FanDuel CO does have, so a mismatch can be fixed from one log line.
     const list = (set) => [...set].slice(0, 4).join(', ') || 'none';
-    throw new Error(`FanDuel CO: no ${row.market || row.marketKey} market with this selection in "${row.event}" (event ${eventId}, selection ${sel} is in: ${list(seenIn)}; markets of that kind: ${list(kindTypes)}; tabs tried: ${[...new Set(tries)].map((t) => t ?? 'main').join(', ')})`);
+    throw new Error(`FanDuel CO: no ${row.market || row.marketKey} market with this selection in "${row.event}" (event ${eventId}, Gambit line ${row.line}, selection ${sel} is in: ${list(seenIn)}; markets of that kind: ${list(kindTypes)}; tabs tried: ${[...new Set(tries)].map((t) => t ?? 'main').join(', ')})`);
   }
 
   // A runner's line: its handicap; on an alternate-line market with no handicap, the line we matched.
