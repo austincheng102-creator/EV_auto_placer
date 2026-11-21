@@ -14,7 +14,7 @@
   };
   const f = window.fetch;
   window.fetch = function (input, init) {
-    const p = f.call(this, input, init);
+    const p = f.call(window, input, init);
     const u = typeof input === 'string' ? input : input?.url;
     if (isGeo(u)) p.then((r) => r.clone().text().then(keep)).catch(() => {});
     return p;

@@ -330,6 +330,7 @@ async function tryBet(row, ctx) {
     return false;
   }
   ctx.quote = quote; ctx.checkedAt = Date.now();
+  if (quote.loginOk) session.bookOk(row.book);
   if (book.freePriceCheck) ctx.realOdds = quote.odds;
   // A watched bet whose price, line and fair odds haven't changed since its last check stays quiet.
   ctx.sig = `${quote.odds}|${quote.line}|${quote.suspended}|${row.fairOdds}|${row.novigOdds}|${row.novigOppOdds}`;

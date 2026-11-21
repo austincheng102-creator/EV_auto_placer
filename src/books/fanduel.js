@@ -200,7 +200,7 @@ export function makeFanDuel(name, label, cfg, bridge) {
       if (!combo?.betReference || odds == null) return { odds: null, suspended: true };
       const max = Number(combo.betMaxStake);
       return {
-        odds, line, suspended: false,
+        odds, line, suspended: false, loginOk: true,   // the slip check used your login and FanDuel accepted it
         maxStake: Number.isFinite(max) && max > 0 ? max : null,
         fd: { ...m, handicap: Number(rn.handicap) || 0, betReference: combo.betReference, trueOdds: ro?.trueOdds, oddsFor: odds, delay: mk.betDelay },
       };
@@ -270,7 +270,7 @@ export function makeFanDuel(name, label, cfg, bridge) {
       // Once a minute (session.js): read your open bets (one record, read-only, the same list as
       // My Bets) with the sportsbook login the bets use. Not the balance on api.fanduel.com: that
       // server answers a refused login with a browser "Sign in" box (seen 2026-11-21).
-      const res = await send('session', `https://api.sportsbook.fanduel.com/my-bets/search-bets?isSettled=false&fromRecord=1&toRecord=1&sortDir=DESC&sortParam=PLACEMENT_DATE&rewardsClubEnabled=false&_ak=${appKey}`,
+      const res = await send('session', `https://api.sportsbook.fanduel.com/my-bets/search-bets?isSettled=false&fromRecord=1&toRecord=20&sortDir=DESC&sortParam=PLACEMENT_DATE&rewardsClubEnabled=false&_ak=${appKey}`,
         'GET', null, { 'x-sportsbook-region': st.toUpperCase() }, 15000);
       if (res.status < 400 && Array.isArray(res.json?.bets)) return { ok: true };
       if (authFail(res)) return { ok: false, why: `FanDuel My Bets check answered HTTP ${res.status}` };
