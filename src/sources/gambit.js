@@ -2,7 +2,10 @@
 // The exact endpoint and field names come from the request Gambit's own site makes
 // (DevTools > Network > Copy as cURL). Put the URL/headers in config.json -> gambit.
 import { evPct } from '../ev.js';
+import fs from 'node:fs';
+import path from 'node:path';
 import { evsToRows, bookIdLists } from './gambit-evs.js';
+import { arbDefaults, arbsToRows } from './gambit-arbs.js';
 
 const get = (obj, path) => path.split('.').reduce((o, k) => (o == null ? o : o[k]), obj);
 
@@ -22,7 +25,7 @@ export function normalizeRow(raw, fields) {
 //  - via "extension" (default): the Chrome extension makes the request from your open,
 //    logged-in Gambit tab with that tab's current token, so it never expires on us.
 //  - via "direct": this app fetches with headers from config (GAMBIT_AUTH env for a token).
-export function makeGambitSource(cfg, bridge) {
+export function makeGambitSource(cfg, bridge, { root = null, log = null } = {}) {
   const g = cfg.gambit;
   const via = g.via || 'extension';
   const withCacheBuster = (u) => `${u}${u.includes('?') ? '&' : '?'}_t=${Date.now()}`;
@@ -30,12 +33,13 @@ export function makeGambitSource(cfg, bridge) {
 
   // Gambit only returns bets for the sportsbooks named in sportsbooks_id, so make sure the
   // books this run bets (e.g. Hard Rock, once its ids are seen in Gambit's links) are in it.
-  function withBookIds(url) {
+  function withBookIds(url, extra = []) {
     const m = /([?&]sportsbooks_id=)([^&]*)/.exec(url);
     if (!m) return url;
     const have = new Set(decodeURIComponent(m[2]).split(',').filter(Boolean));
     const lists = bookIdLists(g);
     for (const b of cfg.books || []) for (const id of lists[b] || []) have.add(String(id));
+    for (const id of extra) have.add(String(id));
     return url.replace(m[0], m[1] + [...have].join(','));
   }
 
@@ -59,10 +63,38 @@ export function makeGambitSource(cfg, bridge) {
 
   // Books whose real prices the app reads itself: Gambit's other rows for them become candidates too.
   const shadow = (cfg.books || []).filter((b) => ['betrivers', 'hardrock'].includes(b) && cfg[b]?.directPrices !== false);
+  // Gambit's arbitrage table: player props priced off DraftKings/FanDuel/Caesars (gambit-arbs.js).
+  const arb = arbDefaults(cfg);
+  const arbBooks = arb ? arb.books.filter((b) => (cfg.books || []).includes(b)) : [];
+  const arbIds = arb ? Object.values(arb.refBooks).flat() : [];
+  let arbErrAt = 0, sampled = false;
+  const arbState = { error: null, rows: 0 };
+  async function fetchArbs() {
+    if (!arb || !arbBooks.length || !arb.urls.length) return [];
+    const out = [];
+    try {
+      for (const url of arb.urls) {
+        const json = await fetchOne(withBookIds(url, arbIds));
+        const txt = !sampled && root ? JSON.stringify(json) : '';
+        if (txt.length > 200) {
+          sampled = true;   // one real response, so the reading of arbs.json can be checked
+          try { fs.writeFileSync(path.join(root, 'arbs-sample.json'), JSON.stringify(json, null, 1)); } catch {}
+        }
+        out.push(...arbsToRows(json, g, { ...arb, books: arbBooks }));
+      }
+      arbState.error = null;
+    } catch (e) {
+      arbState.error = e.message;
+      if (Date.now() - arbErrAt > 60e3) { arbErrAt = Date.now(); log?.warn(`Gambit arbitrage table fetch failed (${e.message}); +EV table still used`); }
+    }
+    arbState.rows = out.length;
+    return out;
+  }
   let fair = new Map();   // every selection's fair price in the last poll (for closing line value)
   return {
     needsBridge: via === 'extension',
     fairIndex: () => fair,
+    arb: arb ? { cfg: arb, books: arbBooks, state: arbState } : null,
     async fetchRows() {
       const list = urls();
       if (!list.length || list.some((u) => u.startsWith('PASTE_'))) throw new Error('gambit.url not set in config.json');
@@ -76,6 +108,7 @@ export function makeGambitSource(cfg, bridge) {
         out.push(...rows.map((r) => normalizeRow(r, g.fields)));
       }
       fair = nextFair;
+      out.push(...await fetchArbs());
       return out;
     },
   };

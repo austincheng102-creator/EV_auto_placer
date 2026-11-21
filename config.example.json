@@ -15,6 +15,16 @@
     "evPts": 3
   },
   "pregameMaxHours": 12,
+  "arbProps": {
+    "enabled": true,
+    "books": ["hardrock", "betrivers"],
+    "refBooks": { "draftkings": 200, "fanduel": 100, "caesars": 300 },
+    "minRefs": 2,
+    "maxSpreadPts": 3,
+    "minEvPct": 8,
+    "fair": "lowest",
+    "minArbPercentage": -5
+  },
   "group": {
     "maxBets": 1,
     "maxStake": 1,

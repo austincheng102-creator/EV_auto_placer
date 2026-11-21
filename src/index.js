@@ -6,6 +6,7 @@ import path from 'node:path';
 import { evPct, fmtAmerican, fmtPct } from './ev.js';
 import { log } from './log.js';
 import { makeGambitSource } from './sources/gambit.js';
+import { arbStats } from './sources/gambit-arbs.js';
 import { makeMockSource } from './sources/mock.js';
 import { startBridge } from './books/bridge.js';
 import { makeBooks, parseBooks, BOOK_LABELS } from './books/index.js';
@@ -206,7 +207,7 @@ const useMock = opt('--source', 'gambit') === 'mock';
 // The extension is needed to place bets, and also to read Gambit through your logged-in tab.
 const needBridge = !dryRun || (!useMock && (cfg.gambit?.via || 'extension') === 'extension');
 const bridge = needBridge ? startBridge(cfg.bridgePort || 8765, { reloadExtension: extensionChanged }) : null;
-const source = useMock ? makeMockSource(cfg) : makeGambitSource(cfg, bridge);
+const source = useMock ? makeMockSource(cfg) : makeGambitSource(cfg, bridge, { root, log });
 const books = makeBooks(cfg, bridge, dryRun);
 for (const b of Object.values(books)) {
   if (b.ready === false) { log.err(`${b.label}: ${b.notReadyReason}`); process.exit(1); }
@@ -260,14 +261,16 @@ const propFunnel = makePropFunnel(cfg, root, { dryRun, log });
 // Player props: at most maxPropStatsPerPlayer different stats per player per game (default 2), e.g.
 // points and rebounds, then steals is skipped. The same stat on both books counts once. null = no limit.
 if (cfg.maxPropStatsPerPlayer === undefined) cfg.maxPropStatsPerPlayer = 2;
+// Arbitrage-table props carry their own minimum (arbProps.minEvPct); everything else uses minEvPct.
+const minEv = (r) => r.minEv ?? cfg.minEvPct;
 const inEventCap = (p) => cfg.propsInEventCap === true || !isPropBet(p);
 const overEventCap = (r, perEvent) => inEventCap(r) && (perEvent[r.event] || 0) >= (cfg.maxBetsPerEvent ?? Infinity);
 
 /** First rule a prop row fails in this scan (same order as the scan filters in tick()). */
 function propStage(r, { groups, perEvent, stats, now }) {
   if (r.direct === 'gone') return 'gone';
-  if (!Number.isFinite(r.ev) || r.ev < cfg.minEvPct - 3) return 'evLow';
-  if (r.ev < cfg.minEvPct) return 'evNear';
+  if (!Number.isFinite(r.ev) || r.ev < minEv(r) - 3) return 'evLow';
+  if (r.ev < minEv(r)) return 'evNear';
   if (tooLong(r.odds) || tooShort(cfg, r.odds)) return 'odds';
   if (evTooHigh(cfg, r.ev)) return 'evCap';
   if (tooEarly(r)) return 'pregameFar';
@@ -378,7 +381,7 @@ async function placeAt(row, book, quote, ctx, retried = false) {
   if (evTooHigh(cfg, ev)) { ctx.outcome = 'EV above cap'; lg.warn(`${book.label}: ${fmtAmerican(quote.odds)} is ${fmtPct(ev)} EV, above the ${cfg.maxEvPct}% cap (likely a stale or wrong price) — skipped, nothing placed`); return false; }
   const tail = `${fmtAmerican(quote.odds)} vs fair ${fmtAmerican(row.fairOdds)} from ${row.fairBooks ?? '?'} book(s) -> ${fmtPct(ev)} EV` +
     (quote.maxStake ? ` (max stake $${quote.maxStake})` : '');
-  if (ev < cfg.minEvPct) { ctx.outcome = 'EV too low'; lg.warn(`${book.label}: re-check FAIL: ${tail}`); return false; }
+  if (ev < minEv(row)) { ctx.outcome = 'EV too low'; lg.warn(`${book.label}: re-check FAIL: ${tail}`); return false; }
   lg.bet(`${book.label}: re-check OK: ${tail}`);
 
   // Novig has to agree at the live price too.
@@ -447,6 +450,16 @@ async function placeAt(row, book, quote, ctx, retried = false) {
   } finally { pendingStake -= stake; }
 }
 
+/** Scan line part for the arbitrage table: props it listed for our books, and how many passed the reference-book rule. */
+function arbText(rows) {
+  const a = source.arb;
+  if (!a) return '';
+  if (a.state.error) return `, arbitrage table: fetch failed (${a.state.error})`;
+  const s = arbStats, n = rows.filter((r) => r.arb).length;
+  const fails = [s.refsMissing && `${s.refsMissing} fewer than ${a.cfg.minRefs} of DK/FD/CZR`, s.refSpread && `${s.refSpread} DK/FD/CZR more than ${a.cfg.maxSpreadPts} pts apart`].filter(Boolean).join(', ');
+  return `, arbitrage table: ${s.ours} ${a.books.map((b) => BOOK_LABELS[b] || b).join('/')} props, ${n} priced off DK/FD/CZR${fails ? ` (${fails})` : ''}`;
+}
+
 async function tick() {
   if (state.day !== today()) { state.day = today(); state.staked = 0; save(); }
   let rows;
@@ -477,7 +490,7 @@ async function tick() {
   const direct = {};
   for (const [n, b] of Object.entries(books)) {
     if (!b.livePrices) continue;
-    try { direct[n] = await b.livePrices(rows, cfg.minEvPct); }
+    try { direct[n] = await b.livePrices(rows, Math.min(cfg.minEvPct, source.arb?.cfg.minEvPct ?? Infinity)); }
     catch (e) {
       if (!(directWarnAt[n] > Date.now() - 60e3)) { directWarnAt[n] = Date.now(); log.warn(`${b.label}: couldn't read its prices directly (${e.message}), using Gambit's prices for now`); }
     }
@@ -504,7 +517,7 @@ async function tick() {
   const groups = groupTotals(state.placed);
   const ageMax = cfg.sharp.liveMaxAgeSec;
   let ev = rows
-    .filter((r) => Number.isFinite(r.ev) && r.ev >= cfg.minEvPct)
+    .filter((r) => Number.isFinite(r.ev) && r.ev >= minEv(r))
     .filter((r) => (!tooLong(r.odds) && !tooShort(cfg, r.odds)) || drop('odds'))
     .filter((r) => !evTooHigh(cfg, r.ev) || drop('evCap'))
     .filter((r) => !tooEarly(r) || (farOff++, false))
@@ -553,7 +566,7 @@ async function tick() {
   log.scan(`${ev.length} +EV bets from ${rows.length} rows (${nBooks} book${nBooks === 1 ? '' : 's'})` +
     (novig ? `, ${novigDropped} dropped because Novig doesn't show ${novig.minEvPct}%+` : '') +
     (farOff ? `, ${farOff} pre-game skipped (starts more than ${cfg.pregameMaxHours}h away)` : '') +
-    (whyText ? `, skipped: ${whyText}` : '') + directText, ev.length === 0);
+    (whyText ? `, skipped: ${whyText}` : '') + directText + arbText(rows), ev.length === 0);
   if (!ev.length) return;
   if (!dryRun && !bridge.connected()) { log.warn('Chrome extension not connected — not placing'); return; }
 
@@ -606,6 +619,12 @@ function startBet(row, scanAt) {
 }
 
 log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}% novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} odds=${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)}..${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)} maxEV=${cfg.maxEvPct ?? 'off'}% sharpSpread<=${cfg.sharp.maxSpreadPts ?? 'off'}pts liveSharpAge<=${cfg.sharp.liveMaxAgeSec ?? 'off'}s (props ${cfg.sharp.livePropMaxAgeSec ?? 'off'}s) group=${cfg.group.maxBets ?? 'any'} bet/$${cfg.group.maxStake ?? 'any'} pregame<=${cfg.pregameMaxHours == null ? 'any' : cfg.pregameMaxHours + 'h'} stake=$${cfg.stake.amount} poll=${pollSeconds}s atOnce=${maxInFlight} recheckWatch=${WATCH_MS / 60e3}min`);
+if (source.arb) {
+  const a = source.arb.cfg;
+  log.info(source.arb.books.length
+    ? `arbitrage table: player props on ${source.arb.books.map((b) => BOOK_LABELS[b] || b).join(', ')}, fair from ${Object.keys(a.refBooks).join('/')} (${a.minRefs}+ within ${a.maxSpreadPts} pts, ${a.fair}), min EV ${a.minEvPct}%`
+    : `arbitrage table: off (none of ${a.books.join(', ')} is in books)`);
+}
 // Results for the P&L chart: read each book's settled bets (My Bets > Settled) every few
 // minutes while a logged bet from that book has no result yet. Works whichever book is being
 // bet today, as long as that book's tab is open. "results": {"everyMinutes": 0} turns it off.
