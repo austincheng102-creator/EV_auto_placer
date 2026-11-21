@@ -214,7 +214,7 @@ the edge is real; that's the standard check, and it doesn't need hundreds of res
   Also 30 days / 7 days.
 
 **Results.** Results fill in by themselves. While the placer runs, it reads each book's
-**My Bets > Settled** list every 10 minutes (Hard Rock and BetRivers, whichever tabs are open, on
+**My Bets > Settled** list every 10 minutes (Hard Rock, BetRivers and FanDuel, whichever tabs are open, on
 any day) and saves the result, payout and odds of each logged bet to `results.json`. The terminal
 shows a `Results:` line when bets settle. Change the timing with `"results": {"everyMinutes": 10}`
 in `config.json` (0 turns it off). It's read-only, so it works while the extension is disarmed.
