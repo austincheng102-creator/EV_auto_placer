@@ -129,6 +129,11 @@ all the rules above), and nothing is placed at a price that didn't pass.
   the price moved in the meantime. `"hardrock": {"directPrices": false}` turns this off.
 - `prices.csv` next to the app gets a line for each check: Gambit's price, how long Gambit had shown
   it, the book's real price and EV, how long ago BetRivers last changed that price, and what happened. This shows how far behind Gambit is.
+- `props-funnel.csv` next to the app shows why player props don't get bet. Every 10 minutes it
+  adds a line: how many props Gambit listed for your books, and for each one the furthest step it
+  got to (under 5% EV, 5-8% EV, no FanDuel move in 30s, game already has `maxBetsPerEvent` bets, ...,
+  sent to re-check), plus what the re-check did. The same summary shows on screen as a `[PROPS]` line.
+  `"propsFunnel": {"everyMinutes": 0}` turns it off.
 
 ## Novig has to agree (on by default)
 A bet is only placed when Novig's price also shows it at **2% EV or more**, on top of Gambit's

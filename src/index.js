@@ -22,6 +22,7 @@ import { makeSessionWatch } from './session.js';
 import { seenBooks } from './sources/gambit-evs.js';
 import { makeBetLog, parseTime } from './betlog.js';
 import { makePriceLog } from './skiplog.js';
+import { makePropFunnel } from './propfunnel.js';
 import { writeSnapshot, serveReport, openInBrowser } from './report.js';
 import { applyFilterDefaults, tooShort, evTooHigh, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom, groupClash } from './filters.js';
 
@@ -236,6 +237,28 @@ const watch = new Map(); // row.id -> { since, sig }
 const shown = new Map(); // row.id -> { odds, since }: when our polls first saw Gambit show this price
 const priceLog = makePriceLog(root, { dryRun });
 const directWarnAt = {};
+const propFunnel = makePropFunnel(cfg, root, { dryRun, log });
+
+/** First rule a prop row fails in this scan (same order as the scan filters in tick()). */
+function propStage(r, { groups, perEvent, now }) {
+  if (r.direct === 'gone') return 'gone';
+  if (!Number.isFinite(r.ev) || r.ev < cfg.minEvPct - 3) return 'evLow';
+  if (r.ev < cfg.minEvPct) return 'evNear';
+  if (tooLong(r.odds) || tooShort(cfg, r.odds)) return 'odds';
+  if (evTooHigh(cfg, r.ev)) return 'evCap';
+  if (tooEarly(r)) return 'pregameFar';
+  if (liveSharpMissing(cfg, r)) return 'noSharp';
+  if (!sharpSpread(cfg, r).ok) return 'sharpSpread';
+  const lim = liveAgeLimit(cfg, r);
+  if (r.isLive && lim != null && r.prices) { const a = sharpClock.ageSec(r); if (a == null || a > lim) return 'stale'; }
+  if (groupRoom(cfg, groups, r) == null) return 'group';
+  if ([...inflight.values()].some((f) => groupClash(cfg, r, f))) return 'groupInFlight';
+  if ((cooldown.get(r.id) || 0) >= now) return 'cooldown';
+  if ((perEvent[r.event] || 0) >= (cfg.maxBetsPerEvent ?? Infinity)) return 'perEvent';
+  if (!dryRun && !bridge.hasTab(r.book)) return 'noTab';
+  if (novig && !novig.check(r, r.odds).ok) return 'novig';
+  return 'dupInScan';
+}
 const warnedNoRows = new Set();
 
 const selKey = (r) => `${r.book}|${r.event}|${r.market}|${r.selection}`;
@@ -474,6 +497,11 @@ async function tick() {
   const novigDropped = gambitCount - ev.length;
   // One bet per group per scan: keep the first (best-EV new) row of each group. Later scans can add more, up to group.maxBets.
   { const kept = []; ev = ev.filter((r) => { if (kept.some((k) => groupClash(cfg, r, k))) return false; kept.push(r); return true; }); }
+  if (propFunnel) {
+    const sent = new Set(ev.map((r) => r.id));
+    for (const r of rows) if (r.isProp) propFunnel.note(r, sent.has(r.id) ? 'sent' : propStage(r, { groups, perEvent, now }));
+    propFunnel.tick();
+  }
   const whyText = [
     why.odds && `${why.odds} outside ${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)} to ${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)}`,
     why.evCap && `${why.evCap} above ${cfg.maxEvPct}% EV`,
@@ -510,6 +538,7 @@ function startBet(row, scanAt) {
     .catch((e) => { ctx.outcome = 'error'; log.err(`${book.label}: ${e.message}`); return false; })
     .then((ok) => {
       inflight.delete(k);
+      if (row.isProp) propFunnel?.outcome(row, ctx.outcome);
       const now = Date.now();
       const w = watch.get(row.id);
       if (ok) watch.delete(row.id);
@@ -558,4 +587,4 @@ if (bridge && !bridge.connected()) log.warn('Chrome extension not connected yet:
 session.start();
 const loop = async () => { await tick(); setTimeout(loop, pollSeconds * 1000); };
 loop();
-process.on('SIGINT', () => { save(); console.log(); process.exit(0); });
+process.on('SIGINT', () => { save(); try { propFunnel?.flush(); } catch {} console.log(); process.exit(0); });
