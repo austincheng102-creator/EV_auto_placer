@@ -125,8 +125,10 @@ setting in `config.json`; one that isn't there gets the default below, and `null
   different stats one player gets per game: points and rebounds placed, then steals is skipped. The same stat
   on both books counts once. `"propsInEventCap": true` puts props back under the cap.
   With `"perBook": true` (default) the count and $ cap are per book: Over 214.5 on Hard Rock and Over 215.5
-  on BetRivers can both be placed (each passing every rule on its own), but not Over twice on one book,
-  and once either book has the Over, neither book takes the Under. `"perBook": false` = one bet across both books.
+  on BetRivers can both be placed (each passing every rule on its own), and a repeat on one book waits 60s.
+  `"otherSide"` (default `"afterCooldown"`): if the EV swings to the other side (the Under, the other team),
+  it can be bet once the group's last bet on any book is `cooldownSec` old and it passes every rule.
+  `"block"` keeps the other side off for the day. `"perBook": false` = one count across both books.
 - The `[SCAN]` line says how many rows each rule skipped.
 - Not done yet: no bets in the last 2 minutes of a game. Gambit's feed has no game clock.
 
