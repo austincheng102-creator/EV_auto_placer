@@ -70,16 +70,17 @@ export function sameGame(fdName, gambitName) {
 
 // Gambit market key -> which FanDuel markets can be the same bet: the kind (FanDuel marketType
 // pattern) and the period. Alternate lines, 3-way, team totals and the like never count.
+// FanDuel spells periods both ways: 1ST_HALF_HANDICAP and FIRST_HALF_ALTERNATE_HANDICAP.
 const PERIODS = [
-  [/_first_half$/, /^1ST_HALF_/, /half/i], [/_second_half$/, /^2ND_HALF_/, /half/i],
-  [/_first_quarter$/, /^1ST_QUARTER_/, /1st quarter/i], [/_second_quarter$/, /^2ND_QUARTER_/, /2nd quarter/i],
-  [/_third_quarter$/, /^3RD_QUARTER_/, /3rd quarter/i], [/_fourth_quarter$/, /^4TH_QUARTER_/, /4th quarter/i],
-  [/_first_period$/, /^1ST_PERIOD_/, /period/i],
+  [/_first_half$/, /^(1ST|FIRST)_HALF_/, /half/i], [/_second_half$/, /^(2ND|SECOND)_HALF_/, /half/i],
+  [/_first_quarter$/, /^(1ST|FIRST)_QUARTER_/, /1st quarter/i], [/_second_quarter$/, /^(2ND|SECOND)_QUARTER_/, /2nd quarter/i],
+  [/_third_quarter$/, /^(3RD|THIRD)_QUARTER_/, /3rd quarter/i], [/_fourth_quarter$/, /^(4TH|FOURTH)_QUARTER_/, /4th quarter/i],
+  [/_first_period$/, /^(1ST|FIRST)_PERIOD_/, /period/i],
 ];
 export function marketKind(key) {
   const k = String(key || '').toLowerCase();
   if (/player|prop|team_total|alternate/.test(k)) return null;
-  const kind = /^money_line/.test(k) ? /MONEY_?LINE|^(1ST_HALF_|2ND_HALF_|1ST_QUARTER_|2ND_QUARTER_|3RD_QUARTER_|4TH_QUARTER_|1ST_PERIOD_)?MATCH_BETTING$/
+  const kind = /^money_line/.test(k) ? /MONEY_?LINE|^((1ST|2ND|FIRST|SECOND)_HALF_|(1ST|2ND|3RD|4TH|FIRST|SECOND|THIRD|FOURTH)_QUARTER_|(1ST|FIRST)_PERIOD_)?MATCH_BETTING$/
     : /^spread/.test(k) ? /HANDICAP|SPREAD|PUCK_LINE|RUN_LINE/
     : /^total/.test(k) ? /TOTAL/ : null;
   if (!kind) return null;
@@ -214,7 +215,16 @@ export function makeFanDuel(name, label, cfg, bridge) {
     const near = (e) => !Number.isFinite(start) || Math.abs(Date.parse(e.openDate) - start) < 12 * 3600e3;
     const byTeam = events.filter((e) => near(e) && markets.some((m) => m.eventId === e.eventId && (m.runners || []).some((r) => String(r.selectionId) === String(sel)) && !/OVER|UNDER/i.test(r0(m, sel)?.runnerName || '')));
     const byName = events.filter((e) => near(e) && sameGame(e.name, row.event));
-    const hit = byName.length === 1 ? byName[0] : byTeam.length === 1 ? byTeam[0] : byName.find((e) => byTeam.includes(e));
+    // Names FanDuel shortens ("NC State" for North Carolina State): one side matching, the other
+    // sharing a word, and the same start (within 30 min), if that is a single game.
+    const oneSide = (e) => { const a = String(e.name).split(' @ '), b = String(row.event).split(' @ ');
+      const inside = (x, y) => { const wy = new Set(words(y)); const wx = words(x); return wx.length > 0 && wx.every((w) => wy.has(w)); };
+      const share = (x, y) => { const wy = new Set(words(y)); return words(x).some((w) => wy.has(w)); };
+      return a.length === 2 && b.length === 2 && [0, 1].some((i) => (inside(a[i], b[i]) || inside(b[i], a[i])) && share(a[1 - i], b[1 - i])); };
+    const soon = (e) => Number.isFinite(start) && Math.abs(Date.parse(e.openDate) - start) <= 30 * 60e3;
+    const byHalf = events.filter((e) => soon(e) && oneSide(e));
+    const hit = byName.length === 1 ? byName[0] : byTeam.length === 1 ? byTeam[0] : byName.find((e) => byTeam.includes(e))
+      || (byName.length === 0 && byHalf.length === 1 ? byHalf[0] : null);
     if (!hit) throw new Error(`FanDuel CO: game "${row.event}" not found on its ${row.league} page`);
     return hit.eventId;
   }
