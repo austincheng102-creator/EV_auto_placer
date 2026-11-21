@@ -21,7 +21,7 @@ import { makeNovig } from './novig.js';
 import { makeSessionWatch } from './session.js';
 import { seenBooks } from './sources/gambit-evs.js';
 import { makeBetLog, parseTime } from './betlog.js';
-import { makePriceLog } from './skiplog.js';
+import { makePriceLog, makeSpreadSkipLog } from './skiplog.js';
 import { writeSnapshot, serveReport, openInBrowser } from './report.js';
 import { applyFilterDefaults, tooShort, evTooHigh, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom, groupClash } from './filters.js';
 
@@ -235,6 +235,21 @@ const WATCH_MS = Number(cfg.recheckWatchMinutes ?? 5) * 60e3;
 const watch = new Map(); // row.id -> { since, sig }
 const shown = new Map(); // row.id -> { odds, since }: when our polls first saw Gambit show this price
 const priceLog = makePriceLog(root, { dryRun });
+const spreadLog = makeSpreadSkipLog(root, { dryRun });
+const spreadLogged = new Map(); // row.id -> { at, odds }: last sharp-skips.csv line for that bet
+function logSpreadSkip(r, sp) {
+  const now = Date.now(), last = spreadLogged.get(r.id);
+  if (last && last.odds === r.odds && now - last.at < 5 * 60e3) return;
+  spreadLogged.set(r.id, { at: now, odds: r.odds });
+  if (spreadLogged.size > 5000) for (const [k, v] of spreadLogged) if (now - v.at > 5 * 60e3) spreadLogged.delete(k);
+  const pct = (n) => (sp.probs[n] == null ? null : sp.probs[n] * 100);
+  spreadLog.record({
+    time: new Date(now).toISOString(), book: r.book, live: r.isLive ? 'live' : 'pre-game', league: r.league,
+    event: r.event, market: r.market, selection: r.selection, line: r.line, odds: r.odds, evPct: r.ev,
+    spreadPts: sp.spread, pinnacle: pct('pinnacle'), kalshi: pct('kalshi'), polymarket: pct('polymarket'),
+    novig: pct('novig'), fanduel: pct('fanduel'), passAt4: sp.spread <= 4 ? 'yes' : 'no', passAt5: sp.spread <= 5 ? 'yes' : 'no',
+  });
+}
 const directWarnAt = {};
 const warnedNoRows = new Set();
 
@@ -460,7 +475,7 @@ async function tick() {
     .filter((r) => !evTooHigh(cfg, r.ev) || drop('evCap'))
     .filter((r) => !tooEarly(r) || (farOff++, false))
     .filter((r) => !liveSharpMissing(cfg, r) || drop('noSharp'))
-    .filter((r) => sharpSpread(cfg, r).ok || drop('sharpSpread'))
+    .filter((r) => { const sp = sharpSpread(cfg, r); if (sp.ok) return true; logSpreadSkip(r, sp); return drop('sharpSpread'); })
     .filter((r) => { const lim = liveAgeLimit(cfg, r); if (!r.isLive || lim == null || !r.prices) return true; const a = sharpClock.ageSec(r); return (a != null && a <= lim) || drop(r.isProp ? 'staleProp' : 'stale'); })
     .filter((r) => groupRoom(cfg, groups, r) != null || drop('group'))
     .filter((r) => ![...inflight.values()].some((f) => groupClash(cfg, r, f)))

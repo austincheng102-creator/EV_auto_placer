@@ -19,15 +19,14 @@ const cell = (v) => {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
-export function makePriceLog(dir, { dryRun = false } = {}) {
-  const file = path.join(dir, dryRun ? 'prices.dry.csv' : 'prices.csv');
+function makeCsvLog(file, columns) {
   let pending = [];
   return {
     file,
     record(o) {
-      pending.push(PRICE_COLUMNS.map((k) => cell(o[k])).join(','));
+      pending.push(columns.map((k) => cell(o[k])).join(','));
       try {
-        const head = fs.existsSync(file) ? '' : PRICE_COLUMNS.join(',') + '\n';
+        const head = fs.existsSync(file) ? '' : columns.join(',') + '\n';
         fs.appendFileSync(file, head + pending.join('\n') + '\n');
         pending = [];
         // Keep it under ~10 MB.
@@ -35,4 +34,20 @@ export function makePriceLog(dir, { dryRun = false } = {}) {
       } catch { if (pending.length > 500) pending = pending.slice(-500); }
     },
   };
+}
+
+export function makePriceLog(dir, { dryRun = false } = {}) {
+  return makeCsvLog(path.join(dir, dryRun ? 'prices.dry.csv' : 'prices.csv'), PRICE_COLUMNS);
+}
+
+// Sharp-spread skips (sharp-skips.csv): one line when a bet that passed minEvPct, the odds range,
+// the EV cap and the pre-game window is skipped because the sharp books' no-vig probabilities are
+// more than sharp.maxSpreadPts apart. Each sharp book's no-vig win % is shown, so we can see how
+// many would pass at 4 or 5 points. The same bet is logged again only after 5 minutes or when its
+// odds change, so the count is close to the number of distinct bets skipped.
+export const SPREAD_COLUMNS = ['time', 'book', 'live', 'league', 'event', 'market', 'selection', 'line', 'odds', 'evPct',
+  'spreadPts', 'pinnacle', 'kalshi', 'polymarket', 'novig', 'fanduel', 'passAt4', 'passAt5'];
+
+export function makeSpreadSkipLog(dir, { dryRun = false } = {}) {
+  return makeCsvLog(path.join(dir, dryRun ? 'sharp-skips.dry.csv' : 'sharp-skips.csv'), SPREAD_COLUMNS);
 }

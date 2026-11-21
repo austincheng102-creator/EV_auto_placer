@@ -129,6 +129,10 @@ all the rules above), and nothing is placed at a price that didn't pass.
   the price moved in the meantime. `"hardrock": {"directPrices": false}` turns this off.
 - `prices.csv` next to the app gets a line for each check: Gambit's price, how long Gambit had shown
   it, the book's real price and EV, how long ago BetRivers last changed that price, and what happened. This shows how far behind Gambit is.
+- `sharp-skips.csv` next to the app gets a line for each bet skipped by the sharp-books rule
+  (`sharp.maxSpreadPts`): its EV, how far apart the sharp books were, each sharp book's no-vig win %,
+  and whether it would pass at 4 or 5 points. The same bet is only written again after 5 minutes or
+  when its odds change.
 
 ## Novig has to agree (on by default)
 A bet is only placed when Novig's price also shows it at **2% EV or more**, on top of Gambit's
