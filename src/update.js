@@ -38,10 +38,20 @@ const gh = (token, accept = 'application/vnd.github+json') => ({
   ...(token ? { authorization: `Bearer ${token}` } : {}),
 });
 
-/** Remove the previous binary left behind by the last update. */
+/**
+ * Remove previous binaries left behind by earlier updates (ev-placer.exe.old, .old-<time>, .new).
+ * One that is still running (Windows locks it) just stays until a later start.
+ */
 export function cleanupOld() {
-  const old = `${process.execPath}.old`;
-  try { if (isPackaged && fs.existsSync(old)) fs.rmSync(old, { force: true }); } catch {}
+  if (!isPackaged) return;
+  const dir = path.dirname(process.execPath), base = path.basename(process.execPath);
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return; }
+  for (const n of names) {
+    if (n === `${base}.old` || n.startsWith(`${base}.old-`) || n === `${base}.new`) {
+      try { fs.rmSync(path.join(dir, n), { force: true }); } catch {}
+    }
+  }
 }
 
 /**
@@ -78,9 +88,13 @@ export async function checkForUpdate({ cfg, log, force = false }) {
     const bytes = Buffer.from(await dl.arrayBuffer());
     if (bytes.length !== asset.size) { log.info('Update download incomplete, keeping current version'); return false; }
 
-    const exe = process.execPath, tmp = `${exe}.new`, old = `${exe}.old`;
+    const exe = process.execPath, tmp = `${exe}.new`;
+    let old = `${exe}.old`;
     fs.writeFileSync(tmp, bytes, { mode: 0o755 });
+    // An .old that's still running (e.g. left waiting by the last update's restart) can't be
+    // deleted on Windows, and renaming onto it fails with EPERM. Use a fresh name instead.
     try { fs.rmSync(old, { force: true }); } catch {}
+    if (fs.existsSync(old)) old = `${exe}.old-${Date.now()}`;
     fs.renameSync(exe, old);
     try { fs.renameSync(tmp, exe); }
     catch (e) { fs.renameSync(old, exe); throw e; }   // put the old one back
