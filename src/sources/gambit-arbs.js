@@ -11,7 +11,7 @@
 // have the same fields as evs.json's (evs.json events carry an empty "arbitrageOpportunities"),
 // so this reads it loosely: any bet object (sportsbook_id + odds) under an event, with the same
 // side's and other side's prices from the bet's comparableBets/opposingBets and from the other
-// bets in the same opportunity. The first non-empty response is saved to arbs-sample.json.
+// bets in the same opportunity. The first response with props is saved per link (arbs-sample-live.json, arbs-sample-pregame.json).
 import { americanToDecimal, decimalToAmerican } from '../ev.js';
 import { fairKey } from '../betlog.js';
 import { bookFairProb } from '../filters.js';
