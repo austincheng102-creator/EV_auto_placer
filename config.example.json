@@ -104,6 +104,7 @@
   "session": {
     "checkSeconds": 60,
     "remindMinutes": 2,
-    "reloadTabs": true
+    "reloadTabs": true,
+    "gambitAutoLogin": true
   }
 }

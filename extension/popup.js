@@ -10,6 +10,8 @@ async function render() {
   $('alert').hidden = !s.alert; $('alert').textContent = s.alert ? `⚠ ${s.alert}` : '';
   $('reload').hidden = !s.lastReload;
   if (s.lastReload) $('reload').textContent = `Last tab reload: ${s.lastReload.book}, ${Math.round((Date.now() - s.lastReload.at) / 60000)} min ago (${s.lastReload.why})`;
+  $('login').hidden = !s.lastLogin;
+  if (s.lastLogin) { $('login').textContent = `Gambit auto login ${Math.round((Date.now() - s.lastLogin.at) / 60000)} min ago: ${s.lastLogin.ok ? 'worked' : s.lastLogin.why}`; $('login').className = `row ${s.lastLogin.ok ? 'on' : 'off'}`; }
   $('br').textContent = s.betriversLogin ? 'seen' : 'not yet (click any odds in the BetRivers tab)'; $('br').className = s.betriversLogin ? 'on' : 'off';
   $('hr').textContent = s.hardrockLogin ? 'seen' : 'not yet (refresh the Hard Rock tab)'; $('hr').className = s.hardrockLogin ? 'on' : 'off';
   const geoMin = s.hardrockGeo ? Math.round((Date.now() - s.hardrockGeo) / 60000) : null;

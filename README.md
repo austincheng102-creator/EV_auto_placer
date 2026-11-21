@@ -262,13 +262,23 @@ runs out. What the app and extension do now:
   every 2 minutes, plus a Windows/Mac notification from Chrome that stays up until you close it
   and a red **!** on the extension icon. The app never stops: it keeps scanning and retrying, and
   prints `[LOGIN] ✓ ... logged in again` once you log back in. It never types a password.
+- **Gambit auto login.** When Gambit logs you out (its tab lands on the home page with a Login
+  button, or Gambit keeps refusing the login), the extension opens Gambit's login box, lets
+  Chrome's password manager fill in your saved email and password, and presses Login. Chrome
+  hides a filled-in password from scripts until a real click, so these clicks go through Chrome's
+  debugger, which counts as real input. While that runs (a few seconds) Chrome shows a bar
+  "EV Placer Bridge started debugging this browser"; it closes itself. The app and extension never
+  read or store the password. It tries at most every 2 minutes (every 10 after 3 failures) and
+  prints `[LOGIN]` lines saying what happened. Needs the Gambit login saved in Chrome
+  (chrome://password-manager) and DevTools closed on the Gambit tab. If Gambit shows a robot check
+  or asks for a code, log in by hand. Turn it off with `"session": {"gambitAutoLogin": false}`.
 
 Also on the betting PC: turn off sleep while the app runs (Windows Settings > System > Power >
 Screen and sleep: "Never" while plugged in), and allow Chrome notifications
 (Windows Settings > System > Notifications > Google Chrome: On).
 
 Settings (`config.json`, all optional): `"session": {"checkSeconds": 60, "remindMinutes": 2, "reloadTabs": true, "gambitAlertSeconds": 20}`.
-`"checkSeconds": 0` turns the checks off; `"reloadTabs": false` stops the app asking for tab reloads.
+`"checkSeconds": 0` turns the checks off; `"reloadTabs": false` stops the app asking for tab reloads; `"gambitAutoLogin": false` turns off Gambit auto login.
 Gambit only counts as logged out after it has refused for `gambitAlertSeconds` in a row, and the extension only reloads the Gambit tab after about 10 refused polls in a row or once its token has been out for a minute. If Gambit refuses the token, the extension first tries the other recent tokens your Gambit tab sent.
 
 ## Updates (automatic)
