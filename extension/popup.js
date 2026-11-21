@@ -14,6 +14,9 @@ async function render() {
   $('hr').textContent = s.hardrockLogin ? 'seen' : 'not yet (refresh the Hard Rock tab)'; $('hr').className = s.hardrockLogin ? 'on' : 'off';
   const geoMin = s.hardrockGeo ? Math.round((Date.now() - s.hardrockGeo) / 60000) : null;
   $('hrgeo').textContent = geoMin == null ? 'not yet (place one bet by hand)' : `from your bet ${geoMin} min ago`; $('hrgeo').className = geoMin == null ? 'off' : 'on';
+  const fLeft = s.fanduelExp ? Math.round((s.fanduelExp * 1000 - Date.now()) / 60000) : null;
+  $('fd').textContent = fLeft == null ? 'not yet (refresh the FanDuel tab)' : fLeft > 0 ? `seen (good for ${fLeft} min)` : 'token ran out (reloading the FanDuel tab)';
+  $('fd').className = fLeft > 0 ? 'on' : 'off';
   $('armed').textContent = armed ? 'ARMED' : 'disarmed (re-checks only)'; $('armed').className = armed ? 'on' : 'off';
   $('toggle').textContent = armed ? 'Disarm' : 'Arm (allow real bets)';
 }

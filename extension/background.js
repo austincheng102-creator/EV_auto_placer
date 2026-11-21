@@ -93,6 +93,38 @@ chrome.webRequest.onBeforeRequest.addListener((d) => {
   }
 }, { urls: ['https://*.hardrocksportsbook.com/*'] }, ['requestBody']);
 
+// FanDuel: its bet requests carry the login in an x-authentication header (lasts about an hour,
+// the page renews it) and, for placing, the location check in x-geo-packet (lasts 20 minutes).
+// The balance check (api.fanduel.com) uses a different login token, x-auth-token. We keep the
+// newest of each that your FanDuel tab sent. The page gets a fresh location check every 20 minutes
+// and only sends it with a bet, so fd-geo.js also keeps a copy of each one the page receives.
+let fdAuth = { auth: null, wallet: null, geo: null, authAt: 0 };
+store.get('fdAuth').then((v) => { if (v?.fdAuth && !fdAuth.auth) fdAuth = v.fdAuth; });
+const fdGeoExp = (tok) => {
+  try { return Date.parse(JSON.parse(atob(String(tok).split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).expires) || 0; } catch { return 0; }
+};
+chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
+  const get = (n) => (d.requestHeaders || []).find((x) => x.name.toLowerCase() === n)?.value;
+  const auth = get('x-authentication'), wallet = get('x-auth-token'), geo = get('x-geo-packet');
+  const next = { ...fdAuth };
+  if (auth && auth !== fdAuth.auth && (!fdAuth.auth || jwtExp(auth) >= jwtExp(fdAuth.auth) || jwtExp(fdAuth.auth) < Date.now() / 1000)) { next.auth = auth; next.authAt = Date.now(); }
+  if (wallet && wallet !== fdAuth.wallet) next.wallet = wallet;
+  if (geo && fdGeoExp(geo) > fdGeoExp(fdAuth.geo)) next.geo = geo;
+  if (next.auth !== fdAuth.auth || next.wallet !== fdAuth.wallet || next.geo !== fdAuth.geo) { fdAuth = next; store.set({ fdAuth }); }
+}, { urls: ['https://*.sportsbook.fanduel.com/*', 'https://api.fanduel.com/*'] }, ['requestHeaders', 'extraHeaders']);
+
+// fd-geo.js has to be in the FanDuel page from the start to see its location checks.
+async function registerFdGeo() {
+  try {
+    const have = await chrome.scripting.getRegisteredContentScripts({ ids: ['fd-geo'] });
+    if (have.length) return;
+    await chrome.scripting.registerContentScripts([{ id: 'fd-geo', js: ['fd-geo.js'], matches: ['https://*.sportsbook.fanduel.com/*'],
+      runAt: 'document_start', world: 'MAIN', persistAcrossSessions: true }]);
+  } catch {}
+}
+registerFdGeo();
+const readFdGeo = () => { try { return sessionStorage.getItem('evPlacerFdGeo'); } catch { return null; } };
+
 // Read as text: the id is a number too big for JSON.parse to keep exact.
 const hrAccountId = (tok) => {
   try { return (/"accountId"\s*:\s*"?(\d+)/.exec(atob(tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))) || [])[1] || ''; } catch { return ''; }
@@ -189,6 +221,8 @@ async function watchLogins() {
   // earlier can land while the page is renewing its own login and knock it out.
   const gExp = jwtExp(gambitAuth);
   if (gExp && now - gExp > 60 && now - gExp < 600) reloadTab('gambit', 'its login token ran out and the page hasn\'t renewed it');
+  const fExp = jwtExp(fdAuth.auth);
+  if (fExp && now - fExp > 60 && now - fExp < 600) reloadTab('fanduel', 'its login token ran out and the page hasn\'t renewed it');
   if (hrAuth.session && hrAuth.sessionAt && Date.now() - hrAuth.sessionAt > 4 * 60e3) {
     const exp = jwtExp(hrAuth.session);
     if (!exp || now - exp < 600) reloadTab('hardrock', exp && exp < now ? 'its login token ran out' : 'the page stopped renewing its login (it normally does every 10 seconds)');
@@ -296,6 +330,19 @@ async function handle(msg) {
         if (typeof v === 'string' && v.includes('{{hrCsrf}}')) msg.request.headers[h] = v.replaceAll('{{hrCsrf}}', hrCsrf(hrAuth.session));
       }
     }
+    if (msg.request.useFanDuelAuth) {
+      const tok = msg.request.walletAuth ? fdAuth.wallet : fdAuth.auth;
+      if (!tok) return reply({ error: 'FanDuel login not seen yet: refresh the FanDuel tab (stay logged in)' });
+      if (msg.request.walletAuth) msg.request.headers['x-auth-token'] = tok;
+      else msg.request.headers['x-authentication'] = tok;
+      if (msg.request.headers['x-geo-packet'] === '{{fdGeo}}') {
+        // Newest location check: the one the page last received, or the one its last bet sent.
+        const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: 'MAIN', func: readFdGeo }).catch(() => []);
+        const geo = [r?.result, fdAuth.geo].filter(Boolean).sort((a, b) => fdGeoExp(b) - fdGeoExp(a))[0];
+        if (!geo || fdGeoExp(geo) < Date.now() + 15e3) return reply({ error: geo ? 'FanDuel location check ran out (it lasts 20 minutes): reload the FanDuel tab, or place one small bet by hand' : 'FanDuel location check not seen yet: reload the FanDuel tab (the FanDuel location app must be running), or place one small bet by hand' });
+        msg.request.headers['x-geo-packet'] = geo;
+      }
+    }
     if (msg.request.useGambitAuth) {
       if (!gambitAuth) return reply({ error: 'no Gambit login seen yet: refresh your Gambit tab' });
       msg.request.headers = { ...(msg.request.headers || {}), authorization: gambitAuth };
@@ -345,6 +392,7 @@ chrome.tabs.onUpdated.addListener((_id, info) => { if (info.url || info.status =
 chrome.tabs.onRemoved.addListener(sendTabs);
 chrome.runtime.onMessage.addListener((m, _s, respond) => {
   if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth, betriversLogin: !!kambiAuth, hardrockLogin: !!hrAuth.session, hardrockGeo: hrAuth.geoAt || 0,
+    fanduelExp: jwtExp(fdAuth.auth), fanduelGeoExp: fdGeoExp(fdAuth.geo),
     gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, alert: alertText, lastReload })); return true; }
 });
 // Keep the service worker alive while the engine runs.
