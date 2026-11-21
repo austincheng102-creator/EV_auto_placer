@@ -101,7 +101,7 @@ setting in `config.json`; one that isn't there gets the default below, and `null
 | Live player props need FanDuel listed | | `"sharp": {"livePropNeeds"}` |
 | Live: a sharp price changed within the last 5 seconds | 5 | `"sharp": {"liveMaxAgeSec"}` |
 | Live player props: FanDuel's price changed within the last 30 seconds | 30 | `"sharp": {"livePropMaxAgeSec"}` |
-| Same game + market + period = one group (both sides): one bet, $1 per book; the same side can go on each book once | 1 bet, $1, per book | `"group": {"maxBets", "maxStake", "bothSides", "perBook"}` |
+| Same game + market + period = one group (both sides): up to 3 bets, $3 per book, at least 60s apart on one book | 3 bets, $3, 60s, per book | `"group": {"maxBets", "maxStake", "cooldownSec", "bothSides", "perBook"}` |
 
 - **Sharp agreement:** each sharp book with both sides listed is de-vigged on its own (Pinnacle comes
   through Gambit as PS3838). For player props FanDuel counts as a sharp book too. If fewer than two
@@ -115,6 +115,10 @@ setting in `config.json`; one that isn't there gets the default below, and `null
   its own group). Player props group per player and stat (Trae Young assists Over/Under). Bets from the last
   24 hours count. `"bothSides": true` makes each side its own group again. With `maxBets` above 1 the group
   can be bet again, at most once per scan, and each bet is still checked at the book's real price first.
+  `cooldownSec` (default 60): a repeat in the same group on the same book waits until 60 seconds after the
+  last one (a Warriors total placed, another Warriors total 2s later is skipped), and it must still pass every
+  rule (EV, sharp books, re-check) at that moment. A different market on the same game (a Curry prop, the
+  spread) doesn't wait. `0` turns the wait off.
   `maxBetsPerEvent` caps game lines (spreads, totals, moneylines, any period) per game. Player props don't
   count toward it: each player + stat is its own group, so Trae Young points, points + rebounds and steals
   can each get one bet, but points Under can't go twice. `maxPropStatsPerPlayer` (default 2) caps how many

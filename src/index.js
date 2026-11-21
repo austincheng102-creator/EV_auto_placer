@@ -25,7 +25,7 @@ import { makeBetLog, parseTime } from './betlog.js';
 import { makePriceLog, makeSpreadSkipLog } from './skiplog.js';
 import { makePropFunnel } from './propfunnel.js';
 import { writeSnapshot, serveReport, openInBrowser } from './report.js';
-import { applyFilterDefaults, tooShort, evTooHigh, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom, groupClash, isPropBet, playerStats, tooManyStats, playerKey, statKey } from './filters.js';
+import { applyFilterDefaults, tooShort, evTooHigh, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom, groupClash, groupCoolingDown, isPropBet, playerStats, tooManyStats, playerKey, statKey } from './filters.js';
 
 const root = appDir;
 let args = process.argv.slice(2);
@@ -164,7 +164,7 @@ const tooEarly = (r) => {
 };
 // Odds floor, EV cap, sharp-book rules and bet groups (src/filters.js). Missing settings get
 // the defaults: -300, 25%, sharp books within 3 points, sharp price changed within 5s (live),
-// one bet and $1 per group.
+// up to 3 bets and $3 per group (per book), 60s apart.
 if (opt('--min-odds')) cfg.minOdds = Number(opt('--min-odds'));
 if (opt('--max-ev')) cfg.maxEvPct = Number(opt('--max-ev'));
 applyFilterDefaults(cfg);
@@ -279,7 +279,7 @@ function propStage(r, { groups, perEvent, stats, now }) {
   if (!sharpSpread(cfg, r).ok) return 'sharpSpread';
   const lim = liveAgeLimit(cfg, r);
   if (r.isLive && lim != null && r.prices) { const a = sharpClock.ageSec(r); if (a == null || a > lim) return 'stale'; }
-  if (groupRoom(cfg, groups, r) == null) return 'group';
+  if (groupRoom(cfg, groups, r) == null) return groupCoolingDown(cfg, groups, r) ? 'groupCooldown' : 'group';
   if ([...inflight.values()].some((f) => groupClash(cfg, r, f))) return 'groupInFlight';
   if ((cooldown.get(r.id) || 0) >= now) return 'cooldown';
   if (overEventCap(r, perEvent)) return 'perEvent';
@@ -403,6 +403,7 @@ async function placeAt(row, book, quote, ctx, retried = false) {
   // Same game + market (both sides, unless group.bothSides) as earlier bets share the group's bet count and $ cap
   // (per book with group.perBook; the other side stays blocked on every book).
   const room = groupRoom(cfg, groupTotals(state.placed), row);
+  if (room == null && groupCoolingDown(cfg, groupTotals(state.placed), row)) { ctx.outcome = 'group cooldown'; lg.warn(`group cooldown: bet on (${row.event}, ${row.market}) on ${BOOK_LABELS[row.book]} less than ${cfg.group.cooldownSec}s ago — skipped`); return false; }
   if (room == null) { ctx.outcome = 'group full'; lg.warn(`group full: ${cfg.group.maxBets ?? 'any'} bets / $${cfg.group.maxStake ?? 'any'} already on (${row.event}, ${row.market}, ${row.selection}) — skipped`); return false; }
   const stake = Math.floor(Math.min(stakeFor(quote), room) * 100) / 100;
   if (stake <= 0) { ctx.outcome = 'stake 0'; lg.warn('stake is 0 — skipped'); return false; }
@@ -514,7 +515,7 @@ async function tick() {
   for (const p of [...state.placed, ...inflight.values()]) if (inEventCap(p)) perEvent[p.event] = (perEvent[p.event] || 0) + 1;
   const now = Date.now();
   let farOff = 0;
-  const why = { noProps: 0, odds: 0, evCap: 0, sharpSpread: 0, noSharp: 0, stale: 0, staleProp: 0, group: 0, playerStats: 0 };
+  const why = { noProps: 0, odds: 0, evCap: 0, sharpSpread: 0, noSharp: 0, stale: 0, staleProp: 0, group: 0, groupCooldown: 0, playerStats: 0 };
   const drop = (k) => (why[k]++, false);
   const groups = groupTotals(state.placed);
   const ageMax = cfg.sharp.liveMaxAgeSec;
@@ -527,7 +528,7 @@ async function tick() {
     .filter((r) => !liveSharpMissing(cfg, r) || drop('noSharp'))
     .filter((r) => { const sp = sharpSpread(cfg, r); if (sp.ok) return true; logSpreadSkip(r, sp); return drop('sharpSpread'); })
     .filter((r) => { const lim = liveAgeLimit(cfg, r); if (!r.isLive || lim == null || !r.prices) return true; const a = sharpClock.ageSec(r); return (a != null && a <= lim) || drop(r.isProp ? 'staleProp' : 'stale'); })
-    .filter((r) => groupRoom(cfg, groups, r) != null || drop('group'))
+    .filter((r) => groupRoom(cfg, groups, r) != null || drop(groupCoolingDown(cfg, groups, r) ? 'groupCooldown' : 'group'))
     .filter((r) => ![...inflight.values()].some((f) => groupClash(cfg, r, f)))
     .filter((r) => (cooldown.get(r.id) || 0) < now)   // repeats on one side are capped by the group rule
     .filter((r) => !overEventCap(r, perEvent))
@@ -561,6 +562,7 @@ async function tick() {
     why.stale && `${why.stale} live with no sharp move in the last ${ageMax}s`,
     why.staleProp && `${why.staleProp} live props with no FanDuel move in the last ${cfg.sharp.livePropMaxAgeSec}s`,
     why.group && `${why.group} group already bet`,
+    why.groupCooldown && `${why.groupCooldown} group bet <${cfg.group.cooldownSec}s ago`,
     why.playerStats && `${why.playerStats} player already has ${cfg.maxPropStatsPerPlayer} stats bet`,
   ].filter(Boolean).join(', ');
 
@@ -628,7 +630,7 @@ function startBet(row, scanAt) {
     });
 }
 
-log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}% novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} odds=${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)}..${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)} maxEV=${cfg.maxEvPct ?? 'off'}% sharpSpread<=${cfg.sharp.maxSpreadPts ?? 'off'}pts liveSharpAge<=${cfg.sharp.liveMaxAgeSec ?? 'off'}s (props ${cfg.sharp.livePropMaxAgeSec ?? 'off'}s) group=${cfg.group.maxBets ?? 'any'} bet/$${cfg.group.maxStake ?? 'any'} pregame<=${cfg.pregameMaxHours == null ? 'any' : cfg.pregameMaxHours + 'h'} stake=$${cfg.stake.amount} poll=${pollSeconds}s atOnce=${maxInFlight} recheckWatch=${WATCH_MS / 60e3}min`);
+log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}% novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} odds=${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)}..${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)} maxEV=${cfg.maxEvPct ?? 'off'}% sharpSpread<=${cfg.sharp.maxSpreadPts ?? 'off'}pts liveSharpAge<=${cfg.sharp.liveMaxAgeSec ?? 'off'}s (props ${cfg.sharp.livePropMaxAgeSec ?? 'off'}s) group=${cfg.group.maxBets ?? 'any'} bet/$${cfg.group.maxStake ?? 'any'} every ${cfg.group.cooldownSec || 0}s pregame<=${cfg.pregameMaxHours == null ? 'any' : cfg.pregameMaxHours + 'h'} stake=$${cfg.stake.amount} poll=${pollSeconds}s atOnce=${maxInFlight} recheckWatch=${WATCH_MS / 60e3}min`);
 if (source.arb) {
   const a = source.arb.cfg;
   log.info(source.arb.books.length
