@@ -75,6 +75,8 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
         } catch (e) {
           // A network blip or slow reply isn't a logout; only alert on login errors.
           if (LOGIN_RE.test(e.message)) bad(name, e.message);
+          // While the site is marked logged out, say why the check couldn't confirm the login.
+          else if (down.has(name)) log.warn(`${label(name)} login check didn't answer: ${e.message} (still showing it as logged out)`);
           else log.debug(`${label(name)} login check: ${e.message}`);
         }
       }
@@ -101,6 +103,8 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
       if (!gambitFailSince) gambitFailSince = Date.now();
       if (Date.now() - gambitFailSince >= gambitGraceMs) bad('gambit', err.message);
     },
+    /** A book's request that needs the login just worked: it isn't logged out. */
+    bookOk(name) { ok(name); },
     /** A book reported a login error while checking or placing a bet. */
     bookError(name, msg) { if (/didn't accept the login|login not seen yet|login token|not seen yet/i.test(msg)) bad(name, msg); },
     isDown: (site) => down.has(site),
