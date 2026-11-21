@@ -3,6 +3,7 @@
 // so the P&L chart catches up even on days you don't bet.
 import { makeHardRock } from './books/hardrock.js';
 import { makeBetRivers } from './books/betrivers.js';
+import { makeFanDuel } from './books/fanduel.js';
 import { makeResults, betKey } from './results.js';
 import { BOOK_LABELS } from './books/index.js';
 
@@ -15,6 +16,7 @@ export function makeResultSync({ cfg, bridge, root, dryRun = false, log, bets, b
   const sources = [
     { book: 'hardrock', idRe: /^hardrock:(\d+)/, api: books.hardrock?.settled ? books.hardrock : makeHardRock('hardrock', 'Hard Rock Bet', cfg, bridge) },
     { book: 'betrivers', idRe: /^coupon:(\d+)/, api: books.betrivers?.settled ? books.betrivers : makeBetRivers('betrivers', 'BetRivers', cfg, bridge) },
+    { book: 'fanduel', idRe: /^fanduel:(us-[a-z]+:[0-9a-z]+)/, api: books.fanduel?.settled ? books.fanduel : makeFanDuel('fanduel', 'FanDuel', cfg, bridge) },
   ];
   const warned = new Set();
 

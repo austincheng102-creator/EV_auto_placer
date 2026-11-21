@@ -37,12 +37,13 @@ ev-placer --book hardrock   bet Hard Rock this run (or betrivers)
 ev-placer --help     all options (--min-ev 12, --books betrivers,hardrock, --config other.json)
 ```
 
-## Picking the book (BetRivers or Hard Rock Bet)
+## Picking the book (BetRivers, Hard Rock Bet or FanDuel)
 One app runs either book; the Gambit feed, Novig check, EV math and limits are shared.
 - Double-click **Start BetRivers** or **Start Hard Rock** to bet that book for the day.
   **Start EV Placer** uses `"books"` from `config.json`.
 - Set `"books": "ask"` in `config.json` to be asked which book each time it starts.
-- From a terminal: `ev-placer --book hardrock`, or `--books betrivers,hardrock` for both at once.
+- From a terminal: `ev-placer --book hardrock`, or `--books betrivers,hardrock,fanduel` for several at once.
+  In `config.json`: `"books": ["betrivers", "hardrock", "fanduel"]`.
 - `state.json` and the daily stake limit are shared across books.
 
 **Hard Rock Bet (Colorado)** is wired from a recording of a real bet on app.hardrock.bet:
@@ -58,6 +59,24 @@ One app runs either book; the Gambit feed, Novig check, EV math and limits are s
 - Straight bets match a recorded $1 straight bet. The selection id comes from Gambit's Hard Rock
   link (`app.hardrock.bet/?deep_link_value=betslip/<id>`). Not yet known: how long Hard Rock
   accepts the location token.
+
+**FanDuel (Colorado, co.sportsbook.fanduel.com)** is wired from recordings of a real $1 bet and a game page:
+- Gambit only carries FanDuel **New Jersey** (id 100). Selection ids are the same in every state
+  but market ids aren't, so for each +EV row the app finds the game on FanDuel CO's league page
+  (NBA, NCAAB, NFL, NCAAF, NHL, MLB, WNBA; `"fanduel": {"leaguePages": {...}}` adds others) and
+  the matching Colorado market (same kind and period: spread, total, moneyline; full game,
+  halves, quarters). Alternate lines, 3-way and team markets are never used.
+- **Price re-check**: FanDuel CO's own current price, line and max stake (its bet-slip check,
+  no bet is made, so it also runs while disarmed). EV and every rule are checked at that price.
+- **Bet**: sent at exactly that price with lower odds refused. If FanDuel says the price moved,
+  nothing is placed and the bet is re-checked from scratch.
+- **No player props on FanDuel** (FanDuel is the sharp reference for live props, so a FanDuel
+  prop would be checked against itself). `"fanduel": {"props": true}` turns them on.
+- The extension copies your FanDuel login and location check from your FanDuel tab. The location
+  check lasts 20 minutes and FanDuel's page renews it while the **FanDuel location app**
+  (GeoComply) is running. After the extension updates, **reload the FanDuel tab once**.
+  The popup shows "FanDuel login: seen (good for N min)".
+- Daily stake limit, groups and once-per-book rules cover FanDuel like the other books.
 
 ## Longest odds: +250
 Bets with odds above +250 are skipped, both when scanning and at the live or new price. Change it
@@ -204,7 +223,7 @@ the edge is real; that's the standard check, and it doesn't need hundreds of res
   Also 30 days / 7 days.
 
 **Results.** Results fill in by themselves. While the placer runs, it reads each book's
-**My Bets > Settled** list every 10 minutes (Hard Rock and BetRivers, whichever tabs are open, on
+**My Bets > Settled** list every 10 minutes (Hard Rock, BetRivers and FanDuel, whichever tabs are open, on
 any day) and saves the result, payout and odds of each logged bet to `results.json`. The terminal
 shows a `Results:` line when bets settle. Change the timing with `"results": {"everyMinutes": 10}`
 in `config.json` (0 turns it off). It's read-only, so it works while the extension is disarmed.
