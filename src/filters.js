@@ -5,7 +5,7 @@
 //    (Pinnacle, Kalshi, Polymarket, Novig; FanDuel left out since 2026-11-19, sharp.spreadBooks)
 //  - live mainlines need Pinnacle, Kalshi, Polymarket or Novig listed; live props need FanDuel
 //  - live timing: a sharp price for the selection changed within the last 5 seconds (30 for props)
-//  - groups: same game + market (period is part of the market) + side share one bet and $1
+//  - groups: same game + market (period is part of the market) + side share 3 bets and $3 (was 1 and $1)
 import { impliedProb } from './ev.js';
 
 // Gambit sportsbook ids. PS3838 is Pinnacle's feed. Polymarket has two listings.
@@ -27,8 +27,8 @@ export function applyFilterDefaults(cfg) {
   // Live props: FanDuel's prop prices update slowly in Gambit's feed, so props get 30s.
   if (s.livePropMaxAgeSec === undefined) s.livePropMaxAgeSec = 30;
   const g = (cfg.group ||= {});
-  if (g.maxBets === undefined) g.maxBets = 1;
-  if (g.maxStake === undefined) g.maxStake = 1;
+  if (g.maxBets === undefined) g.maxBets = 3;
+  if (g.maxStake === undefined) g.maxStake = 3;
   return cfg;
 }
 

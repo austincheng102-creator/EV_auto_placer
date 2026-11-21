@@ -16,8 +16,8 @@
   },
   "pregameMaxHours": 12,
   "group": {
-    "maxBets": 1,
-    "maxStake": 1
+    "maxBets": 3,
+    "maxStake": 3
   },
   "sharp": {
     "maxSpreadPts": 3,
