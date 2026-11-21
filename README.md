@@ -92,7 +92,9 @@ setting in `config.json`; one that isn't there gets the default below, and `null
   its own group). Player props group per player and stat (Trae Young assists Over/Under). Bets from the last
   24 hours count. `"bothSides": true` makes each side its own group again. With `maxBets` above 1 the group
   can be bet again, at most once per scan, and each bet is still checked at the book's real price first.
-  `maxBetsPerEvent` still caps the whole game.
+  `maxBetsPerEvent` caps game lines (spreads, totals, moneylines, any period) per game. Player props don't
+  count toward it: each player + stat is its own group, so Trae Young points, points + rebounds and steals
+  can each get one bet, but points Under can't go twice. `"propsInEventCap": true` puts props back under the cap.
   With `"perBook": true` (default) the count and $ cap are per book: Over 214.5 on Hard Rock and Over 215.5
   on BetRivers can both be placed (each passing every rule on its own), but not Over twice on one book,
   and once either book has the Over, neither book takes the Under. `"perBook": false` = one bet across both books.

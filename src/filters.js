@@ -142,6 +142,12 @@ const SIDE = /\s*\b(over|under|yes|no)$/i;
 const sideless = (sel) => { const s = String(sel ?? '').trim(); return SIDE.test(s) ? s.replace(SIDE, '') : ''; };
 export const groupKey = (r) => `${norm(r.event)}|${norm(r.market)}|${norm(bothSides ? r.selection : sideless(r.selection))}`;
 
+/**
+ * A player prop bet (row, or a state.placed entry). Entries saved before isProp was stored:
+ * a player name before Over/Under, in a market that isn't a game/team total, spread or moneyline.
+ */
+export const isPropBet = (p) => p.isProp ?? (sideless(p.selection) !== '' && !/total|spread|moneyline/i.test(p.market || ''));
+
 /** The side within a group ("over", a team name, "trae young over"). */
 const sideOf = (r) => norm(r.selection);
 

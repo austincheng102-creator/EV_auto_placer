@@ -24,7 +24,7 @@ import { makeBetLog, parseTime } from './betlog.js';
 import { makePriceLog, makeSpreadSkipLog } from './skiplog.js';
 import { makePropFunnel } from './propfunnel.js';
 import { writeSnapshot, serveReport, openInBrowser } from './report.js';
-import { applyFilterDefaults, tooShort, evTooHigh, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom, groupClash } from './filters.js';
+import { applyFilterDefaults, tooShort, evTooHigh, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom, groupClash, isPropBet } from './filters.js';
 
 const root = appDir;
 let args = process.argv.slice(2);
@@ -254,6 +254,12 @@ function logSpreadSkip(r, sp) {
 const directWarnAt = {};
 const propFunnel = makePropFunnel(cfg, root, { dryRun, log });
 
+// maxBetsPerEvent caps game lines (spreads, totals, moneylines) per game. Player props don't count
+// toward it and aren't capped by it: each player + stat is still its own group (one bet, see group).
+// "propsInEventCap": true puts props back under the cap.
+const inEventCap = (p) => cfg.propsInEventCap === true || !isPropBet(p);
+const overEventCap = (r, perEvent) => inEventCap(r) && (perEvent[r.event] || 0) >= (cfg.maxBetsPerEvent ?? Infinity);
+
 /** First rule a prop row fails in this scan (same order as the scan filters in tick()). */
 function propStage(r, { groups, perEvent, now }) {
   if (r.direct === 'gone') return 'gone';
@@ -269,7 +275,7 @@ function propStage(r, { groups, perEvent, now }) {
   if (groupRoom(cfg, groups, r) == null) return 'group';
   if ([...inflight.values()].some((f) => groupClash(cfg, r, f))) return 'groupInFlight';
   if ((cooldown.get(r.id) || 0) >= now) return 'cooldown';
-  if ((perEvent[r.event] || 0) >= (cfg.maxBetsPerEvent ?? Infinity)) return 'perEvent';
+  if (overEventCap(r, perEvent)) return 'perEvent';
   if (!dryRun && !bridge.hasTab(r.book)) return 'noTab';
   if (novig && !novig.check(r, r.odds).ok) return 'novig';
   return 'dupInScan';
@@ -403,7 +409,7 @@ async function placeAt(row, book, quote, ctx, retried = false) {
     ctx.outcome = 'placed'; ctx.realOdds = confirmedOdds ?? quote.odds;
     if (detail) lg.debug(`${book.label} ${desc(row)} PLACED — ${detail}`);
     state.placed.push({ at: new Date().toISOString(), key: selKey(row), group: groupKey(row), event: row.event, book: row.book,
-      market: row.market, gambitBookId: row.gambitBookId, selection: row.selection, line: row.line, odds: quote.odds, fair: row.fairOdds, ev, novigEv: novigEvPct, stake, betId });
+      market: row.market, isProp: !!row.isProp, gambitBookId: row.gambitBookId, selection: row.selection, line: row.line, odds: quote.odds, fair: row.fairOdds, ev, novigEv: novigEvPct, stake, betId });
     state.staked += stake; save();
     // Paper trail: what we checked vs what the book says it accepted, plus Gambit's fair odds.
     // Dry runs: the simulated book "confirms" the price we sent.
@@ -485,7 +491,7 @@ async function tick() {
     }
   }
   const perEvent = {};
-  for (const p of [...state.placed, ...inflight.values()]) perEvent[p.event] = (perEvent[p.event] || 0) + 1;
+  for (const p of [...state.placed, ...inflight.values()]) if (inEventCap(p)) perEvent[p.event] = (perEvent[p.event] || 0) + 1;
   const now = Date.now();
   let farOff = 0;
   const why = { odds: 0, evCap: 0, sharpSpread: 0, noSharp: 0, stale: 0, staleProp: 0, group: 0 };
@@ -503,7 +509,7 @@ async function tick() {
     .filter((r) => groupRoom(cfg, groups, r) != null || drop('group'))
     .filter((r) => ![...inflight.values()].some((f) => groupClash(cfg, r, f)))
     .filter((r) => (cooldown.get(r.id) || 0) < now)   // repeats on one side are capped by the group rule
-    .filter((r) => (perEvent[r.event] || 0) < (cfg.maxBetsPerEvent ?? Infinity))
+    .filter((r) => !overEventCap(r, perEvent))
     .filter((r) => dryRun || bridge.hasTab(r.book))
     // New bets first, then ones being watched after a failed price check.
     .sort((a, b) => (watch.has(a.id) - watch.has(b.id)) || b.ev - a.ev);
