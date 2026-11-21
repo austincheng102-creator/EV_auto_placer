@@ -2,11 +2,16 @@
 // "run this request inside the logged-in sportsbook tab" and gets the response back.
 import { WebSocketServer } from 'ws';
 import { log } from '../log.js';
+import embedded from '../embedded.js';
+
+// The extension version this app ships (extension/manifest.json).
+const WANT_EXT = (() => { try { return JSON.parse(embedded['extension/manifest.json']).version; } catch { return null; } })();
 
 export function startBridge(port, { reloadExtension = false, quiet = false, hello = null } = {}) {
   const wss = new WebSocketServer({ host: '127.0.0.1', port });
   wss.on('error', (e) => log.err(e.code === 'EADDRINUSE' ? `Port ${port} for the Chrome extension is in use: is another ev-placer window open (Show bets checking results lets go within 90s)? Close it and start again` : `Chrome extension link on port ${port} failed: ${e.message}`));
   let sock = null;
+  let reloadAsked = false;
   let tabs = [];
   let seq = 0;
   const pending = new Map();
@@ -23,12 +28,33 @@ export function startBridge(port, { reloadExtension = false, quiet = false, hell
     }
     sock = ws;
     if (!quiet) log.info('Chrome extension connected');
+    // Chrome still running an older extension (a reload after an update didn't take, e.g. it went
+    // missing while Chrome was closed): ask it to reload once per run. Old versions don't say their
+    // version at all, so no answer within 5s counts as old too.
+    let said = false;
+    const outdated = (v) => {
+      if (!WANT_EXT || quiet || reloadAsked === 'told') return;
+      if (reloadAsked) {
+        // Reloaded and still old: Chrome is loading the extension from some other folder.
+        reloadAsked = 'told';
+        return log.alarm(`Chrome's EV Placer extension is still ${v || 'an old version'} after a reload (this app needs ${WANT_EXT}). Chrome is loading it from a different folder: open chrome://extensions, remove "EV Placer Bridge", then Load unpacked and pick the "extension" folder next to this app`);
+      }
+      reloadAsked = true;
+      log.warn(`Chrome is running an older EV Placer extension (${v || 'before 0.7'}, this app has ${WANT_EXT}): reloading it. If this repeats, open chrome://extensions, check "EV Placer Bridge" is loaded from the extension folder next to this app, and press its reload button`);
+      ws.send(JSON.stringify({ type: 'reload' }));
+    };
+    setTimeout(() => { if (!said && sock === ws) outdated(null); }, 5000);
     if (hello) ws.send(JSON.stringify(hello));   // settings the extension needs (Gambit auto login on/off)
     ws.on('message', (buf) => {
       let m; try { m = JSON.parse(buf); } catch { return; }
       if (m.type === 'tabs') { tabs = m.tabs; return; }
       if (m.type === 'reloaded') { log.warn(`Chrome extension reloaded the ${m.book} tab: ${m.why}`); return; }
-      if (m.type === 'hello') { if (!quiet) log.info(`Chrome extension version ${m.version}`); return; }
+      if (m.type === 'hello') {
+        said = true;
+        if (!quiet) log.info(`Chrome extension version ${m.version}`);
+        if (WANT_EXT && m.version !== WANT_EXT) outdated(m.version);
+        return;
+      }
       if (m.type === 'login') {
         if (m.note) log.warn(m.note);
         else if (m.start) log.warn(`Logging back in to Gambit with Chrome's saved password (${m.why})`);
