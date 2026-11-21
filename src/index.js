@@ -23,7 +23,7 @@ import { seenBooks } from './sources/gambit-evs.js';
 import { makeBetLog, parseTime } from './betlog.js';
 import { makePriceLog } from './skiplog.js';
 import { writeSnapshot, serveReport, openInBrowser } from './report.js';
-import { applyFilterDefaults, tooShort, evTooHigh, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom } from './filters.js';
+import { applyFilterDefaults, tooShort, evTooHigh, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom, groupClash } from './filters.js';
 
 const root = appDir;
 let args = process.argv.slice(2);
@@ -225,7 +225,7 @@ const COOLDOWN_MS = 5 * 60 * 1000;
 // Bets being checked or placed right now, by group. Scanning keeps going while a book takes its
 // time (Hard Rock ~10s, BetRivers' live delay), and up to maxInFlight bets run at once, each in a
 // different group. Their stake counts toward the daily limit while they're out.
-const inflight = new Map(); // groupKey -> row
+const inflight = new Map(); // book|groupKey -> row
 let pendingStake = 0;
 const maxInFlight = Math.max(1, Number(cfg.maxInFlight ?? 3));
 // After a failed price check, a book whose price check is free (BetRivers: a public read, no bet
@@ -347,7 +347,8 @@ async function placeAt(row, book, quote, ctx, retried = false) {
     lg.bet(`Novig OK: ${fmtAmerican(quote.odds)} vs Novig ${fmtNovig(nc.nv)} -> ${fmtPct(nc.ev)} EV`);
   }
 
-  // Same game + market (both sides, unless group.bothSides) as earlier bets share the group's bet count and $ cap.
+  // Same game + market (both sides, unless group.bothSides) as earlier bets share the group's bet count and $ cap
+  // (per book with group.perBook; the other side stays blocked on every book).
   const room = groupRoom(cfg, groupTotals(state.placed), row);
   if (room == null) { ctx.outcome = 'group full'; lg.warn(`group full: ${cfg.group.maxBets ?? 'any'} bets / $${cfg.group.maxStake ?? 'any'} already on (${row.event}, ${row.market}, ${row.selection}) — skipped`); return false; }
   const stake = Math.floor(Math.min(stakeFor(quote), room) * 100) / 100;
@@ -462,7 +463,7 @@ async function tick() {
     .filter((r) => sharpSpread(cfg, r).ok || drop('sharpSpread'))
     .filter((r) => { const lim = liveAgeLimit(cfg, r); if (!r.isLive || lim == null || !r.prices) return true; const a = sharpClock.ageSec(r); return (a != null && a <= lim) || drop(r.isProp ? 'staleProp' : 'stale'); })
     .filter((r) => groupRoom(cfg, groups, r) != null || drop('group'))
-    .filter((r) => !inflight.has(groupKey(r)))
+    .filter((r) => ![...inflight.values()].some((f) => groupClash(cfg, r, f)))
     .filter((r) => (cooldown.get(r.id) || 0) < now)   // repeats on one side are capped by the group rule
     .filter((r) => (perEvent[r.event] || 0) < (cfg.maxBetsPerEvent ?? Infinity))
     .filter((r) => dryRun || bridge.hasTab(r.book))
@@ -472,7 +473,7 @@ async function tick() {
   if (novig) ev = ev.filter((r) => novig.check(r, r.odds).ok);
   const novigDropped = gambitCount - ev.length;
   // One bet per group per scan: keep the first (best-EV new) row of each group. Later scans can add more, up to group.maxBets.
-  { const g = new Set(); ev = ev.filter((r) => { const k = groupKey(r); if (g.has(k)) return false; g.add(k); return true; }); }
+  { const kept = []; ev = ev.filter((r) => { if (kept.some((k) => groupClash(cfg, r, k))) return false; kept.push(r); return true; }); }
   const whyText = [
     why.odds && `${why.odds} outside ${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)} to ${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)}`,
     why.evCap && `${why.evCap} above ${cfg.maxEvPct}% EV`,
@@ -501,7 +502,7 @@ async function tick() {
 }
 
 function startBet(row, scanAt) {
-  const k = groupKey(row);
+  const k = `${row.book}|${groupKey(row)}`;
   const book = books[row.book];
   const ctx = { scanAt };
   inflight.set(k, row);

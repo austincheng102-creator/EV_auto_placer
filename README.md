@@ -78,7 +78,7 @@ setting in `config.json`; one that isn't there gets the default below, and `null
 | Live player props need FanDuel listed | | `"sharp": {"livePropNeeds"}` |
 | Live: a sharp price changed within the last 5 seconds | 5 | `"sharp": {"liveMaxAgeSec"}` |
 | Live player props: FanDuel's price changed within the last 30 seconds | 30 | `"sharp": {"livePropMaxAgeSec"}` |
-| Same game + market + period = one group (both sides): one bet, $1 total | 1 bet, $1 | `"group": {"maxBets", "maxStake", "bothSides"}` |
+| Same game + market + period = one group (both sides): one bet, $1 per book; the same side can go on each book once | 1 bet, $1, per book | `"group": {"maxBets", "maxStake", "bothSides", "perBook"}` |
 
 - **Sharp agreement:** each sharp book with both sides listed is de-vigged on its own (Pinnacle comes
   through Gambit as PS3838). For player props FanDuel counts as a sharp book too. If fewer than two
@@ -93,6 +93,9 @@ setting in `config.json`; one that isn't there gets the default below, and `null
   24 hours count. `"bothSides": true` makes each side its own group again. With `maxBets` above 1 the group
   can be bet again, at most once per scan, and each bet is still checked at the book's real price first.
   `maxBetsPerEvent` still caps the whole game.
+  With `"perBook": true` (default) the count and $ cap are per book: Over 214.5 on Hard Rock and Over 215.5
+  on BetRivers can both be placed (each passing every rule on its own), but not Over twice on one book,
+  and once either book has the Over, neither book takes the Under. `"perBook": false` = one bet across both books.
 - The `[SCAN]` line says how many rows each rule skipped.
 - Not done yet: no bets in the last 2 minutes of a game. Gambit's feed has no game clock.
 

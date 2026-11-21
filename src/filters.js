@@ -8,6 +8,8 @@
 //  - groups: same game + market (period is part of the market) share group.maxBets bets and group.maxStake $.
 //    Both sides count as one group (Over and Under, either team's spread), unless group.bothSides is true.
 //    Player props: per player, so Over/Under on one player's stat are one group.
+//    group.perBook (default on): each book gets its own maxBets/maxStake in the group, so the same side
+//    can go on BetRivers and Hard Rock once each, but never the other side on another book.
 import { impliedProb } from './ev.js';
 
 // Gambit sportsbook ids. PS3838 is Pinnacle's feed. Polymarket has two listings.
@@ -32,6 +34,7 @@ export function applyFilterDefaults(cfg) {
   if (g.maxBets === undefined) g.maxBets = 1;
   if (g.maxStake === undefined) g.maxStake = 1;
   if (g.bothSides === undefined) g.bothSides = false;
+  if (g.perBook === undefined) g.perBook = true;
   bothSides = !!g.bothSides;
   return cfg;
 }
@@ -139,23 +142,41 @@ const SIDE = /\s*\b(over|under|yes|no)$/i;
 const sideless = (sel) => { const s = String(sel ?? '').trim(); return SIDE.test(s) ? s.replace(SIDE, '') : ''; };
 export const groupKey = (r) => `${norm(r.event)}|${norm(r.market)}|${norm(bothSides ? r.selection : sideless(r.selection))}`;
 
-/** What's already been bet in each group over the last day (state.placed entries). */
+/** The side within a group ("over", a team name, "trae young over"). */
+const sideOf = (r) => norm(r.selection);
+
+/** What's already been bet in each group over the last day (state.placed entries): totals, per book, sides. */
 export function groupTotals(placed, now = Date.now()) {
   const out = new Map();
   for (const p of placed) {
     if (now - Date.parse(p.at) > 24 * 3600e3) continue;
     const k = p.market != null ? groupKey(p) : p.group;   // recomputed, so older bets follow the current grouping
-    const g = out.get(k) || { bets: 0, staked: 0 };
-    g.bets++; g.staked += Number(p.stake) || 0;
+    const g = out.get(k) || { bets: 0, staked: 0, byBook: new Map(), sides: new Set() };
+    const stake = Number(p.stake) || 0;
+    g.bets++; g.staked += stake;
+    const b = g.byBook.get(p.book) || { bets: 0, staked: 0 };
+    b.bets++; b.staked += stake; g.byBook.set(p.book, b);
+    if (p.selection != null) g.sides.add(sideOf(p));
     out.set(k, g);
   }
   return out;
 }
 
-/** Room left in a row's group: null = group is full. */
+/**
+ * Room left in a row's group: null = group is full. With group.perBook the bet count and $ cap are
+ * per book, and a group that already has a bet on one side takes no bet on the other side, any book.
+ */
 export function groupRoom(cfg, totals, row) {
-  const g = totals.get(groupKey(row)) || { bets: 0, staked: 0 };
+  const all = totals.get(groupKey(row));
+  if (cfg.group.perBook && all && [...all.sides].some((s) => s !== sideOf(row))) return null;
+  const g = (cfg.group.perBook ? all?.byBook.get(row.book) : all) || { bets: 0, staked: 0 };
   if (cfg.group.maxBets != null && g.bets >= cfg.group.maxBets) return null;
   const left = cfg.group.maxStake == null ? Infinity : cfg.group.maxStake - g.staked;
   return left > 0.0001 ? left : null;
+}
+
+/** Two bets that can't run side by side: same group, and (per book) same book or opposite sides. */
+export function groupClash(cfg, a, b) {
+  if (groupKey(a) !== groupKey(b)) return false;
+  return !cfg.group.perBook || a.book === b.book || sideOf(a) !== sideOf(b);
 }
