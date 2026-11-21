@@ -3,6 +3,11 @@
 // (DevTools > Network > Copy as cURL). Put the URL/headers in config.json -> gambit.
 import { evPct } from '../ev.js';
 import { evsToRows, bookIdLists } from './gambit-evs.js';
+import { createHash } from 'node:crypto';
+import { log } from '../log.js';
+
+// Seconds since 1970 when a JWT runs out, or 0.
+const jwtExp = (t) => { try { return Number(JSON.parse(Buffer.from(String(t).split('.')[1], 'base64url').toString()).exp) || 0; } catch { return 0; } };
 
 const get = (obj, path) => path.split('.').reduce((o, k) => (o == null ? o : o[k]), obj);
 
@@ -39,12 +44,37 @@ export function makeGambitSource(cfg, bridge) {
     return url.replace(m[0], m[1] + [...have].join(','));
   }
 
-  async function fetchOne(url) {
+  // Optional: "gambit": {"login": {"email": "...", "password": "..."}} in config.json. Gambit's login
+  // lasts exactly 1 hour (seen in Austin's recording, 2026-11-21) and the site's tab doesn't reliably
+  // renew it, so the app logs in by itself (the same request the login form sends, made by the
+  // extension) and logs in again 5 minutes before it runs out. Gambit allows more than one login,
+  // so the Gambit tab in Chrome isn't affected. Without these settings, the tab's login is used.
+  const creds = g.login?.email && g.login?.password ? g.login : null;
+  const fingerprintId = creds ? createHash('md5').update(`ev-placer|${String(creds.email).toLowerCase()}`).digest('hex') : null;
+  let own = null;   // { auth, exp }
+  async function ownLogin(force = false) {
+    if (!force && own && own.exp - Date.now() / 1000 > 300) return own.auth;
+    const res = await bridge.send('gambit', { kind: 'gambitLogin', url: g.loginUrl || 'https://api.gambitodds.com/session/login', method: 'POST', noTab: true,
+      headers: { accept: 'application/json, text/plain, */*', 'content-type': 'application/json' },
+      body: JSON.stringify({ email: creds.email, password: creds.password, fingerprintId }) });
+    const token = res.json?.token;
+    if (res.status >= 400 || !token) {
+      own = null;
+      throw new Error(`Gambit login failed (HTTP ${res.status}${res.json?.message ? `: ${res.json.message}` : ''}): check gambit.login email and password in config.json`);
+    }
+    own = { auth: `Bearer ${token}`, exp: jwtExp(token) || Date.now() / 1000 + 3600 };
+    log.info(`Logged into Gambit, good until ${new Date(own.exp * 1000).toTimeString().slice(0, 5)} (logs in again on its own before then)`);
+    return own.auth;
+  }
+
+  async function fetchOne(url, retried = false) {
     if (via === 'extension') {
       if (!bridge?.connected()) throw new Error('Chrome extension not connected (needed to read Gambit)');
-      const res = await bridge.send('gambit', { kind: 'gambit', url: withCacheBuster(url), method: 'GET',
-        headers: { accept: 'application/json, text/plain, */*', ...(g.headers || {}) }, useGambitAuth: true });
-      if (res.status === 401 || res.status === 403) throw new Error(`Gambit HTTP ${res.status}: log in again in the Gambit tab`);
+      const headers = { accept: 'application/json, text/plain, */*', ...(g.headers || {}) };
+      if (creds) headers.authorization = await ownLogin();
+      const res = await bridge.send('gambit', { kind: 'gambit', url: withCacheBuster(url), method: 'GET', headers, useGambitAuth: !creds, noTab: !!creds });
+      if (creds && res.status === 401 && !retried) { await ownLogin(true); return fetchOne(url, true); }
+      if (res.status === 401 || res.status === 403) throw new Error(`Gambit HTTP ${res.status}: ${creds ? 'Gambit refused the app\'s own login' : 'log in again in the Gambit tab'}`);
       if (res.status >= 400 || !res.json) throw new Error(`Gambit HTTP ${res.status}${res.text ? `: ${String(res.text).slice(0, 120)}` : ''}`);
       return res.json;
     }
