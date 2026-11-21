@@ -270,7 +270,9 @@ async function handle(msg) {
     if (msg.request.kind === 'place') placing[msg.book] = (placing[msg.book] || 0) + 1;
     const matches = (await bookTabs()).filter((t) => t.book === msg.book);
     const tab = matches.find((t) => /^https:\/\/(www\.)?[^/]+\/?/.test(t.url || '') && !/api/.test(new URL(t.url).hostname)) || matches[0];
-    if (!tab) return reply({ error: msg.book === 'gambit' ? 'no open Gambit tab (open gambitodds.com and log in)' : `no open ${msg.book} tab` });
+    // The app's own Gambit login (gambit.login in config.json) doesn't need a Gambit tab.
+    const ownGambit = msg.book === 'gambit' && msg.request.noTab;
+    if (!tab && !ownGambit) return reply({ error: msg.book === 'gambit' ? 'no open Gambit tab (open gambitodds.com and log in)' : `no open ${msg.book} tab` });
     if (msg.request.useKambiAuth) {
       if (!kambiAuth) return reply({ error: 'BetRivers login token not seen yet: in the BetRivers tab, click any odds once (adds it to the slip), then remove it' });
       msg.request.headers = { ...(msg.request.headers || {}), authorization: kambiAuth };
@@ -310,6 +312,7 @@ async function handle(msg) {
         a = await extFetch(msg.request);
       }
       if (!a.error && a.status && a.status < 400) { gambitRefused = 0; return reply(a); }
+      if (ownGambit) return reply(a.error ? { error: `Gambit: ${a.error}` } : a);   // the app handles its own login
       const b = await runInTab(tab.id, msg.request);
       if (!b.error && b.status && b.status < 400) { gambitRefused = 0; return reply(b); }
       // Refused over and over (about 20s of polls): the page's login has stalled, a reload renews it.

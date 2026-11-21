@@ -224,6 +224,16 @@ runs out. What the app and extension do now:
   and a red **!** on the extension icon. The app never stops: it keeps scanning and retrying, and
   prints `[LOGIN] ✓ ... logged in again` once you log back in. It never types a password.
 
+**Gambit's login lasts exactly 1 hour.** Its site doesn't reliably renew it, so Gambit can drop
+every hour or two. To stay logged in without you, let the app log into Gambit itself: add your Gambit
+email and password to `config.json`:
+```
+"gambit": { ..., "login": { "email": "you@example.com", "password": "your Gambit password" } }
+```
+The app then logs in through the extension when it starts and again 5 minutes before each hour runs
+out. Gambit allows more than one login, so your Gambit tab isn't affected (and isn't needed). The
+password stays in `config.json` on that PC only; leave `login` out to keep using the tab's login.
+
 Also on the betting PC: turn off sleep while the app runs (Windows Settings > System > Power >
 Screen and sleep: "Never" while plugged in), and allow Chrome notifications
 (Windows Settings > System > Notifications > Google Chrome: On).
