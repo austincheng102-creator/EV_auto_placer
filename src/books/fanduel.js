@@ -124,6 +124,42 @@ export function pickByName(markets, eventId, selection, want, line) {
   return null;
 }
 
+// Alternate lines: FanDuel lists every line of an alternate spread/total in one market, one runner
+// per side and line ("Over 145.5", "Iowa Hawkeyes -16.5"). Runner handicap may be 0 there, so the
+// line also comes from the runner's name.
+const ALT_BAD = /TEAM|3-WAY|3_WAY|ODD|EVEN|BAND|MARGIN|MADE|RACE|FIRST_TO|WINNING|EXACT|_OR_|PLAYER|SAME_GAME/;
+const nums = (s) => (String(s || '').match(/[+-]?\d+(?:\.\d+)?/g) || []).map(Number);
+/** Line of an alternate-line runner: its handicap, or else the number in its name. */
+export function altLine(r) {
+  const h = Number(r?.handicap);
+  if (Number.isFinite(h) && h !== 0) return h;
+  const n = nums(r?.runnerName);
+  return n.length ? n[n.length - 1] : (Number.isFinite(h) ? h : null);
+}
+/** Our side in an alternate spread/total market: Gambit's selection id, or else by name at exactly
+ *  our line (spread: same sign). Exactly one runner may match by name. Returns {m, sel, line} or null. */
+export function pickAlt(markets, eventId, sel, selection, want, line) {
+  const spread = /HANDICAP|SPREAD|PUCK_LINE|RUN_LINE/.test(String(want.kind));
+  const lineOk = (v) => line == null || (spread ? v === Number(line) : Math.abs(v) === Math.abs(Number(line)));
+  const w = words(selection).filter((x) => !/^[+-]?\d/.test(x));
+  const same = (n) => { const a = words(n).filter((x) => !/^[+-]?\d/.test(x)); const A = new Set(a), W = new Set(w);
+    return w.length > 0 && a.length > 0 && (a.every((x) => W.has(x)) || w.every((x) => A.has(x))); };
+  const alts = markets.filter((m) => {
+    const t = String(m.marketType || '');
+    if ((eventId != null && m.eventId !== eventId) || !/ALT/.test(t) || ALT_BAD.test(t) || !want.kind.test(t)) return false;
+    return want.period ? want.period.test(t) : !ANY_PERIOD.test(t.replace(/^ALTERNATE_|^ALT_/, ''));
+  });
+  for (const m of alts) {
+    const r = r0(m, sel);
+    if (r && lineOk(altLine(r))) return { m, sel: r.selectionId, line: altLine(r) };
+  }
+  for (const m of alts) {
+    const hit = (m.runners || []).filter((r) => same(r.runnerName) && lineOk(altLine(r)));
+    if (hit.length === 1) return { m, sel: hit[0].selectionId, line: altLine(hit[0]) };
+  }
+  return null;
+}
+
 export function makeFanDuel(name, label, cfg, bridge) {
   const f = cfg.fanduel || {};
   const st = String(cfg.region || 'CO').toLowerCase();
@@ -212,11 +248,24 @@ export function makeFanDuel(name, label, cfg, bridge) {
         if (want.kind.test(String(x.marketType || ''))) kindTypes.add(`${x.marketType}[${(x.runners || []).map((r) => r.selectionId).slice(0, 3).join('/')}]`);
       }
     }
+    // Not a main line: look for exactly this line among FanDuel CO's alternate lines (main page,
+    // then tabs that can hold them). "fanduel": {"altLines": false} turns this off.
+    if (f.altLines !== false) {
+      const altTabs = tabs.filter((t) => /alt|spread|total|line|handicap|points|goals|runs/i.test(t) && !/player|prop|same game/i.test(t));
+      for (const t of [null, ...altTabs]) {
+        const j = t == null ? first : await getJson(`${base}&tab=${slug(t)}`, 5 * 60e3);
+        const a = pickAlt(Object.values(j.attachments?.markets || {}), eventId, sel, row.selection, want, row.line);
+        if (a) { const out = { marketId: a.m.marketId, selectionId: Number(a.sel), eventId, alt: true, line: a.line }; cache.set(key, { at: Date.now(), json: out }); return out; }
+        if (t != null) tries.push(t);
+      }
+    }
     // Say what FanDuel CO does have, so a mismatch can be fixed from one log line.
     const list = (set) => [...set].slice(0, 4).join(', ') || 'none';
     throw new Error(`FanDuel CO: no ${row.market || row.marketKey} market with this selection in "${row.event}" (event ${eventId}, selection ${sel} is in: ${list(seenIn)}; markets of that kind: ${list(kindTypes)}; tabs tried: ${[...new Set(tries)].map((t) => t ?? 'main').join(', ')})`);
   }
 
+  // A runner's line: its handicap; on an alternate-line market with no handicap, the line we matched.
+  const lineOf = (rn, m) => { const h = Number(rn?.handicap); return m?.alt && !(Number.isFinite(h) && h !== 0) ? Number(m.line) : h; };
   const runnerOf = (m, sel) => (m?.runnerDetails || []).find((r) => String(r.selectionId) === String(sel));
   const marketPrices = async (ids) => {
     const res = await send('recheck', `${host('smp')}/api/sports/fixedodds/readonly/v1/getMarketPrices?priceHistory=0`, 'POST', { marketIds: ids }, {}, 20000, false);
@@ -253,7 +302,7 @@ export function makeFanDuel(name, label, cfg, bridge) {
         const mk = got.get(r.coMarket.marketId), rn = runnerOf(mk, r.coMarket.selectionId);
         const odds = fdAmerican(rn?.winRunnerOdds);
         r.gambitOdds = r.odds; r.gambitEv = r.ev;
-        const lineOff = r.line != null && rn && Math.abs(Number(rn.handicap)) !== Math.abs(Number(r.line));
+        const lineOff = r.line != null && rn && Math.abs(lineOf(rn, r.coMarket)) !== Math.abs(Number(r.line));
         if (!rn || odds == null || mk.marketStatus !== 'OPEN' || rn.runnerStatus !== 'ACTIVE' || lineOff) { r.direct = 'gone'; r.ev = -Infinity; st.gone++; continue; }
         st.read++;
         if (odds !== r.odds) st.moved++;
@@ -270,7 +319,7 @@ export function makeFanDuel(name, label, cfg, bridge) {
       const mk = (await marketPrices([m.marketId])).find((x) => x.marketId === m.marketId);
       const rn = runnerOf(mk, m.selectionId);
       if (!mk || !rn) return { odds: null, suspended: true };
-      const line = row.line == null ? null : Number(rn.handicap);
+      const line = row.line == null ? null : lineOf(rn, m);
       if (mk.marketStatus !== 'OPEN' || rn.runnerStatus !== 'ACTIVE') return { odds: fdAmerican(rn.winRunnerOdds), line, suspended: true };
 
       const slip = await send('recheck', `${host('sib')}/api/sports/fixedodds/transactional/v1/implyBets?pricePolicy=SUGGESTED`, 'POST',
