@@ -616,14 +616,16 @@ async function handle(msg) {
     // If Gambit refuses the token, try the other recent ones before giving up on this poll.
     if (msg.book === 'gambit') {
       const refused = (r) => r.status === 401 || r.status === 403;
-      // Two tries (from the extension, then from the tab) must both fit inside the app's 15s wait.
-      msg.request.timeoutMs = msg.request.timeoutMs || 6000;
+      msg.request.timeoutMs = msg.request.timeoutMs || 20000;
       let a = await extFetch(msg.request);
       while (a.status === 401 && msg.request.headers.authorization === gambitAuth && dropGambitToken(gambitAuth)) {
         msg.request.headers.authorization = gambitAuth;
         a = await extFetch(msg.request);
       }
       if (!a.error && a.status && a.status < 400) { gambitRefused = 0; return reply(a); }
+      // A timeout means the connection is slow: trying again from the tab only adds to the wait
+      // (and from the tab Gambit's API refuses the request anyway: "Failed to fetch").
+      if (a.timedOut) return reply({ error: `Gambit didn't answer in ${Math.round(msg.request.timeoutMs / 1000)}s: the internet on this PC is slow or down, or Gambit's site is` });
       const b = await runInTab(tab.id, msg.request);
       if (!b.error && b.status && b.status < 400) { gambitRefused = 0; return reply(b); }
       // Refused over and over (about 20s of polls): the page's login has stalled, a reload renews it.

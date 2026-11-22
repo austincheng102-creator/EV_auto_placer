@@ -47,7 +47,7 @@ export function makeGambitSource(cfg, bridge, { root = null, log = null } = {}) 
   // then from the Gambit tab) before cancelling it. Cancelling matters: a request the app gave
   // up on used to keep downloading in Chrome, and with a poll every 2s they piled up and starved
   // every later Gambit request ("bridge timeout" over and over).
-  async function fetchOne(url, { tryMs = 9000 } = {}) {
+  async function fetchOne(url, { tryMs = Number(g.timeoutSec || 20) * 1000 } = {}) {
     if (via === 'extension') {
       if (!bridge?.connected()) throw new Error('Chrome extension not connected (needed to read Gambit)');
       const res = await bridge.send('gambit', { kind: 'gambit', url: withCacheBuster(url), method: 'GET', timeoutMs: tryMs,
@@ -77,12 +77,18 @@ export function makeGambitSource(cfg, bridge, { root = null, log = null } = {}) 
   const arbState = { error: null, rows: 0 };
   // The arbitrage table is big (pre-game is tens of MB on a busy evening) and can take longer to
   // download than a 2s poll. So it loads in the background, one download at a time, and never
-  // holds up the +EV table. Its rows are used while they're fresh (arbProps.maxAgeSec, default 15).
-  const arbMaxAge = (Number(arb?.maxAgeSec) || 15) * 1000;
+  // holds up the +EV table. Its rows are used while they're fresh (arbProps.maxAgeSec, default 30).
+  // It only starts after the +EV table has come in (so the two never share a slow connection)
+  // and at most once per arbProps.everySec (default 20), which also keeps the data use down.
+  const arbMaxAge = (Number(arb?.maxAgeSec) || 30) * 1000;
+  const arbEvery = (Number(arb?.everySec) || 20) * 1000;
+  let arbStartedAt = 0;
   const arbTryMs = (Number(arb?.timeoutSec) || 25) * 1000;
   let arbRows = [], arbAt = 0, arbLoading = null;
   function loadArbs() {
     if (arbLoading || !arb || !arbBooks.length || !arb.urls.length) return arbLoading;
+    if (Date.now() - arbStartedAt < arbEvery) return null;
+    arbStartedAt = Date.now();
     arbLoading = (async () => {
       const out = [];
       const nextArbFair = new Map();   // kept from the last good fetch if this one fails
