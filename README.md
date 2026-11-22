@@ -167,6 +167,12 @@ all the rules above), and nothing is placed at a price that didn't pass.
   (up to `hardrock.feedMaxGames`, default 150) and uses Hard Rock's real price in the scan, the same
   way as BetRivers. Bets still go in with price changes refused, so Hard Rock turns a bet down if
   the price moved in the meantime. `"hardrock": {"directPrices": false}` turns this off.
+- **Reading book prices never holds up the scan.** All books are read at the same time and the
+  scan waits at most `directWaitSec` (default 1.5) for them. A book that takes longer keeps
+  Gambit's prices for that scan while its read finishes in the background (every bet is still
+  checked at the book first). FanDuel CO game lookups run in the background and are remembered
+  for 10 minutes (a game not found is tried again after 60s). If a scan takes much longer than
+  `pollSeconds`, a warning says how long Gambit and the book reads took.
 - `prices.csv` next to the app gets a line for each check: Gambit's price, how long Gambit had shown
   it, the book's real price and EV, how long ago BetRivers last changed that price, and what happened. This shows how far behind Gambit is.
 - `sharp-skips.csv` next to the app gets a line for each bet skipped by the sharp-books rule

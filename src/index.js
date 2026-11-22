@@ -476,9 +476,18 @@ function arbText(rows) {
   return `, arbitrage table: ${s.ours} ${a.books.map((b) => BOOK_LABELS[b] || b).join('/')} props, ${n} priced off DK/FD/CZR${fails ? ` (${fails})` : ''}`;
 }
 
+const directBusy = {}, directMs = {}, directSlowAt = {};
+let slowWarnAt = 0;
+function directSlow(n, b) {
+  if (directSlowAt[n] > Date.now() - 5 * 60e3) return;
+  directSlowAt[n] = Date.now();
+  log.warn(`${b.label}: reading its prices directly takes longer than the scan waits (${cfg.directWaitSec ?? 1.5}s${directMs[n] ? `, last read ${(directMs[n] / 1000).toFixed(1)}s` : ''}), so some scans use Gambit's ${b.label} prices; every bet is still checked at ${b.label} first`);
+}
+
 async function tick() {
   if (state.day !== today()) { state.day = today(); state.staked = 0; save(); }
   let rows;
+  const tickAt = Date.now();
   try { rows = await source.fetchRows(); session.gambit(null); }
   catch (e) { log.err(`Gambit fetch failed: ${e.message}`); session.gambit(e); return; }
   // Closing line value: follow Gambit's fair price for bets already placed.
@@ -513,14 +522,35 @@ async function tick() {
     for (const id of shown.keys()) if (!ids.has(id)) shown.delete(id);
     for (const [id, w] of watch) if (scanAt - w.since > WATCH_MS + 60e3) watch.delete(id); }
   // Books that let us read their prices directly (BetRivers): use the real price, not Gambit's copy.
+  // All books are read at the same time, and the scan waits at most directWaitSec (default 1.5)
+  // for them: a book that takes longer (slow tab, slow line) keeps Gambit's prices this scan,
+  // its read finishes in the background, and it is read again on a later scan. Each read works
+  // on copies of the rows, so a late answer never changes rows a scan already used.
   const direct = {};
-  for (const [n, b] of Object.entries(books)) {
-    if (!b.livePrices) continue;
-    try { direct[n] = await b.livePrices(rows, Math.min(cfg.minEvPct, source.arb?.cfg.minEvPct ?? Infinity)); }
-    catch (e) {
-      if (!(directWarnAt[n] > Date.now() - 60e3)) { directWarnAt[n] = Date.now(); log.warn(`${b.label}: couldn't read its prices directly (${e.message}), using Gambit's prices for now`); }
+  const t0 = Date.now();
+  const minDirectEv = Math.min(cfg.minEvPct, source.arb?.cfg.minEvPct ?? Infinity);
+  const waitMs = Math.max(0, Number(cfg.directWaitSec ?? 1.5) * 1000);
+  await Promise.all(Object.entries(books).map(async ([n, b]) => {
+    if (!b.livePrices) return;
+    if (directBusy[n]) { directSlow(n, b); return; }   // the last read hasn't finished yet
+    const mine = rows.filter((r) => r.book === n);
+    const copies = mine.map((r) => ({ ...r }));
+    const started = Date.now();
+    const job = b.livePrices(copies, minDirectEv).then((st) => ({ st }), (e) => ({ e }));
+    directBusy[n] = job;
+    job.then(() => { directBusy[n] = null; directMs[n] = Date.now() - started; });
+    let timer;
+    const res = await Promise.race([job, new Promise((r) => { timer = setTimeout(() => r(null), waitMs); })]);
+    clearTimeout(timer);
+    if (!res) { directSlow(n, b); return; }
+    if (res.e) {
+      if (!(directWarnAt[n] > Date.now() - 60e3)) { directWarnAt[n] = Date.now(); log.warn(`${b.label}: couldn't read its prices directly (${res.e.message}), using Gambit's prices for now`); }
+      return;
     }
-  }
+    mine.forEach((r, i) => Object.assign(r, copies[i]));
+    direct[n] = res.st;
+  }));
+  const directTook = Date.now() - t0;
   // Gambit rows from other books only count once the book's own price was read.
   rows = rows.filter((r) => !r.shadow || r.direct === true);
   for (const b of Object.keys(books)) {
@@ -602,6 +632,12 @@ async function tick() {
     (novig ? `, ${novigDropped} dropped because Novig doesn't show ${novig.minEvPct}%+` : '') +
     (farOff ? `, ${farOff} pre-game skipped (starts more than ${cfg.pregameMaxHours}h away)` : '') +
     (whyText ? `, skipped: ${whyText}` : '') + directText + arbText(rows) + `; rows/${cfg.minEvPct}%+ by book: ${perBook}`, ev.length === 0);
+  // A scan that took much longer than pollSeconds: say where the time went (at most every 5 min).
+  const tookMs = Date.now() - tickAt;
+  if (tookMs > Math.max(5000, 2 * pollSeconds * 1000) && !(slowWarnAt > Date.now() - 5 * 60e3)) {
+    slowWarnAt = Date.now();
+    log.warn(`scan took ${(tookMs / 1000).toFixed(1)}s (Gambit ${((scanAt - tickAt) / 1000).toFixed(1)}s, book prices ${(directTook / 1000).toFixed(1)}s)`);
+  }
   if (!ev.length) return;
   if (!dryRun && !bridge.connected()) { log.warn('Chrome extension not connected — not placing'); return; }
 
