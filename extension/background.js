@@ -373,14 +373,16 @@ async function keepFdGeo() {
 // answers every bet with ACCOUNT_BLOCKED: that's the "account blocked" seen since 2026-11-11 (your
 // account isn't blocked). A slow connection or Chrome slowing down the background tab makes that
 // gap longer, or the page never sends a new one. br-geo.js keeps a copy of what the page receives.
-// When a bet is refused with ACCOUNT_BLOCKED, we give the page 20s to send a new check by itself
-// (the site tells it to); if it doesn't, we reload the BetRivers tab, which always runs a fresh
-// check, and wait up to 60s for it. Also every 30s: a check that ran out over 90s ago with no new
-// one gets the same reload. Never while a BetRivers bet is being sent. On by default; off with
-// config.json "session": {"betriversGeoRenew": false}.
-const BR_GEO_SELF_MS = 20e3;      // how long the page gets to send a new check by itself
-const BR_GEO_WAIT_MS = 60e3;      // how long to wait for the check after a reload
-const BR_GEO_STALE_MS = 90e3;     // ran out this long ago with no new one: reload (watchLogins)
+// The real cause (2026-11-22, live): the Xpoint code in the page only asks the Xpoint app for a
+// new check while the tab is in view, so a background BetRivers tab never picks one up, and a
+// plain reload doesn't help either. Switching to the tab fixed it by hand. So the page is now
+// always told its tab is in view (br-geo.js, and brShowVisible for a page already open). When a
+// check lapses anyway: tell the page it's in view and wait; reload the tab; bring the tab to the
+// front and reload (then back to the tab you had). A bet that finds it lapsed doesn't wait: it's
+// checked again every scan until the new check is in. Every 30s, a check that ran out 90s+ ago
+// with no new one gets the same treatment. Never reloads while a BetRivers bet is being sent.
+// Off with config.json "session": {"betriversGeoRenew": false}.
+const BR_GEO_STALE_MS = 90e3;     // ran out this long ago with no new one: renew (watchLogins)
 let brGeo = {};                   // { status, expires, at, flag, flagAt } from br-geo.js
 let brGeoJob = null, brGeoTriedAt = 0, brGeoFails = 0;
 let brGeoLast = null;             // { at, ok, why } for the popup
@@ -392,7 +394,7 @@ const readBrGeo = () => { try { return sessionStorage.getItem('evPlacerBrGeo'); 
 async function brGeoNow(tabId) {
   const [r] = tabId ? await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: readBrGeo }).catch(() => []) : [];
   let g = null; try { g = JSON.parse(r?.result || 'null'); } catch {}
-  if (g && (g.at || 0) + (g.flagAt || 0) > (brGeo.at || 0) + (brGeo.flagAt || 0)) { brGeo = g; store.set({ brGeo }); }
+  if (g && JSON.stringify(g) !== JSON.stringify(brGeo)) { brGeo = g; store.set({ brGeo }); }
   return brGeo;
 }
 // Good now: a check that hasn't run out, and the site hasn't cleared the flag or blocked a bet since.
@@ -401,65 +403,127 @@ const brGeoGood = (g, since = 0) => g.status === 'ALLOWED' && g.expires > Date.n
 // A new check arrived after `since` (sent by the page, or the site set the flag again).
 const brGeoNew = (g, since) => brGeoGood(g, since) || (g.flag === 'set' && g.flagAt > since && !(g.at > g.flagAt && g.status !== 'ALLOWED'));
 
-// Answers { ok, why }. urgent: a bet was just refused (shorter wait between tries).
+// Runs in the BetRivers page: from now on tell the page its tab is in view. The Xpoint code in the
+// page only asks the Xpoint app for a new check while the tab is in view (it skips its 10s check
+// while document.hidden), so a background BetRivers tab never picks up the new check. br-geo.js
+// does the same from page start; this covers a page loaded before the extension was updated.
+function brShowVisible() {
+  if (window.__evPlacerVisible) return false;
+  window.__evPlacerVisible = true;
+  try {
+    Object.defineProperty(Document.prototype, 'visibilityState', { get: () => 'visible', configurable: true });
+    Object.defineProperty(Document.prototype, 'hidden', { get: () => false, configurable: true });
+    Document.prototype.hasFocus = function () { return true; };
+    document.addEventListener('visibilitychange', (e) => e.stopImmediatePropagation(), true);
+  } catch {}
+  return true;
+}
+const brVisible = (tabId) => chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: brShowVisible }).catch(() => []);
+
+// Ways of getting a fresh check, in order (the one that worked last time goes first):
+const BR_STEPS = [
+  { name: 'telling the page its tab is in view and waiting for it', wait: 30e3 },
+  { name: 'reloading the BetRivers tab', reload: true, wait: 45e3 },
+  { name: 'bringing the BetRivers tab to the front and reloading', reload: true, front: true, wait: 45e3 },
+];
+let brStep = 0;
+chrome.storage.local.get('brStep').then((v) => { if (Number.isInteger(v?.brStep)) brStep = v.brStep; }).catch(() => {});
+
+// Why a try didn't work, from what br-geo.js saw the page do.
+function brWhyNot(g, since) {
+  if ((g.pkgAt || 0) > since) return g.pkgStatus && g.pkgStatus !== 'ALLOWED' ? `BetRivers answered the page's location check with ${g.pkgStatus}` : 'the page sent a location check but the extension couldn\'t read the answer';
+  if ((g.xpAt || 0) > since) return `the Xpoint app answered ${g.xpStatus || 'nothing'}${g.xpStatus === 'ALLOWED' ? ' with the old check (it hasn\'t made a new one yet)' : ''} (is the Xpoint app running and signed in on this PC?)`;
+  if ((g.xpErrAt || 0) > since) return `the page couldn't reach the Xpoint app on this PC (${g.xpErr || 'no answer'}): is it running?`;
+  return 'the page didn\'t ask the Xpoint app for a check';
+}
+
+async function brTryStep(t, step) {
+  const since = Date.now();
+  let back = null;
+  if (step.front) {
+    const tab = await chrome.tabs.get(t.id).catch(() => null);
+    const win = tab && await chrome.windows.get(tab.windowId).catch(() => null);
+    const [cur] = tab ? await chrome.tabs.query({ active: true, windowId: tab.windowId }) : [];
+    back = { tabId: cur && cur.id !== t.id ? cur.id : null, windowId: tab?.windowId, minimized: win?.state === 'minimized' };
+    await chrome.tabs.update(t.id, { active: true }).catch(() => {});
+    if (tab) await chrome.windows.update(tab.windowId, { focused: true, ...(back.minimized ? { state: 'normal' } : {}) }).catch(() => {});
+  }
+  if (step.reload) {
+    reloadedAt.betrivers = Date.now();
+    lastReload = { book: 'betrivers', why: `renew the location check: ${step.name}`, at: Date.now() };
+    await chrome.tabs.reload(t.id).catch(() => {});
+  } else await brVisible(t.id);
+  let res = null;
+  try {
+    while (Date.now() - since < step.wait) {
+      await sleep(2000);
+      if (step.reload) await brVisible(t.id);   // in case br-geo.js didn't load with the page
+      const g = await brGeoNow(t.id);
+      if (brGeoNew(g, since)) {
+        const left = g.expires > Date.now() ? `, good for ${mins(g.expires - Date.now())}` : '';
+        res = { ok: true, why: `${step.name}, after ${Math.round((Date.now() - since) / 1000)}s${left}` };
+        break;
+      }
+    }
+  } finally {
+    if (back?.tabId) await chrome.tabs.update(back.tabId, { active: true }).catch(() => {});
+    if (back?.minimized) await chrome.windows.update(back.windowId, { state: 'minimized' }).catch(() => {});
+  }
+  return res || { ok: false, why: `${step.name}: ${brWhyNot(brGeo, since)}` };
+}
+
+// Tries each way in turn. Answers { ok, why }. urgent: a bet found it lapsed (shorter wait between tries).
 function renewBrGeo(why, urgent = false) {
   if (brGeoJob) return brGeoJob;
   brGeoJob = (async () => {
+    // Every 2 minutes at most (1 when a bet is waiting), every 10 after 3 failed rounds in a row
+    // (it keeps trying).
+    const gap = urgent ? 60e3 : brGeoFails >= 3 ? 10 * 60e3 : 2 * 60e3;
+    if (Date.now() - brGeoTriedAt < gap) return { ok: false, why: brGeoLast && !brGeoLast.ok ? brGeoLast.why : `last renewal try was ${mins(Date.now() - brGeoTriedAt)} ago` };
     const t = await brTab();
     if (!t) return { ok: false, why: 'no BetRivers tab open (open co.betrivers.com and log in)' };
-    const start = Date.now();
-    brNote(`BetRivers location check needs renewing (${why})`, 'info');
-    // 1. The page usually sends a new one by itself within seconds once the site asks it to.
-    if (urgent && !t.discarded) {
-      while (Date.now() - start < BR_GEO_SELF_MS) {
-        await sleep(2000);
-        if (brGeoNew(await brGeoNow(t.id), start - 5e3)) {
-          brGeoFails = 0;
-          brGeoLast = { at: Date.now(), ok: true, why: 'the page renewed it' };
-          brNote(`BetRivers location check renewed by the page after ${Math.round((Date.now() - start) / 1000)}s`, 'good');
-          return { ok: true };
-        }
-      }
-    }
-    // 2. Reload the tab: the page runs a fresh location check when it loads.
-    // Don't reload over and over if it isn't helping: every 2 minutes at most (1 when a bet is
-    // waiting), every 10 after 3 failures in a row (it keeps trying).
-    const gap = urgent ? 60e3 : brGeoFails >= 3 ? 10 * 60e3 : 2 * 60e3;
-    if (Date.now() - brGeoTriedAt < gap) return { ok: false, why: `the page didn't renew it, and the last reload was only ${mins(Date.now() - brGeoTriedAt)} ago` };
-    // Wait for any BetRivers bet being sent or waiting on its live delay (a reload would lose its answer).
-    for (let i = 0; i < 60 && (placing.betrivers > 0 || Date.now() - brBusyAt < 25e3); i++) await sleep(1000);
-    if (placing.betrivers > 0 || Date.now() - brBusyAt < 25e3) return { ok: false, why: 'a BetRivers bet was still being sent' };
     brGeoTriedAt = Date.now();
-    const before = Date.now();
-    brNote(`reloading the BetRivers tab to renew its location check (${why})`, 'info');
-    reloadedAt.betrivers = Date.now();
-    lastReload = { book: 'betrivers', why: `renew the location check (${why})`, at: Date.now() };
-    await chrome.tabs.reload(t.id).catch(() => {});
-    while (Date.now() - before < BR_GEO_WAIT_MS) {
-      await sleep(2000);
-      if (brGeoNew(await brGeoNow(t.id), before)) {
-        brGeoFails = 0;
-        const left = brGeo.expires ? ` (good for ${mins(brGeo.expires - Date.now())})` : '';
-        brGeoLast = { at: Date.now(), ok: true, why: `renewed by reloading the tab${left}` };
-        brNote(`BetRivers location check renewed ${Math.round((Date.now() - before) / 1000)}s after reloading the tab${left}`, 'good');
-        return { ok: true };
+    const first = Math.min(Math.max(0, brStep), BR_STEPS.length - 1);
+    const order = [first, ...BR_STEPS.keys()].filter((v, i, a) => a.indexOf(v) === i);
+    const fails = [];
+    for (const i of order) {
+      const step = BR_STEPS[i];
+      if (step.reload) {
+        // Wait for any BetRivers bet being sent or waiting on its live delay (a reload would lose its answer).
+        for (let k = 0; k < 60 && (placing.betrivers > 0 || Date.now() - brBusyAt < 25e3); k++) await sleep(1000);
+        if (placing.betrivers > 0 || Date.now() - brBusyAt < 25e3) { fails.push(`${step.name}: a BetRivers bet was still being sent`); continue; }
       }
+      brNote(`renewing BetRivers' location check (${why}): ${step.name}`, 'info');
+      const r = await brTryStep(t, step);
+      brGeoTriedAt = Date.now();
+      if (r.ok) {
+        brGeoFails = 0;
+        if (brStep !== i) { brStep = i; chrome.storage.local.set({ brStep }).catch(() => {}); }
+        brGeoLast = { at: Date.now(), ok: true, why: r.why };
+        brNote(`BetRivers location check renewed by ${r.why}`, 'good');
+        return r;
+      }
+      fails.push(r.why);
+      brNote(`BetRivers location check not renewed by ${r.why}`);
     }
     brGeoFails++;
-    const msg = `no new location check within ${BR_GEO_WAIT_MS / 1000}s of reloading the BetRivers tab (is the Xpoint location app running on this PC, and are you logged in to BetRivers?)`;
+    const msg = `none of the ${BR_STEPS.length} ways worked (${fails.join('; ')}). Are you logged in to BetRivers, and is the Xpoint location app running on this PC?`;
     brGeoLast = { at: Date.now(), ok: false, why: msg };
-    brNote(`BetRivers location check NOT renewed: ${msg}. Trying again in ${brGeoFails >= 3 ? 10 : 2} min`);
+    brNote(`BetRivers location check NOT renewed: ${msg} Trying again in ${brGeoFails >= 3 ? 10 : 2} min`);
     return { ok: false, why: msg };
   })().catch((e) => ({ ok: false, why: String(e?.message || e) })).finally(() => { brGeoJob = null; });
   return brGeoJob;
 }
 
-// Every 30 seconds (watchLogins): the check ran out over 90s ago (or the site cleared the flag
-// over 90s ago) and the page hasn't sent a new one: renew it before a bet runs into it.
+// Every 30 seconds (watchLogins): keep the page told its tab is in view (so it picks up each new
+// check by itself), and if the check ran out over 90s ago (or the site cleared the flag over 90s
+// ago) with no new one, renew it before a bet runs into it.
 async function keepBrGeo() {
-  if (settings.betriversGeoRenew === false || brGeoJob || !rsiAuth) return;
+  if (settings.betriversGeoRenew === false || !rsiAuth) return;
   const t = await brTab();
   if (!t || t.discarded) return;
+  await brVisible(t.id);
+  if (brGeoJob) return;
   const g = await brGeoNow(t.id);
   if (!g.at && !g.flagAt) return;   // nothing seen yet (br-geo.js starts with the next page load)
   if (brGeoGood(g)) return;
@@ -863,17 +927,17 @@ async function handle(msg) {
       // Kambi turned the token down: get a fresh one and send the request once more. A refused
       // request did nothing (no bet placed), so sending it again is safe.
       if (msg.request.kind === 'status') brBusyAt = Date.now();   // a live bet waiting on its delay
-      // ACCOUNT_BLOCKED: the location check had lapsed and nothing was placed. Renew it (the app
-      // checks the bet again from the start on its next scan).
+      // ACCOUNT_BLOCKED: the location check had lapsed and nothing was placed. Start renewing it
+      // without making this bet wait; the app checks the bet again from the start every scan.
+      const geoBet = ['validate', 'place'].includes(msg.request.kind);
+      const off = settings.betriversGeoRenew === false;
+      // A renewal is running: don't send the bet to Kambi at all until it's done.
+      if (geoBet && brGeoJob && !off) return reply({ error: 'BetRivers location check is being renewed, nothing was sent; the bet is checked again next scan', notSent: true, geoRenewing: true });
       const blocked = async (r) => {
-        if (!kambiBlocked(r) || !['validate', 'place'].includes(msg.request.kind)) return r;
-        let n = { ok: false, why: 'renewal is off (config "session": {"betriversGeoRenew": false})' };
-        if (settings.betriversGeoRenew !== false) {
-          const mine = msg.request.kind === 'place';
-          if (mine) placing.betrivers = Math.max(0, (placing.betrivers || 1) - 1);   // this bet was refused: let the reload go ahead
-          try { n = await renewBrGeo('a bet was refused with ACCOUNT_BLOCKED', true); } finally { if (mine) placing.betrivers = (placing.betrivers || 0) + 1; }
-        }
-        return { ...r, geoBlocked: true, geoRenewed: !!n.ok, geoWhy: n.why || '' };
+        if (!kambiBlocked(r) || !geoBet) return r;
+        if (off) return { ...r, geoBlocked: true, geoWhy: 'renewal is off (config "session": {"betriversGeoRenew": false})' };
+        const n = await Promise.race([renewBrGeo('a bet was refused with ACCOUNT_BLOCKED', true), sleep(300).then(() => null)]);
+        return { ...r, geoBlocked: true, geoRenewing: !n || !!n.ok, geoWhy: n && !n.ok ? n.why : '' };
       };
       const first = await runInTab(tab.id, msg.request);
       if (!kambiRefused(first)) return reply(first.error ? { error: first.error } : await blocked(first));

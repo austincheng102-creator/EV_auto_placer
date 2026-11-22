@@ -68,18 +68,18 @@ export const kambiWhy = (j) => [...new Set(kambiErrors(j).map((e) => e.type).fil
 //  - NOT_BETTABLE: the market is closed or suspended right now.
 //  - ACCOUNT_BLOCKED: BetRivers' location check (Xpoint, about 14.5 min) had run out, so the site
 //    had stopped Kambi taking bets. Your account isn't blocked and nothing was placed. The
-//    extension renews the check (res.geoRenewed says if it did); the engine then checks the bet
-//    again from the start on the next scan.
+//    extension starts renewing the check (res.geoRenewing); the engine checks the bet again from
+//    the start every scan until it's in.
 // Anything else stays a plain "place failed".
 export function classify(err, j, quote, res) {
   const errs = kambiErrors(j);
   const moved = errs.find((e) => e.type === 'ODDS_CHANGED');
   if (errs.some((e) => e.type === 'ACCOUNT_BLOCKED')) {
     err.notSent = true;
-    err.geoRenewed = !!res?.geoRenewed;
-    err.message = res?.geoRenewed
-      ? 'refused with ACCOUNT_BLOCKED: the BetRivers location check had run out, nothing was placed; renewed it, the bet is checked again next scan'
-      : `refused with ACCOUNT_BLOCKED: the BetRivers location check ran out, nothing was placed, and renewing it didn't work: ${res?.geoWhy || 'the extension is older than 0.7.7 (reload it in chrome://extensions)'}`;
+    err.geoRenewing = !!res?.geoRenewing;
+    err.message = res?.geoRenewing
+      ? 'refused with ACCOUNT_BLOCKED: the BetRivers location check had run out, nothing was placed; renewing it now, the bet is checked again next scan'
+      : `refused with ACCOUNT_BLOCKED: the BetRivers location check ran out, nothing was placed, and renewing it didn't work: ${res?.geoWhy || 'the extension is older than 0.7.9 (reload it in chrome://extensions)'}`;
   } else if (moved) {
     err.priceMoved = true;
     const k = Number((moved.arguments || []).find((a) => a.type === 'ODDS')?.value);
@@ -138,8 +138,7 @@ export function makeBetRivers(name, label, cfg, bridge) {
   }
 
   async function inTab(kind, url, method = 'GET', body) {
-    // validate/place: up to ~2 min more if the location check has to be renewed first (ACCOUNT_BLOCKED).
-    const res = await bridge.send(name, { kind, url, method, headers: json, body, useKambiAuth: true }, kind === 'status' ? 20000 : 150000);
+    const res = await bridge.send(name, { kind, url, method, headers: json, body, useKambiAuth: true }, 20000);
     return res;
   }
 
