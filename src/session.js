@@ -34,10 +34,12 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
     : `Log in again in the ${label(site)} tab`;
 
   // Hard Rock's location check is missing (not a logout): bets can't go through until you place one by hand.
-  const needsGeo = (why) => /location check not seen/i.test(why || '');
+  const needsGeo = (why) => /location check (not seen|ran out)/i.test(why || '');
   function alarm(site, why) {
     const text = needsGeo(why)
-      ? `${label(site)} needs a location check before it can place bets: place one small bet by hand in the Hard Rock tab. You are still logged in. The app keeps running and retrying.`
+      ? (site === 'fanduel'
+        ? `FanDuel's location check couldn't be renewed automatically (${why}). Make sure the FanDuel location app (GeoComply) is running on this PC and you're logged in to FanDuel. You are still logged in to the other books. The app keeps renewing and retrying.`
+        : `${label(site)} needs a location check before it can place bets: place one small bet by hand in the Hard Rock tab. You are still logged in. The app keeps running and retrying.`)
       : `${label(site)} is LOGGED OUT (${why}). ${howToFix(site)}. The app keeps running and retrying.`;
     log.alarm(text);
     bridge?.tell({ type: 'alert', book: site, title: `EV Placer: ${label(site)} ${needsGeo(why) ? 'needs a location check' : 'logged out'}`, text });
@@ -113,7 +115,7 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
     /** A book's request that needs the login just worked: it isn't logged out. */
     bookOk(name) { ok(name); },
     /** A book reported a login error while checking or placing a bet. */
-    bookError(name, msg) { if (/didn't accept the login|login not seen yet|login token|not seen yet/i.test(msg)) bad(name, msg); },
+    bookError(name, msg) { if (/didn't accept the login|login not seen yet|login token|not seen yet|renewing it didn't work/i.test(msg)) bad(name, msg); },
     isDown: (site) => down.has(site),
   };
 }

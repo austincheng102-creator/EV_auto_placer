@@ -207,7 +207,7 @@ const useMock = opt('--source', 'gambit') === 'mock';
 // The extension is needed to place bets, and also to read Gambit through your logged-in tab.
 const needBridge = !dryRun || (!useMock && (cfg.gambit?.via || 'extension') === 'extension');
 const bridge = needBridge ? startBridge(cfg.bridgePort || 8765, { reloadExtension: extensionChanged,
-  hello: { type: 'settings', settings: { gambitAutoLogin: cfg.session?.gambitAutoLogin !== false } } }) : null;
+  hello: { type: 'settings', settings: { gambitAutoLogin: cfg.session?.gambitAutoLogin !== false, fanduelGeoRenew: cfg.session?.fanduelGeoRenew !== false } } }) : null;
 const source = useMock ? makeMockSource(cfg) : makeGambitSource(cfg, bridge, { root, log });
 const books = makeBooks(cfg, bridge, dryRun);
 for (const b of Object.values(books)) {
@@ -450,6 +450,13 @@ async function placeAt(row, book, quote, ctx, retried = false) {
       return false;
     }
     if (e.gone) { ctx.outcome = 'no longer offered'; lg.warn(`${book.label}: bet no longer offered — skipped, nothing placed`); return false; }
+    // Nothing reached the book (FanDuel's location check had run out). Once it's renewed, the
+    // bet is checked again from the start on the next scan: price, every rule, then placed.
+    if (e.notSent && e.geoRenewed) {
+      ctx.sent = false; ctx.outcome = 'location renewed';
+      lg.warn(`${book.label}: ${e.message}`);
+      return false;
+    }
     ctx.outcome = 'place failed';
     lg.err(`${book.label}: place failed: ${e.message}`);
     session.bookError(row.book, e.message);
