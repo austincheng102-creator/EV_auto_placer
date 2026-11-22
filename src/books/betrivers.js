@@ -66,11 +66,21 @@ export const kambiWhy = (j) => [...new Set(kambiErrors(j).map((e) => e.type).fil
 //  - ODDS_CHANGED: the price moved. Kambi says the new price (decimal x 1000), so the engine
 //    checks EV again at that price and tries once more; otherwise it re-checks next scan.
 //  - NOT_BETTABLE: the market is closed or suspended right now.
-// Anything else (ACCOUNT_BLOCKED included) stays a plain "place failed".
-export function classify(err, j, quote) {
+//  - ACCOUNT_BLOCKED: BetRivers' location check (Xpoint, about 14.5 min) had run out, so the site
+//    had stopped Kambi taking bets. Your account isn't blocked and nothing was placed. The
+//    extension renews the check (res.geoRenewed says if it did); the engine then checks the bet
+//    again from the start on the next scan.
+// Anything else stays a plain "place failed".
+export function classify(err, j, quote, res) {
   const errs = kambiErrors(j);
   const moved = errs.find((e) => e.type === 'ODDS_CHANGED');
-  if (moved) {
+  if (errs.some((e) => e.type === 'ACCOUNT_BLOCKED')) {
+    err.notSent = true;
+    err.geoRenewed = !!res?.geoRenewed;
+    err.message = res?.geoRenewed
+      ? 'refused with ACCOUNT_BLOCKED: the BetRivers location check had run out, nothing was placed; renewed it, the bet is checked again next scan'
+      : `refused with ACCOUNT_BLOCKED: the BetRivers location check ran out, nothing was placed, and renewing it didn't work: ${res?.geoWhy || 'the extension is older than 0.7.7 (reload it in chrome://extensions)'}`;
+  } else if (moved) {
     err.priceMoved = true;
     const k = Number((moved.arguments || []).find((a) => a.type === 'ODDS')?.value);
     if (Number.isFinite(k) && k > 1000 && k !== quote?.kambiOdds) {
@@ -128,7 +138,8 @@ export function makeBetRivers(name, label, cfg, bridge) {
   }
 
   async function inTab(kind, url, method = 'GET', body) {
-    const res = await bridge.send(name, { kind, url, method, headers: json, body, useKambiAuth: true }, 20000);
+    // validate/place: up to ~2 min more if the location check has to be renewed first (ACCOUNT_BLOCKED).
+    const res = await bridge.send(name, { kind, url, method, headers: json, body, useKambiAuth: true }, kind === 'status' ? 20000 : 150000);
     return res;
   }
 
@@ -228,7 +239,7 @@ export function makeBetRivers(name, label, cfg, bridge) {
       if (v.status >= 400 || (v.json?.status && v.json.status !== 'SUCCESS')) {
         const err = new Error(`validate: ${kambiWhy(v.json) || JSON.stringify(v.json || v.text).slice(0, 200)}`);
         err.detail = `Kambi validate response (HTTP ${v.status}): ${JSON.stringify(v.json ?? v.text)}`;
-        throw classify(err, v.json, quote);
+        throw classify(err, v.json, quote, v);
       }
 
       const requestId = crypto.randomUUID();
@@ -249,7 +260,7 @@ export function makeBetRivers(name, label, cfg, bridge) {
       if (!ref || !['SUCCESS', 'LIVE_DELAY_PENDING'].includes(j.status)) {
         const err = new Error(`rejected: ${j.status || `HTTP ${res.status}`} ${kambiWhy(j) || JSON.stringify(j.generalErrors || j.couponRowErrors || j.betErrors || j).slice(0, 200)}`);
         err.detail = `Kambi coupon response (HTTP ${res.status}): ${JSON.stringify(res.json ?? res.text)}`;
-        throw classify(err, j, quote);
+        throw classify(err, j, quote, res);
       }
       let status = j.coupon?.bets?.[0]?.betStatus, last = null;
 

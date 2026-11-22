@@ -13,6 +13,10 @@ async function render() {
   $('login').hidden = !s.lastLogin;
   if (s.lastLogin) { $('login').textContent = `Gambit auto login ${Math.round((Date.now() - s.lastLogin.at) / 60000)} min ago: ${s.lastLogin.ok ? 'worked' : s.lastLogin.why}`; $('login').className = `row ${s.lastLogin.ok ? 'on' : 'off'}`; }
   $('br').textContent = s.betriversLogin ? 'seen' : 'not yet (click any odds in the BetRivers tab)'; $('br').className = s.betriversLogin ? 'on' : 'off';
+  const bl = s.betriversGeoExp ? Math.round((s.betriversGeoExp - Date.now()) / 60000) : null;
+  const blast = s.betriversGeoLast && !s.betriversGeoLast.ok ? ` (last renewal didn't work: ${s.betriversGeoLast.why})` : '';
+  $('brgeo').textContent = (!s.betriversGeoSeen ? 'not seen yet (reload the BetRivers tab once)' : bl != null && bl >= 0 ? `good for ${bl} min (renewed automatically)` : 'ran out (renewing automatically)') + blast;
+  $('brgeo').className = bl != null && bl >= 0 ? 'on' : 'off';
   $('hr').textContent = s.hardrockLogin ? 'seen' : 'not yet (refresh the Hard Rock tab)'; $('hr').className = s.hardrockLogin ? 'on' : 'off';
   const geoMin = s.hardrockGeo ? Math.round((Date.now() - s.hardrockGeo) / 60000) : null;
   $('hrgeo').textContent = geoMin == null ? 'not yet (place one bet by hand)' : `from your bet ${geoMin} min ago`; $('hrgeo').className = geoMin == null ? 'off' : 'on';
