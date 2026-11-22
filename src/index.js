@@ -207,7 +207,8 @@ const useMock = opt('--source', 'gambit') === 'mock';
 // The extension is needed to place bets, and also to read Gambit through your logged-in tab.
 const needBridge = !dryRun || (!useMock && (cfg.gambit?.via || 'extension') === 'extension');
 const bridge = needBridge ? startBridge(cfg.bridgePort || 8765, { reloadExtension: extensionChanged,
-  hello: { type: 'settings', settings: { gambitAutoLogin: cfg.session?.gambitAutoLogin !== false, fanduelGeoRenew: cfg.session?.fanduelGeoRenew !== false } } }) : null;
+  hello: { type: 'settings', settings: { gambitAutoLogin: cfg.session?.gambitAutoLogin !== false, fanduelGeoRenew: cfg.session?.fanduelGeoRenew !== false,
+    betriversGeoRenew: cfg.session?.betriversGeoRenew !== false } } }) : null;
 const source = useMock ? makeMockSource(cfg) : makeGambitSource(cfg, bridge, { root, log });
 const books = makeBooks(cfg, bridge, dryRun);
 for (const b of Object.values(books)) {
@@ -450,7 +451,8 @@ async function placeAt(row, book, quote, ctx, retried = false) {
       return false;
     }
     if (e.gone) { ctx.outcome = 'no longer offered'; lg.warn(`${book.label}: bet no longer offered — skipped, nothing placed`); return false; }
-    // Nothing reached the book (FanDuel's location check had run out). Once it's renewed, the
+    // Nothing reached the book / nothing was placed (FanDuel's location check had run out, or
+    // BetRivers refused it with ACCOUNT_BLOCKED because its location check had). Once it's renewed, the
     // bet is checked again from the start on the next scan: price, every rule, then placed.
     if (e.notSent && e.geoRenewed) {
       ctx.sent = false; ctx.outcome = 'location renewed';

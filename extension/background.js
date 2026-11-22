@@ -170,16 +170,22 @@ chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
   if (next.auth !== fdAuth.auth || next.geo !== fdAuth.geo) { fdAuth = next; store.set({ fdAuth }); }
 }, { urls: ['https://*.sportsbook.fanduel.com/*'] }, ['requestHeaders', 'extraHeaders']);
 
-// fd-geo.js has to be in the FanDuel page from the start to see its location checks.
-async function registerFdGeo() {
-  try {
-    const have = await chrome.scripting.getRegisteredContentScripts({ ids: ['fd-geo'] });
-    if (have.length) return;
-    await chrome.scripting.registerContentScripts([{ id: 'fd-geo', js: ['fd-geo.js'], matches: ['https://*.sportsbook.fanduel.com/*'],
-      runAt: 'document_start', world: 'MAIN', persistAcrossSessions: true }]);
-  } catch {}
+// fd-geo.js / br-geo.js have to be in the FanDuel / BetRivers page from the start to see their
+// location checks.
+async function registerGeoScripts() {
+  const want = [
+    { id: 'fd-geo', js: ['fd-geo.js'], matches: ['https://*.sportsbook.fanduel.com/*'] },
+    { id: 'br-geo', js: ['br-geo.js'], matches: ['https://*.betrivers.com/*'] },
+  ];
+  for (const s of want) {
+    try {
+      const have = await chrome.scripting.getRegisteredContentScripts({ ids: [s.id] });
+      if (have.length) continue;
+      await chrome.scripting.registerContentScripts([{ ...s, runAt: 'document_start', world: 'MAIN', persistAcrossSessions: true }]);
+    } catch {}
+  }
 }
-registerFdGeo();
+registerGeoScripts();
 const readFdGeo = () => { try { return sessionStorage.getItem('evPlacerFdGeo'); } catch { return null; } };
 
 // ---- FanDuel location check: renew it before it runs out ----
@@ -263,6 +269,116 @@ async function keepFdGeo() {
   renewFdGeo(left > 0 ? `it runs out in ${mins(left)}` : 'it had run out').catch(() => {});
 }
 
+// ---- BetRivers location check: renew it when it runs out ----
+// BetRivers (Rush Street) only lets Kambi take your bets while your location check (Xpoint) is
+// current. Each one lasts about 14.5 minutes; the Xpoint app on this PC makes a new one on that
+// same schedule and the BetRivers page picks it up (it asks the app every 10s) and sends it to
+// co.betrivers.com. Until it does, the site clears its SUCCESSFUL_GEOLOCATION flag and Kambi
+// answers every bet with ACCOUNT_BLOCKED: that's the "account blocked" seen since 2026-11-11 (your
+// account isn't blocked). A slow connection or Chrome slowing down the background tab makes that
+// gap longer, or the page never sends a new one. br-geo.js keeps a copy of what the page receives.
+// When a bet is refused with ACCOUNT_BLOCKED, we give the page 20s to send a new check by itself
+// (the site tells it to); if it doesn't, we reload the BetRivers tab, which always runs a fresh
+// check, and wait up to 60s for it. Also every 30s: a check that ran out over 90s ago with no new
+// one gets the same reload. Never while a BetRivers bet is being sent. On by default; off with
+// config.json "session": {"betriversGeoRenew": false}.
+const BR_GEO_SELF_MS = 20e3;      // how long the page gets to send a new check by itself
+const BR_GEO_WAIT_MS = 60e3;      // how long to wait for the check after a reload
+const BR_GEO_STALE_MS = 90e3;     // ran out this long ago with no new one: reload (watchLogins)
+let brGeo = {};                   // { status, expires, at, flag, flagAt } from br-geo.js
+let brGeoJob = null, brGeoTriedAt = 0, brGeoFails = 0;
+let brGeoLast = null;             // { at, ok, why } for the popup
+let brBusyAt = 0;                 // last BetRivers bet / live-delay status request
+store.get('brGeo').then((v) => { if (v?.brGeo && !brGeo.at) brGeo = v.brGeo; });
+const brNote = (text, level = 'warn') => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book: 'betrivers', level, text })); };
+const brTab = async () => (await bookTabs()).find((t) => t.book === 'betrivers' && /(^|\.)betrivers\.com$/.test(new URL(t.url).hostname) && !/kambi|api/.test(new URL(t.url).hostname));
+const readBrGeo = () => { try { return sessionStorage.getItem('evPlacerBrGeo'); } catch { return null; } };
+async function brGeoNow(tabId) {
+  const [r] = tabId ? await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: readBrGeo }).catch(() => []) : [];
+  let g = null; try { g = JSON.parse(r?.result || 'null'); } catch {}
+  if (g && (g.at || 0) + (g.flagAt || 0) > (brGeo.at || 0) + (brGeo.flagAt || 0)) { brGeo = g; store.set({ brGeo }); }
+  return brGeo;
+}
+// Good now: a check that hasn't run out, and the site hasn't cleared the flag or blocked a bet since.
+const brGeoGood = (g, since = 0) => g.status === 'ALLOWED' && g.expires > Date.now() + 30e3 && (g.at || 0) > since
+  && !((g.flag === 'cleared' || g.flag === 'blocked') && g.flagAt > g.at);
+// A new check arrived after `since` (sent by the page, or the site set the flag again).
+const brGeoNew = (g, since) => brGeoGood(g, since) || (g.flag === 'set' && g.flagAt > since && !(g.at > g.flagAt && g.status !== 'ALLOWED'));
+
+// Answers { ok, why }. urgent: a bet was just refused (shorter wait between tries).
+function renewBrGeo(why, urgent = false) {
+  if (brGeoJob) return brGeoJob;
+  brGeoJob = (async () => {
+    const t = await brTab();
+    if (!t) return { ok: false, why: 'no BetRivers tab open (open co.betrivers.com and log in)' };
+    const start = Date.now();
+    brNote(`BetRivers location check needs renewing (${why})`, 'info');
+    // 1. The page usually sends a new one by itself within seconds once the site asks it to.
+    if (urgent && !t.discarded) {
+      while (Date.now() - start < BR_GEO_SELF_MS) {
+        await sleep(2000);
+        if (brGeoNew(await brGeoNow(t.id), start - 5e3)) {
+          brGeoFails = 0;
+          brGeoLast = { at: Date.now(), ok: true, why: 'the page renewed it' };
+          brNote(`BetRivers location check renewed by the page after ${Math.round((Date.now() - start) / 1000)}s`, 'good');
+          return { ok: true };
+        }
+      }
+    }
+    // 2. Reload the tab: the page runs a fresh location check when it loads.
+    // Don't reload over and over if it isn't helping: every 2 minutes at most (1 when a bet is
+    // waiting), every 10 after 3 failures in a row (it keeps trying).
+    const gap = urgent ? 60e3 : brGeoFails >= 3 ? 10 * 60e3 : 2 * 60e3;
+    if (Date.now() - brGeoTriedAt < gap) return { ok: false, why: `the page didn't renew it, and the last reload was only ${mins(Date.now() - brGeoTriedAt)} ago` };
+    // Wait for any BetRivers bet being sent or waiting on its live delay (a reload would lose its answer).
+    for (let i = 0; i < 60 && (placing.betrivers > 0 || Date.now() - brBusyAt < 25e3); i++) await sleep(1000);
+    if (placing.betrivers > 0 || Date.now() - brBusyAt < 25e3) return { ok: false, why: 'a BetRivers bet was still being sent' };
+    brGeoTriedAt = Date.now();
+    const before = Date.now();
+    brNote(`reloading the BetRivers tab to renew its location check (${why})`, 'info');
+    reloadedAt.betrivers = Date.now();
+    lastReload = { book: 'betrivers', why: `renew the location check (${why})`, at: Date.now() };
+    await chrome.tabs.reload(t.id).catch(() => {});
+    while (Date.now() - before < BR_GEO_WAIT_MS) {
+      await sleep(2000);
+      if (brGeoNew(await brGeoNow(t.id), before)) {
+        brGeoFails = 0;
+        const left = brGeo.expires ? ` (good for ${mins(brGeo.expires - Date.now())})` : '';
+        brGeoLast = { at: Date.now(), ok: true, why: `renewed by reloading the tab${left}` };
+        brNote(`BetRivers location check renewed ${Math.round((Date.now() - before) / 1000)}s after reloading the tab${left}`, 'good');
+        return { ok: true };
+      }
+    }
+    brGeoFails++;
+    const msg = `no new location check within ${BR_GEO_WAIT_MS / 1000}s of reloading the BetRivers tab (is the Xpoint location app running on this PC, and are you logged in to BetRivers?)`;
+    brGeoLast = { at: Date.now(), ok: false, why: msg };
+    brNote(`BetRivers location check NOT renewed: ${msg}. Trying again in ${brGeoFails >= 3 ? 10 : 2} min`);
+    return { ok: false, why: msg };
+  })().catch((e) => ({ ok: false, why: String(e?.message || e) })).finally(() => { brGeoJob = null; });
+  return brGeoJob;
+}
+
+// Every 30 seconds (watchLogins): the check ran out over 90s ago (or the site cleared the flag
+// over 90s ago) and the page hasn't sent a new one: renew it before a bet runs into it.
+async function keepBrGeo() {
+  if (settings.betriversGeoRenew === false || brGeoJob || !rsiAuth) return;
+  const t = await brTab();
+  if (!t || t.discarded) return;
+  const g = await brGeoNow(t.id);
+  if (!g.at && !g.flagAt) return;   // nothing seen yet (br-geo.js starts with the next page load)
+  if (brGeoGood(g)) return;
+  const lapsedAt = Math.max(g.status === 'ALLOWED' ? g.expires || 0 : g.at || 0, (g.flag === 'cleared' || g.flag === 'blocked') ? g.flagAt : 0);
+  if (g.flag === 'set' && g.flagAt > lapsedAt) return;
+  if (!lapsedAt || Date.now() - lapsedAt < BR_GEO_STALE_MS) return;
+  renewBrGeo(`it ran out ${mins(Date.now() - lapsedAt)} ago and the page hasn't sent a new one`).catch(() => {});
+}
+// Kambi refused a bet because the location check had lapsed.
+const kambiBlocked = (r) => {
+  const j = r?.json;
+  const errs = [...(j?.generalErrors || []), ...(j?.couponRowErrors || []).flatMap((x) => x.errors || []), ...(j?.betErrors || []).flatMap((x) => x.errors || [])];
+  return errs.some((e) => e?.type === 'ACCOUNT_BLOCKED');
+};
+
 // Read as text: the id is a number too big for JSON.parse to keep exact.
 const hrAccountId = (tok) => {
   try { return (/"accountId"\s*:\s*"?(\d+)/.exec(atob(tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))) || [])[1] || ''; } catch { return ''; }
@@ -288,7 +404,7 @@ const jwtExp = (tok) => {
 // debugger (chrome.debugger), which Chrome treats as real mouse/keyboard input. While it runs
 // (a few seconds) Chrome shows a bar "EV Placer Bridge started debugging this browser"; it goes
 // away by itself. Off with config.json "session": {"gambitAutoLogin": false}.
-let settings = { gambitAutoLogin: true, fanduelGeoRenew: true };
+let settings = { gambitAutoLogin: true, fanduelGeoRenew: true, betriversGeoRenew: true };
 chrome.storage.local.get('settings').then((v) => { if (v?.settings) settings = { ...settings, ...v.settings }; }).catch(() => {});
 let lastLogin = null;          // { at, ok, why } for the popup
 let loginBusy = false;
@@ -537,6 +653,7 @@ async function watchLogins() {
   await keepTabsLoaded();
   await nudgeTabs();
   await keepFdGeo().catch(() => {});
+  await keepBrGeo().catch(() => {});
   const now = Date.now() / 1000;
   // A token that ran out over 10 minutes ago means reloading didn't bring the login back: you're
   // really logged out, so stop reloading (the app keeps alerting until you log in).
@@ -649,13 +766,26 @@ async function handle(msg) {
       msg.request.headers = { ...(msg.request.headers || {}), authorization: kambiAuth };
       // Kambi turned the token down: get a fresh one and send the request once more. A refused
       // request did nothing (no bet placed), so sending it again is safe.
+      if (msg.request.kind === 'status') brBusyAt = Date.now();   // a live bet waiting on its delay
+      // ACCOUNT_BLOCKED: the location check had lapsed and nothing was placed. Renew it (the app
+      // checks the bet again from the start on its next scan).
+      const blocked = async (r) => {
+        if (!kambiBlocked(r) || !['validate', 'place'].includes(msg.request.kind)) return r;
+        let n = { ok: false, why: 'renewal is off (config "session": {"betriversGeoRenew": false})' };
+        if (settings.betriversGeoRenew !== false) {
+          const mine = msg.request.kind === 'place';
+          if (mine) placing.betrivers = Math.max(0, (placing.betrivers || 1) - 1);   // this bet was refused: let the reload go ahead
+          try { n = await renewBrGeo('a bet was refused with ACCOUNT_BLOCKED', true); } finally { if (mine) placing.betrivers = (placing.betrivers || 0) + 1; }
+        }
+        return { ...r, geoBlocked: true, geoRenewed: !!n.ok, geoWhy: n.why || '' };
+      };
       const first = await runInTab(tab.id, msg.request);
-      if (!kambiRefused(first)) return reply(first.error ? { error: first.error } : first);
+      if (!kambiRefused(first)) return reply(first.error ? { error: first.error } : await blocked(first));
       const n = await renewKambi(tab, msg.request.url);
       if (n.error) return reply({ ...first, renewError: n.error });
       msg.request.headers.authorization = kambiAuth;
       const again = await runInTab(tab.id, msg.request);
-      return reply(again.error ? { error: again.error } : { ...again, renewed: true, ...(kambiRefused(again) ? { renewError: 'Kambi turned down the fresh token too' } : {}) });
+      return reply(again.error ? { error: again.error } : { ...(await blocked(again)), renewed: true, ...(kambiRefused(again) ? { renewError: 'Kambi turned down the fresh token too' } : {}) });
     }
     if (msg.request.useRsiAuth) {
       if (!rsiAuth) return reply({ error: 'BetRivers login not seen yet: refresh the BetRivers tab (stay logged in)' });
@@ -731,7 +861,10 @@ async function handle(msg) {
     if (r.error) return reply({ error: r.error });
     reply(r);
   } catch (e) { reply({ error: String(e?.message || e) }); }
-  finally { if (msg.request?.kind === 'place') placing[msg.book] = Math.max(0, (placing[msg.book] || 1) - 1); }
+  finally {
+    if (msg.request?.kind === 'place') placing[msg.book] = Math.max(0, (placing[msg.book] || 1) - 1);
+    if (msg.book === 'betrivers' && ['place', 'status'].includes(msg.request?.kind)) brBusyAt = Date.now();
+  }
 }
 
 function connect() {
@@ -757,7 +890,7 @@ chrome.tabs.onUpdated.addListener((_id, info) => { if (info.url || info.status =
 chrome.tabs.onRemoved.addListener(sendTabs);
 chrome.runtime.onMessage.addListener((m, _s, respond) => {
   if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth, betriversLogin: !!kambiAuth, betriversRenewedAt: kambiRenewedAt, hardrockLogin: !!hrAuth.session, hardrockGeo: hrAuth.geoAt || 0,
-    fanduelExp: jwtExp(fdAuth.auth), fanduelGeoExp: fdGeoExp(fdAuth.geo), fanduelGeoLast: fdGeoLast,
+    fanduelExp: jwtExp(fdAuth.auth), fanduelGeoExp: fdGeoExp(fdAuth.geo), fanduelGeoLast: fdGeoLast, betriversGeoExp: brGeo.status === 'ALLOWED' ? brGeo.expires || 0 : 0, betriversGeoSeen: !!(brGeo.at || brGeo.flagAt), betriversGeoLast: brGeoLast,
     gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, alert: alertText, lastReload, lastLogin, autoLogin: settings.gambitAutoLogin })); return true; }
 });
 // Keep the service worker alive while the engine runs.
