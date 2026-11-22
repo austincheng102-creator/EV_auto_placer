@@ -108,7 +108,7 @@ setting in `config.json`; one that isn't there gets the default below, and `null
 | Live player props need FanDuel listed | | `"sharp": {"livePropNeeds"}` |
 | Live: a sharp price changed within the last 5 seconds | 5 | `"sharp": {"liveMaxAgeSec"}` |
 | Live player props: FanDuel's price changed within the last 30 seconds | 30 | `"sharp": {"livePropMaxAgeSec"}` |
-| Same game + market + period = one group (both sides): up to 3 bets, $3 per book, at least 60s apart on one book | 3 bets, $3, 60s, per book | `"group": {"maxBets", "maxStake", "cooldownSec", "bothSides", "perBook"}` |
+| Same game + market + period = one group (both sides): up to 3 bets live (1 pre-game), $3 per book, at least 60s apart on one book | 3 live / 1 pre-game, $3, 60s, per book | `"group": {"maxBets", "pregameMaxBets", "maxStake", "cooldownSec", "bothSides", "perBook"}` |
 
 - **Sharp agreement:** each sharp book with both sides listed is de-vigged on its own (Pinnacle comes
   through Gambit as PS3838). For player props FanDuel counts as a sharp book too. If fewer than two

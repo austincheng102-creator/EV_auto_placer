@@ -27,6 +27,7 @@
   },
   "group": {
     "maxBets": 3,
+    "pregameMaxBets": 1,
     "maxStake": 3,
     "cooldownSec": 60,
     "otherSide": "afterCooldown",
