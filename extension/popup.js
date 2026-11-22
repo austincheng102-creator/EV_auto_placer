@@ -21,7 +21,7 @@ async function render() {
   $('fd').className = fLeft > 0 ? 'on' : 'off';
   const gl = s.fanduelGeoExp ? Math.round((s.fanduelGeoExp - Date.now()) / 60000) : null;
   const last = s.fanduelGeoLast && !s.fanduelGeoLast.ok ? ` (last renewal didn't work: ${s.fanduelGeoLast.why})` : '';
-  $('fdgeo').textContent = (gl == null ? 'not seen yet (renewing by reloading the FanDuel tab)' : gl > 0 ? `good for ${gl} min (renewed automatically)` : 'ran out (renewing by reloading the FanDuel tab)') + last;
+  $('fdgeo').textContent = (gl == null ? 'not seen yet (renewing automatically)' : gl > 0 ? `good for ${gl} min (renewed automatically)` : 'ran out (renewing automatically)') + last;
   $('fdgeo').className = gl > 0 ? 'on' : 'off';
   $('armed').textContent = armed ? 'ARMED' : 'disarmed (re-checks only)'; $('armed').className = armed ? 'on' : 'off';
   $('toggle').textContent = armed ? 'Disarm' : 'Arm (allow real bets)';

@@ -4,6 +4,18 @@
 // keeps a copy in the tab's sessionStorage, where the EV Placer's bet requests pick it up.
 // It changes nothing the page sends or receives.
 (() => {
+  // When the EV Placer couldn't get a new location check with a plain reload, it sets this flag
+  // and from then on this tab tells the page it is in view (Chrome tells background tabs they're
+  // hidden, and some sites hold off on work until you look at them). Nothing else changes.
+  try {
+    if (sessionStorage.getItem('evPlacerFdVisible') === '1') {
+      Object.defineProperty(Document.prototype, 'visibilityState', { get: () => 'visible', configurable: true });
+      Object.defineProperty(Document.prototype, 'hidden', { get: () => false, configurable: true });
+      Document.prototype.hasFocus = function () { return true; };
+      const stop = (e) => e.stopImmediatePropagation();
+      document.addEventListener('visibilitychange', stop, true);
+    }
+  } catch {}
   const KEY = 'evPlacerFdGeo';
   const isGeo = (u) => /\/geolocation\/v1\/jwt\/create/.test(String(u || ''));
   const keep = (text) => { try { const j = JSON.parse(text); if (j?.jwt) sessionStorage.setItem(KEY, j.jwt); } catch {} };

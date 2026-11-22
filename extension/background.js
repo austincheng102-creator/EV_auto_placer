@@ -183,20 +183,36 @@ registerFdGeo();
 const readFdGeo = () => { try { return sessionStorage.getItem('evPlacerFdGeo'); } catch { return null; } };
 
 // ---- FanDuel location check: renew it before it runs out ----
-// FanDuel's location check (GeoComply) lasts 20 minutes. The page gets one when it loads with
-// your login, but it doesn't always get a new one by itself after that (2026-11-22: a bet was
-// refused because the last one had run out). So when the newest one has under 3 minutes left
-// (or has already run out), we reload the FanDuel tab, which makes the page run its location
-// check again, and wait for the new one. Never while a FanDuel bet is being sent. On by
-// default; off with config.json "session": {"fanduelGeoRenew": false}.
-const FD_GEO_RENEW_MS = 3 * 60e3;   // renew when less than this is left
-const FD_GEO_WAIT_MS = 60e3;        // how long to wait for the page's new location check
+// FanDuel's location check (GeoComply) lasts 20 minutes. The page runs one when you log in, and
+// doesn't reliably run a new one by itself after that: a bet was refused because it had run out,
+// and (v0.7.6, 2026-11-22) a plain reload of the tab didn't make it run one either. So when the
+// newest one has under 5 minutes left, we try these in order until the page gets a fresh one,
+// and remember which one worked to start with it next time:
+//   1. reload the FanDuel tab;
+//   2. clear the page's saved (old) location check, tell the page its tab is in view (fd-geo.js;
+//      Chrome tells background tabs they're hidden and some sites hold off until you look), reload;
+//   3. bring the FanDuel tab to the front of its window, reload, then go back to the tab you had.
+// Never while a FanDuel bet is being sent. Off with config.json "session": {"fanduelGeoRenew": false}.
+const FD_GEO_RENEW_MS = 5 * 60e3;   // renew when less than this is left
+const FD_GEO_WAIT_MS = 40e3;        // how long each way waits for the page's new location check
+const FD_STEPS = [
+  { name: 'reloading the FanDuel tab' },
+  { name: 'clearing its old location check, telling it the tab is in view and reloading', prep: 1 },
+  { name: 'bringing the FanDuel tab to the front and reloading', prep: 1, front: true },
+];
 let fdGeoJob = null;                // the renewal running now (callers share it)
 let fdGeoTriedAt = 0, fdGeoFails = 0;
 let fdGeoLast = null;               // { at, ok, why } for the popup
-let fdGeoAskedAt = 0;               // when the page last asked FanDuel for a location check
-chrome.webRequest.onCompleted.addListener((d) => { if (d.method === 'POST') fdGeoAskedAt = Date.now(); },
-  { urls: ['https://api.fanduel.com/geolocation/v1/jwt/create*'] });
+let fdStep = 0;                     // the way that worked last time
+chrome.storage.local.get('fdStep').then((v) => { if (Number.isInteger(v?.fdStep)) fdStep = v.fdStep; }).catch(() => {});
+// What the page did, to say why a try didn't work: started a check (asked FanDuel for its
+// settings), sent GeoComply's answer to FanDuel, and how FanDuel answered.
+const fdSeen = { startAt: 0, sentAt: 0, sentStatus: 0 };
+chrome.webRequest.onCompleted.addListener((d) => {
+  if (d.method === 'OPTIONS') return;
+  if (/initialization_parameters/.test(d.url)) fdSeen.startAt = Date.now();
+  if (/jwt\/create/.test(d.url)) { fdSeen.sentAt = Date.now(); fdSeen.sentStatus = d.statusCode; }
+}, { urls: ['https://api.fanduel.com/geolocation/*'] });
 const fdNote = (text, level = 'warn') => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book: 'fanduel', level, text })); };
 const fdTab = async () => (await bookTabs()).find((t) => t.book === 'fanduel' && /(^|\.)sportsbook\.fanduel\.com$/.test(new URL(t.url).hostname) && !/^api\./.test(new URL(t.url).hostname));
 // Newest location check we have: the one the page last received (fd-geo.js) or its last bet sent.
@@ -208,14 +224,96 @@ async function fdGeoNow(tabId) {
 }
 const mins = (ms) => (ms >= 60e3 ? `${Math.round(ms / 60e3)} min` : `${Math.max(0, Math.round(ms / 1000))}s`);
 
-// Reloads the FanDuel tab and waits for a fresh location check. Answers { ok, geo, why }.
+// Runs in the FanDuel page before a reload: from now on tell the page its tab is in view
+// (fd-geo.js reads this flag), and remove the location checks the page saved, so it has none
+// and runs a new one, as when you log in. Only location-check tokens are removed; your login stays.
+function fdPrepPage() {
+  try { sessionStorage.setItem('evPlacerFdVisible', '1'); } catch {}
+  const isGeo = (v) => {
+    if (typeof v !== 'string' || !/^eyJ[\w-]+\.eyJ[\w-]+\.[\w-]+$/.test(v)) return false;
+    try { const p = JSON.parse(atob(v.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))); return 'geolocate_in' in p || 'gc_transaction_id' in p; } catch { return false; }
+  };
+  // Takes out location-check tokens anywhere in a saved value (which may be JSON inside JSON).
+  const scrub = (v, depth = 0) => {
+    if (depth > 6) return [v, false];
+    if (typeof v === 'string') {
+      if (isGeo(v)) return [undefined, true];
+      if (v.includes('eyJ') && /^[[{]/.test(v.trim())) { try { const [x, c] = scrub(JSON.parse(v), depth + 1); return c ? [JSON.stringify(x), true] : [v, false]; } catch {} }
+      return [v, false];
+    }
+    if (v && typeof v === 'object') {
+      let changed = false;
+      for (const k of Object.keys(v)) {
+        const [x, c] = scrub(v[k], depth + 1);
+        if (c) { changed = true; if (x === undefined) { if (Array.isArray(v)) v[k] = null; else delete v[k]; } else v[k] = x; }
+      }
+      return [v, changed];
+    }
+    return [v, false];
+  };
+  const cleared = [];
+  for (const [name, st] of [['local', localStorage], ['session', sessionStorage]]) {
+    let keys = []; try { keys = Object.keys(st); } catch { continue; }
+    for (const k of keys) {
+      if (/^evPlacer/.test(k)) continue;
+      try {
+        const v = st.getItem(k);
+        if (!v || !v.includes('eyJ')) continue;
+        const [x, c] = scrub(v);
+        if (!c) continue;
+        if (x === undefined) st.removeItem(k); else st.setItem(k, x);
+        cleared.push(`${name}:${k}`);
+      } catch {}
+    }
+  }
+  return cleared;
+}
+
+// One way of getting the page to run its location check. Answers { ok, geo, why }.
+async function fdTryStep(t, step, before) {
+  const seen0 = { ...fdSeen };
+  let cleared = [], back = null;
+  if (step.prep) cleared = (await chrome.scripting.executeScript({ target: { tabId: t.id }, world: 'MAIN', func: fdPrepPage }).catch(() => []))[0]?.result || [];
+  if (step.front) {
+    const tab = await chrome.tabs.get(t.id).catch(() => null);
+    const win = tab && await chrome.windows.get(tab.windowId).catch(() => null);
+    const [cur] = tab ? await chrome.tabs.query({ active: true, windowId: tab.windowId }) : [];
+    back = { tabId: cur && cur.id !== t.id ? cur.id : null, windowId: tab?.windowId, minimized: win?.state === 'minimized' };
+    await chrome.tabs.update(t.id, { active: true }).catch(() => {});
+    if (tab) await chrome.windows.update(tab.windowId, { focused: true, ...(back.minimized ? { state: 'normal' } : {}) }).catch(() => {});
+  }
+  reloadedAt.fanduel = Date.now();
+  lastReload = { book: 'fanduel', why: `renew the location check: ${step.name}`, at: Date.now() };
+  await chrome.tabs.reload(t.id).catch(() => {});
+  const start = Date.now();
+  let res = null;
+  try {
+    while (Date.now() - start < FD_GEO_WAIT_MS) {
+      await sleep(2000);
+      const geo = await fdGeoNow(t.id);
+      const exp = fdGeoExp(geo);
+      if (geo && exp > before && exp > Date.now() + FD_GEO_RENEW_MS) { res = { ok: true, geo, why: `${step.name}, after ${Math.round((Date.now() - start) / 1000)}s, good for ${mins(exp - Date.now())}` }; break; }
+    }
+  } finally {
+    if (back?.tabId) await chrome.tabs.update(back.tabId, { active: true }).catch(() => {});
+    if (back?.minimized) await chrome.windows.update(back.windowId, { state: 'minimized' }).catch(() => {});
+  }
+  if (res) return res;
+  const why = fdSeen.sentAt > seen0.sentAt
+    ? (fdSeen.sentStatus >= 400 ? `FanDuel turned down the page's location check (HTTP ${fdSeen.sentStatus})` : 'the page got a location check but the extension couldn\'t read it')
+    : fdSeen.startAt > seen0.startAt ? 'the page started a location check but GeoComply never answered (is the FanDuel location app running on this PC?)'
+    : 'the page didn\'t start a location check';
+  return { ok: false, why: `${step.name}: ${why}${step.prep ? ` (cleared ${cleared.length ? cleared.join(', ') : 'nothing saved'})` : ''}` };
+}
+
+// Tries each way in turn, starting with the one that worked last time. Answers { ok, geo, why }.
 function renewFdGeo(why, urgent = false) {
   if (fdGeoJob) return fdGeoJob;
   fdGeoJob = (async () => {
-    // Don't reload over and over if it isn't helping: every 2 minutes at most, every 10 after
-    // 3 failures in a row (it keeps trying). A bet waiting on it may go 1 minute after the last try.
+    // Every 2 minutes at most, every 10 after 3 failed rounds in a row (it keeps trying). A bet
+    // that finds the check run out may start one 1 minute after the last.
     const gap = urgent ? 60e3 : fdGeoFails >= 3 ? 10 * 60e3 : 2 * 60e3;
-    if (Date.now() - fdGeoTriedAt < gap) return { ok: false, why: `last renewal try was ${mins(Date.now() - fdGeoTriedAt)} ago` };
+    if (Date.now() - fdGeoTriedAt < gap) return { ok: false, why: fdGeoLast && !fdGeoLast.ok ? fdGeoLast.why : `last renewal try was ${mins(Date.now() - fdGeoTriedAt)} ago` };
     const t = await fdTab();
     if (!t) return { ok: false, why: 'no FanDuel tab open (open co.sportsbook.fanduel.com and log in)' };
     // Wait for any FanDuel bet being sent right now (a reload would lose its answer).
@@ -223,35 +321,33 @@ function renewFdGeo(why, urgent = false) {
     if (placing.fanduel > 0) return { ok: false, why: 'a FanDuel bet was still being sent' };
     fdGeoTriedAt = Date.now();
     const before = fdGeoExp(await fdGeoNow(t.id));
-    const askedBefore = fdGeoAskedAt;
-    fdNote(`renewing FanDuel's location check (${why}): reloading the FanDuel tab`, 'info');
-    reloadedAt.fanduel = Date.now();
-    lastReload = { book: 'fanduel', why: `renew the location check (${why})`, at: Date.now() };
-    await chrome.tabs.reload(t.id).catch(() => {});
-    const start = Date.now();
-    while (Date.now() - start < FD_GEO_WAIT_MS) {
-      await sleep(2000);
-      const geo = await fdGeoNow(t.id);
-      const exp = fdGeoExp(geo);
-      if (geo && exp > before && exp > Date.now() + FD_GEO_RENEW_MS) {
+    const first = Math.min(Math.max(0, fdStep), FD_STEPS.length - 1);
+    const order = [first, ...FD_STEPS.keys()].filter((v, i, a) => a.indexOf(v) === i);
+    const fails = [];
+    for (const i of order) {
+      fdNote(`renewing FanDuel's location check (${why}): ${FD_STEPS[i].name}`, 'info');
+      const r = await fdTryStep(t, FD_STEPS[i], before);
+      fdGeoTriedAt = Date.now();
+      if (r.ok) {
         fdGeoFails = 0;
-        fdGeoLast = { at: Date.now(), ok: true, why: `good for ${mins(exp - Date.now())}` };
-        fdNote(`FanDuel location check renewed after ${Math.round((Date.now() - start) / 1000)}s, good for ${mins(exp - Date.now())}`, 'good');
-        return { ok: true, geo };
+        if (fdStep !== i) { fdStep = i; chrome.storage.local.set({ fdStep }).catch(() => {}); }
+        fdGeoLast = { at: Date.now(), ok: true, why: r.why };
+        fdNote(`FanDuel location check renewed by ${r.why}`, 'good');
+        return r;
       }
+      fails.push(r.why);
+      fdNote(`FanDuel location check not renewed by ${r.why}`);
     }
     fdGeoFails++;
-    const msg = fdGeoAskedAt > askedBefore
-      ? `the FanDuel page asked for a new location check after the reload, but the extension couldn't read it (reload the extension in chrome://extensions)`
-      : `the FanDuel page didn't run its location check within ${FD_GEO_WAIT_MS / 1000}s of the reload (is the FanDuel/GeoComply location app running on this PC, and are you logged in to FanDuel?)`;
+    const msg = `none of the ${FD_STEPS.length} ways worked (${fails.join('; ')}). Are you logged in to FanDuel, and is the FanDuel location app (GeoComply) running on this PC?`;
     fdGeoLast = { at: Date.now(), ok: false, why: msg };
-    fdNote(`FanDuel location check NOT renewed: ${msg}. Trying again in ${fdGeoFails >= 3 ? 10 : 2} min`);
+    fdNote(`FanDuel location check NOT renewed: ${msg} Trying again in ${fdGeoFails >= 3 ? 10 : 2} min`);
     return { ok: false, why: msg };
   })().finally(() => { fdGeoJob = null; });
   return fdGeoJob;
 }
 
-// Every 30 seconds (watchLogins): renew when under 3 minutes are left, while you're logged in.
+// Every 30 seconds (watchLogins): renew when under 5 minutes are left, while you're logged in.
 async function keepFdGeo() {
   if (settings.fanduelGeoRenew === false || fdGeoJob) return;
   const exp = jwtExp(fdAuth.auth);
@@ -686,17 +782,15 @@ async function handle(msg) {
         // Newest location check: the one the page last received, or the one its last bet sent.
         const geo = await fdGeoNow(tab.id);
         if (!geo || fdGeoExp(geo) < Date.now() + 15e3) {
-          // Ran out (or never seen): nothing is sent to FanDuel. Renew it now; the app checks the
-          // bet again from the start on its next scan (price and every rule), then places it.
+          // Ran out (or never seen): nothing is sent to FanDuel. Start renewing it (without making
+          // this bet wait); the app checks the bet again from the start (price and every rule) on
+          // its next scans, and places it once the new location check is in.
           const had = !!geo;
-          let n = { ok: false, why: 'renewal is off (config "session": {"fanduelGeoRenew": false})' };
-          if (settings.fanduelGeoRenew !== false) {
-            placing.fanduel = Math.max(0, (placing.fanduel || 1) - 1);   // this bet isn't being sent: let the reload go ahead
-            try { n = await renewFdGeo(had ? 'a bet found it had run out' : 'a bet found none yet', true); } finally { placing.fanduel = (placing.fanduel || 0) + 1; }
-          }
-          return reply({ error: n.ok
-            ? `FanDuel location check had ${had ? 'run out' : 'not been seen yet'}, nothing was sent; renewed it, the bet is checked again next scan`
-            : `FanDuel location check ${had ? 'ran out (it lasts 20 minutes)' : 'not seen yet'}, nothing was sent, and renewing it didn't work: ${n.why}`, notSent: true, geoRenewed: !!n.ok });
+          if (settings.fanduelGeoRenew === false) return reply({ error: `FanDuel location check ${had ? 'ran out (it lasts 20 minutes)' : 'not seen yet'}, nothing was sent, and renewing it is off (config "session": {"fanduelGeoRenew": false})`, notSent: true });
+          const running = !!fdGeoJob;
+          const n = running ? null : await Promise.race([renewFdGeo(had ? 'a bet found it had run out' : 'a bet found none yet', true), sleep(300).then(() => null)]);
+          if (n && !n.ok) return reply({ error: `FanDuel location check ${had ? 'ran out (it lasts 20 minutes)' : 'not seen yet'}, nothing was sent, and renewing it didn't work: ${n.why}`, notSent: true });
+          return reply({ error: `FanDuel location check ${had ? 'had run out' : 'not seen yet'}, nothing was sent; renewing it now, the bet is checked again next scan`, notSent: true, geoRenewing: true });
         }
         msg.request.headers['x-geo-packet'] = geo;
       }

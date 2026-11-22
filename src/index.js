@@ -236,6 +236,7 @@ const maxInFlight = Math.max(1, Number(cfg.maxInFlight ?? 3));
 // and it passes every rule, instead of ignoring it for 5 minutes. "recheckWatchMinutes": 0 = off.
 const WATCH_MS = Number(cfg.recheckWatchMinutes ?? 5) * 60e3;
 const watch = new Map(); // row.id -> { since, sig }
+const geoSaid = new Map(); // row.id -> when we last said FanDuel's location check is being renewed
 const shown = new Map(); // row.id -> { odds, since }: when our polls first saw Gambit show this price
 const priceLog = makePriceLog(root, { dryRun });
 const spreadLog = makeSpreadSkipLog(root, { dryRun });
@@ -452,9 +453,11 @@ async function placeAt(row, book, quote, ctx, retried = false) {
     if (e.gone) { ctx.outcome = 'no longer offered'; lg.warn(`${book.label}: bet no longer offered — skipped, nothing placed`); return false; }
     // Nothing reached the book (FanDuel's location check had run out). Once it's renewed, the
     // bet is checked again from the start on the next scan: price, every rule, then placed.
-    if (e.notSent && e.geoRenewed) {
-      ctx.sent = false; ctx.outcome = 'location renewed';
-      lg.warn(`${book.label}: ${e.message}`);
+    if (e.notSent && e.geoRenewing) {
+      ctx.sent = false; ctx.outcome = 'location renewing';
+      // Said once a minute per bet: it's checked again every scan until the renewal is done.
+      const said = geoSaid.get(row.id) || 0;
+      if (Date.now() - said > 60e3) { geoSaid.set(row.id, Date.now()); lg.warn(`${book.label}: ${e.message}`); }
       return false;
     }
     ctx.outcome = 'place failed';
