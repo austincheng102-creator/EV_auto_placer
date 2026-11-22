@@ -2,8 +2,13 @@
 //  - odds window: nothing shorter than -300 (minOdds) or longer than +250 (maxOdds)
 //  - EV cap: nothing above 25% EV (maxEvPct), it's usually a stale or wrong price
 //  - sharp books must agree: their no-vig win probabilities within 3 points of each other
-//    (Pinnacle, Kalshi, Polymarket, Novig; FanDuel left out since 2026-11-19, sharp.spreadBooks)
-//  - live mainlines need Pinnacle, Kalshi, Polymarket or Novig listed; live props need FanDuel
+//    (Pinnacle, Polymarket, Novig; FanDuel left out since 2026-11-19, sharp.spreadBooks)
+//  - Kalshi is not a sharp book (since 2026-11-22, sharp.excludeBooks): it's taken out of every sharp list,
+//    even when config.json still names it
+//  - live mainlines need Pinnacle, Polymarket or Novig listed; live props need FanDuel
+//  - soft-book check (softCheck): our price must be above 0% EV against the no-vig price of at least
+//    2 of DraftKings, Caesars and FanDuel (the book we're betting doesn't count for itself)
+//  - odds bands (minEvByOdds): +201 to +250 needs 12% EV, everything else minEvPct
 //  - live timing: a sharp price for the selection changed within the last 5 seconds (30 for props)
 //  - groups: same game + market (period is part of the market) share group.maxBets bets and group.maxStake $.
 //    Both sides count as one group (Over and Under, either team's spread), unless group.bothSides is true.
@@ -24,12 +29,16 @@ export function applyFilterDefaults(cfg) {
   if (cfg.maxEvPct === undefined) cfg.maxEvPct = 25;
   const s = (cfg.sharp ||= {});
   s.ids = { ...DEFAULT_SHARP_IDS, ...(s.ids || {}) };
-  if (s.liveMainlineNeeds === undefined) s.liveMainlineNeeds = ['pinnacle', 'kalshi', 'polymarket', 'novig'];
+  if (s.liveMainlineNeeds === undefined) s.liveMainlineNeeds = ['pinnacle', 'polymarket', 'novig'];
   if (s.livePropNeeds === undefined) s.livePropNeeds = ['fanduel'];
   if (s.maxSpreadPts === undefined) s.maxSpreadPts = 3;
   // Books compared by the 3-point rule. FanDuel isn't in it: it isn't sharp on props and kept
   // knocking them out. Add "fanduel" here to compare it again on props.
-  if (s.spreadBooks === undefined) s.spreadBooks = ['pinnacle', 'kalshi', 'polymarket', 'novig'];
+  if (s.spreadBooks === undefined) s.spreadBooks = ['pinnacle', 'polymarket', 'novig'];
+  // Books never used as sharp, even if a list above names them (Austin, 2026-11-22: no Kalshi).
+  if (s.excludeBooks === undefined) s.excludeBooks = ['kalshi'];
+  const out = new Set(s.excludeBooks || []);
+  for (const k of ['liveMainlineNeeds', 'livePropNeeds', 'spreadBooks']) if (Array.isArray(s[k])) s[k] = s[k].filter((n) => !out.has(n));
   if (s.liveMaxAgeSec === undefined) s.liveMaxAgeSec = 5;
   // Live props: FanDuel's prop prices update slowly in Gambit's feed, so props get 30s.
   if (s.livePropMaxAgeSec === undefined) s.livePropMaxAgeSec = 30;
@@ -46,8 +55,54 @@ export function applyFilterDefaults(cfg) {
   // group's last bet, on any book, is cooldownSec old and it passes every rule; "block" = never that game.
   if (g.otherSide === undefined) g.otherSide = 'afterCooldown';
   bothSides = !!g.bothSides;
+  // Soft-book check: EV above minEvPct (0) against the no-vig price of at least minBooks (2) of these
+  // books. A book that doesn't list both sides doesn't count; fewer than minBooks priced = skip.
+  // skipOwnBook: the book we're betting isn't checked against itself (its own vig always makes that negative).
+  const sc = (cfg.softCheck ||= {});
+  if (sc.enabled === undefined) sc.enabled = true;
+  if (sc.books === undefined) sc.books = { draftkings: 200, caesars: 300, fanduel: 100 };
+  if (sc.minBooks === undefined) sc.minBooks = 2;
+  if (sc.minEvPct === undefined) sc.minEvPct = 0;
+  if (sc.skipOwnBook === undefined) sc.skipOwnBook = true;
+  // Higher minimum EV for long odds: first band whose odds range holds the price wins (if above minEvPct).
+  if (cfg.minEvByOdds === undefined) cfg.minEvByOdds = [{ from: 201, to: 250, minEvPct: 12 }];
   return cfg;
 }
+
+/** Minimum EV for a price: the base minimum, raised by a matching minEvByOdds band. */
+export function minEvFor(cfg, base, odds) {
+  let m = base;
+  for (const b of cfg.minEvByOdds || []) {
+    if (Number.isFinite(odds) && odds >= (b.from ?? -Infinity) && odds <= (b.to ?? Infinity)) m = Math.max(m, Number(b.minEvPct) || 0);
+  }
+  return m;
+}
+
+/**
+ * Soft-book check at a price. Returns { ok, evs: {draftkings: 3.1, ...}, pass, n, need, mine }.
+ * evs = our EV % against each book's own no-vig price (books with both sides only).
+ */
+export function softCheck(cfg, row, odds = row.odds) {
+  const sc = cfg.softCheck;
+  if (!sc?.enabled) return { ok: true, off: true, evs: {}, pass: 0, n: 0 };
+  const evs = {};
+  let mine = null;
+  for (const [name, idv] of Object.entries(sc.books || {})) {
+    const idList = [].concat(idv ?? []).map(Number);
+    if (sc.skipOwnBook && (name === row.book || idList.includes(Number(row.gambitBookId)))) { mine = name; continue; }
+    for (const id of idList) {
+      const pr = row.prices?.[id];
+      const p = pr && bookFairProb(pr.odds, pr.oppOdds);
+      if (p != null) { evs[name] = (p * (odds > 0 ? 1 + odds / 100 : 1 + 100 / -odds) - 1) * 100; break; }
+    }
+  }
+  const vals = Object.values(evs), need = sc.minBooks ?? 2;
+  const pass = vals.filter((e) => e > (sc.minEvPct ?? 0)).length;
+  return { ok: pass >= need, evs, pass, n: vals.length, need, mine };
+}
+
+/** "DraftKings +3.1%, Caesars -0.4%" for logs. */
+export const fmtSoft = (sc) => Object.entries(sc.evs).map(([n, e]) => `${n} ${e >= 0 ? '+' : ''}${e.toFixed(1)}%`).join(', ') || 'none priced';
 
 /** -300 is allowed, -310 is not. Positive odds are never "shorter than" a negative limit. */
 export const tooShort = (cfg, odds) => cfg.minOdds != null && odds < 0 && odds < cfg.minOdds;

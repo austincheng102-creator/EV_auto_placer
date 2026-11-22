@@ -103,8 +103,11 @@ setting in `config.json`; one that isn't there gets the default below, and `null
 | Underdogs: nothing longer than +250 | +250 | `"maxOdds"` (above) |
 | Nothing above 25% EV | 25 | `"maxEvPct"` or `--max-ev 20` |
 | Hard Rock: skip when its price changed under 3s before the scan and shows 3+ points more EV than Gambit's copy (the game likely moved before the sharp prices caught up) | 3s, 3 pts | `"freshJump": {"books", "sec", "evPts"}`, `false` turns it off |
-| Sharp books' no-vig win probabilities within 3 points of each other (Pinnacle, Kalshi, Polymarket, Novig; not FanDuel) | 3 | `"sharp": {"maxSpreadPts", "spreadBooks"}` |
-| Live mainlines need Pinnacle, Kalshi, Polymarket or Novig listed | | `"sharp": {"liveMainlineNeeds"}` |
+| Bets at +201 to +250 need 12% EV (everything else `minEvPct`) | 12% | `"minEvByOdds": [{"from": 201, "to": 250, "minEvPct": 12}]` |
+| Soft-book check: the price is above 0% EV against the no-vig price of at least 2 of DraftKings, Caesars, FanDuel. A book that doesn't list both sides doesn't count; fewer than 2 priced = skip. The book being bet isn't checked against itself (a FanDuel bet needs DraftKings and Caesars) | 2 of 3, >0% | `"softCheck": {"enabled", "books", "minBooks", "minEvPct", "skipOwnBook"}` |
+| Kalshi is not a sharp book: taken out of every sharp list below, even if config.json names it | kalshi | `"sharp": {"excludeBooks"}` |
+| Sharp books' no-vig win probabilities within 3 points of each other (Pinnacle, Polymarket, Novig; not FanDuel) | 3 | `"sharp": {"maxSpreadPts", "spreadBooks"}` |
+| Live mainlines need Pinnacle, Polymarket or Novig listed | | `"sharp": {"liveMainlineNeeds"}` |
 | Live player props need FanDuel listed | | `"sharp": {"livePropNeeds"}` |
 | Live: a sharp price changed within the last 5 seconds | 5 | `"sharp": {"liveMaxAgeSec"}` |
 | Live player props: FanDuel's price changed within the last 30 seconds | 30 | `"sharp": {"livePropMaxAgeSec"}` |

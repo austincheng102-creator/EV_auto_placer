@@ -17,8 +17,15 @@
   "pregameMaxHours": 12,
   "arbProps": {
     "enabled": true,
-    "books": ["hardrock", "betrivers"],
-    "refBooks": { "draftkings": 200, "fanduel": 100, "caesars": 300 },
+    "books": [
+      "hardrock",
+      "betrivers"
+    ],
+    "refBooks": {
+      "draftkings": 200,
+      "fanduel": 100,
+      "caesars": 300
+    },
     "minRefs": 2,
     "maxSpreadPts": 3,
     "minEvPct": 8,
@@ -38,7 +45,6 @@
     "maxSpreadPts": 3,
     "spreadBooks": [
       "pinnacle",
-      "kalshi",
       "polymarket",
       "novig"
     ],
@@ -46,7 +52,6 @@
     "livePropMaxAgeSec": 30,
     "liveMainlineNeeds": [
       "pinnacle",
-      "kalshi",
       "polymarket",
       "novig"
     ],
@@ -62,7 +67,10 @@
       ],
       "novig": 192,
       "fanduel": 100
-    }
+    },
+    "excludeBooks": [
+      "kalshi"
+    ]
   },
   "stake": {
     "mode": "flat",
@@ -109,5 +117,23 @@
     "remindMinutes": 2,
     "reloadTabs": true,
     "gambitAutoLogin": true
-  }
+  },
+  "softCheck": {
+    "enabled": true,
+    "books": {
+      "draftkings": 200,
+      "caesars": 300,
+      "fanduel": 100
+    },
+    "minBooks": 2,
+    "minEvPct": 0,
+    "skipOwnBook": true
+  },
+  "minEvByOdds": [
+    {
+      "from": 201,
+      "to": 250,
+      "minEvPct": 12
+    }
+  ]
 }
