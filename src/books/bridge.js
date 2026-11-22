@@ -36,6 +36,7 @@ export function startBridge(port, { reloadExtension = false, quiet = false, hell
       let m; try { m = JSON.parse(buf); } catch { return; }
       if (m.type === 'tabs') { tabs = m.tabs; return; }
       if (m.type === 'reloaded') { log.warn(`Chrome extension reloaded the ${m.book} tab: ${m.why}`); return; }
+      if (m.type === 'note') { (log[m.level] || log.warn)(m.text); return; }
       if (m.type === 'hello') { if (!quiet) log.info(`Chrome extension version ${m.version}`); return; }
       if (m.type === 'login') {
         if (m.note) log.warn(m.note);
@@ -89,7 +90,13 @@ export function startBridge(port, { reloadExtension = false, quiet = false, hell
         }, timeoutMs);
         pending.set(id, { resolve, reject, t });
         sock.send(JSON.stringify({ id, type: 'fetch', book, request }));
-      }).then((m) => { if (m.error) throw new Error(m.error); return m; });
+      }).then((m) => {
+        if (!m.error) return m;
+        const e = new Error(m.error);
+        if (m.notSent) e.notSent = true;           // the extension sent nothing to the book (safe to check again)
+        if (m.geoRenewed) e.geoRenewed = true;     // FanDuel's location check was just renewed
+        throw e;
+      });
     },
   };
 }
