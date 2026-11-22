@@ -380,7 +380,7 @@ function freshJump(row, quote, ctx) {
 
 // EV, Novig, stake limits, then place. If the book says the price changed and tells us the new
 // one, everything is checked again at that price and the bet is sent once more.
-async function placeAt(row, book, quote, ctx, retried = false) {
+async function placeAt(row, book, quote, ctx, retries = 0) {
   const lg = ctx.lg;
   if (tooLong(quote.odds)) { ctx.outcome = 'odds above max'; lg.warn(`${book.label}: ${fmtAmerican(quote.odds)} is above the ${fmtAmerican(cfg.maxOdds)} cap — skipped, nothing placed`); return false; }
   if (tooShort(cfg, quote.odds)) { ctx.outcome = 'odds below min'; lg.warn(`${book.label}: ${fmtAmerican(quote.odds)} is shorter than the ${fmtAmerican(cfg.minOdds)} limit — skipped, nothing placed`); return false; }
@@ -444,9 +444,12 @@ async function placeAt(row, book, quote, ctx, retried = false) {
     if (e.priceMoved) {
       ctx.priceMoved = true; ctx.outcome = 'price moved';
       if (hasNew) ctx.realOdds = e.newOdds;
-      if (hasNew && !retried) {
-        lg.warn(`${book.label}: price moved ${fmtAmerican(quote.odds)} → ${fmtAmerican(e.newOdds)}, checking again`);
-        return placeAt(row, book, { ...quote, ...(e.newQuote || {}), odds: e.newOdds }, ctx, true);
+      // Re-check at the book's new price (every rule again) up to priceMoveRetries times
+      // (default 2): a live price can move again during the book's delay on the retry.
+      const maxRetries = Number.isFinite(Number(cfg.priceMoveRetries)) ? Math.max(0, Number(cfg.priceMoveRetries)) : 2;
+      if (hasNew && retries < maxRetries) {
+        lg.warn(`${book.label}: price moved ${fmtAmerican(quote.odds)} → ${fmtAmerican(e.newOdds)}, checking again${retries ? ` (retry ${retries + 1} of ${maxRetries})` : ''}`);
+        return placeAt(row, book, { ...quote, ...(e.newQuote || {}), odds: e.newOdds }, ctx, retries + 1);
       }
       lg.warn(`${book.label}: price moved${hasNew ? ` to ${fmtAmerican(e.newOdds)}` : ''} — skipped, nothing placed`);
       return false;

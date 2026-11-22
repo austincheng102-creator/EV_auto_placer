@@ -155,6 +155,10 @@ all the rules above), and nothing is placed at a price that didn't pass.
   bet again on every scan for `recheckWatchMinutes` (default 5) as long as Gambit still lists it,
   and places it if the real price gets back to `minEvPct`. Repeat checks only show on screen when
   the price changes. Hard Rock's check is the bet itself, so a failed Hard Rock bet still waits 5 minutes.
+- When a book refuses a bet because its price moved and says the new price (Hard Rock NEW_ODDS,
+  BetRivers ODDS_CHANGED, FanDuel price not available), the bet is checked again at that price
+  with every rule, and placed if it still passes, up to `priceMoveRetries` (default 2) times.
+  `0` turns this off.
 - **BetRivers prices are read straight from BetRivers** on every scan (its public odds, no login)
   for every BetRivers selection within `betrivers.directMarginPts` (default 5) points of `minEvPct`
   on Gambit's numbers, up to `betrivers.directMax` (default 300). The scan then uses BetRivers' real
