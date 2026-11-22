@@ -46,12 +46,22 @@ export function settledBet(b) {
   };
 }
 
-// Why FanDuel refused a slip or a bet, from its failure lists and result codes.
-const fdWhy = (j) => [...new Set([
-  ...(j?.betFailures || []), ...(j?.legFailures || []),
-  ...(j?.result || []).filter((r) => r.resultCode && r.resultCode !== 'SUCCESS'),
-].map((f) => [f.resultCode, f.failureCode, f.code, f.reason, f.message].filter(Boolean).join(' ')).filter(Boolean)
-  .concat(j?.respCode && j.respCode !== 'SUCCESS' ? [j.respCode] : []))].join(', ');
+// Why FanDuel refused a slip or a bet: every code/reason/message anywhere in its reply (the
+// specific reason often sits a level down, e.g. legFailures[].runnerFailures[].failureCode).
+const WHY_KEY = /^(resultCode|failureCode|failureReason|code|reason|message|errorCode|subCode|respCode)$/i;
+const fdWhy = (j) => {
+  const out = [];
+  const walk = (v, depth) => {
+    if (!v || typeof v !== 'object' || depth > 6) return;
+    if (Array.isArray(v)) { v.forEach((x) => walk(x, depth + 1)); return; }
+    for (const [k, x] of Object.entries(v)) {
+      if (typeof x === 'string' && WHY_KEY.test(k) && x && !/^SUCCESS$|^OK$/i.test(x)) out.push(x);
+      else if (x && typeof x === 'object') walk(x, depth + 1);
+    }
+  };
+  walk(j, 0);
+  return [...new Set(out)].join(', ');
+};
 
 const uuid = () => (globalThis.crypto?.randomUUID?.() || 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
   const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16);
@@ -60,6 +70,16 @@ const uuid = () => (globalThis.crypto?.randomUUID?.() || 'xxxxxxxx-xxxx-4xxx-yxx
 const r0 = (m, sel) => (m.runners || []).find((r) => String(r.selectionId) === String(sel));
 const parseStart = (t) => { const n = Number(t); return Number.isFinite(n) ? (n < 1e12 ? n * 1000 : n) : Date.parse(t); };
 const words = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean);
+// FanDuel writes some schools with a state in brackets: "Miami (OH)", "Loyola (MD)". Gambit
+// spells the state out ("Miami Ohio RedHawks"), so the bracket becomes the state's name.
+const STATES = { OH: 'Ohio', FL: 'Florida', PA: 'Pennsylvania', IL: 'Illinois', MD: 'Maryland', NY: 'New York',
+  CA: 'California', MN: 'Minnesota', TX: 'Texas', LA: 'Louisiana', CHI: 'Chicago', MS: 'Mississippi', AL: 'Alabama',
+  MO: 'Missouri', IN: 'Indiana', MI: 'Michigan', NC: 'North Carolina', SC: 'South Carolina', VA: 'Virginia', OR: 'Oregon' };
+export const fdTeamName = (s) => String(s || '').replace(/\(([A-Za-z]{2,3})\)/g, (all, st) => STATES[st.toUpperCase()] || st);
+/** A virtual (simulated) game: FanDuel adds a player tag in brackets to both teams, "Celtics (JDOE)".
+ *  A state in brackets ("Miami (OH)") doesn't count. */
+const tagged = (side) => (String(side).match(/\(([^)]*)\)/g) || []).some((b) => !STATES[b.slice(1, -1).trim().toUpperCase()]);
+export const isVirtual = (name) => { const sides = String(name || '').split(' @ '); return sides.length === 2 && sides.every(tagged); };
 /** "Eastern Washington @ Oregon State" vs Gambit's "Eastern Washington Eagles @ Oregon State Beavers":
  *  each side's FanDuel words all appear on the same side of Gambit's name (or the other way round). */
 export function sameGame(fdName, gambitName) {
@@ -210,7 +230,9 @@ export function makeFanDuel(name, label, cfg, bridge) {
     const page = pages[String(row.league || '').toUpperCase()];
     if (!page) throw new Error(`no FanDuel page known for league ${row.league} (set "fanduel": {"leaguePages": {"${row.league}": "<page id>"}})`);
     const j = await getJson(`${api}/content-managed-page?page=CUSTOM&customPageId=${page}&pbHorizontal=false&_ak=${appKey}&timezone=America%2FDenver`, 120e3);
-    const events = Object.values(j.attachments?.events || {}).filter((e) => / @ /.test(e.name || '') && !/\(/.test(e.name));
+    // Real games only (not virtual ones), with "(OH)"-style states spelled out like Gambit does.
+    const events = Object.values(j.attachments?.events || {}).filter((e) => / @ /.test(e.name || '') && !isVirtual(e.name))
+      .map((e) => ({ ...e, name: fdTeamName(e.name) }));
     const markets = Object.values(j.attachments?.markets || {});
     const start = parseStart(row.startDate);
     const near = (e) => !Number.isFinite(start) || Math.abs(Date.parse(e.openDate) - start) < 12 * 3600e3;
@@ -386,7 +408,9 @@ export function makeFanDuel(name, label, cfg, bridge) {
       return {
         odds, line, suspended: false, loginOk: true,   // the slip check used your login and FanDuel accepted it
         maxStake: Number.isFinite(max) && max > 0 ? max : null,
-        fd: { ...m, handicap: Number(rn.handicap) || 0, betReference: combo.betReference, trueOdds: ro?.trueOdds, oddsFor: odds, delay: mk.betDelay },
+        // The line goes with the slip's reference: the slip check says which line it priced (a
+        // spread/total's line can move under the same selection), so the bet sends that one.
+        fd: { ...m, handicap: Number((j.winRunnerOdds || j.runnerOdds || []).find((r) => String(r.runner?.selectionId) === String(m.selectionId))?.runner?.handicap ?? rn.handicap) || 0, betReference: combo.betReference, trueOdds: ro?.trueOdds, oddsFor: odds, delay: mk.betDelay },
       };
     },
 
@@ -425,7 +449,7 @@ export function makeFanDuel(name, label, cfg, bridge) {
         return { betId: `fanduel:${r.betReceiptId} (${r.resultCode})`, confirmedOdds: null, detail };
       }
       const why = fdWhy(j) || `HTTP ${res.status}`;
-      const err = new Error(`rejected: ${why}`);
+      const err = new Error(`rejected: ${why} (FanDuel's full reply is in debug.log)`);
       err.detail = detail;
       if (/PRICE|ODDS/i.test(why)) err.priceMoved = true;      // re-checked and retried once by the engine
       else if (/SUSPEND|CLOSED|UNAVAILABLE|NOT_ACTIVE|INACTIVE/i.test(why)) err.gone = true;
