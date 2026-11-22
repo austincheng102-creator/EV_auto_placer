@@ -508,9 +508,11 @@ async function pageFetch(req) {
     if (v && spec.jsonPath) { try { v = spec.jsonPath.split('.').reduce((o, k) => o?.[k], JSON.parse(v)); } catch {} }
     if (v) headers[h] = (spec.prefix || '') + v;
   }
+  const ms = req.timeoutMs || 0;
   const res = await fetch(req.url, {
     method: req.method || 'GET',
     headers,
+    ...(ms ? { signal: AbortSignal.timeout(ms) } : {}),
     body: req.body == null ? undefined : typeof req.body === 'string' ? req.body : JSON.stringify(req.body),
     // Some APIs (FanDuel's api.sportsbook.fanduel.com) refuse cross-site requests that carry
     // cookies; the site itself calls them without, so the app asks for 'omit' there.
@@ -519,7 +521,7 @@ async function pageFetch(req) {
   const text = await res.text();
   let json = null; try { json = JSON.parse(text); } catch {}
   return { status: res.status, json, text: json ? undefined : text.slice(0, 2000) };
-  } catch (e) { return { status: 0, error: `in-tab request failed: ${e?.message || e}` }; }
+  } catch (e) { return { status: 0, timedOut: e?.name === 'TimeoutError', error: e?.name === 'TimeoutError' ? `no answer in ${Math.round(req.timeoutMs / 1000)}s` : `in-tab request failed: ${e?.message || e}` }; }
 }
 
 // Same request made by the extension itself (it has permission for these sites, so the
@@ -528,16 +530,22 @@ async function extFetch(req) {
   try {
     const res = await fetch(req.url, {
       method: req.method || 'GET', headers: req.headers || {}, credentials: 'include',
+      ...(req.timeoutMs ? { signal: AbortSignal.timeout(req.timeoutMs) } : {}),
       body: req.body == null ? undefined : typeof req.body === 'string' ? req.body : JSON.stringify(req.body),
     });
     const text = await res.text();
     let json = null; try { json = JSON.parse(text); } catch {}
     return { status: res.status, json, text: json ? undefined : text.slice(0, 2000) };
-  } catch (e) { return { status: 0, error: `extension request failed: ${e?.message || e}` }; }
+  } catch (e) { return { status: 0, timedOut: e?.name === 'TimeoutError', error: e?.name === 'TimeoutError' ? `no answer in ${Math.round(req.timeoutMs / 1000)}s` : `extension request failed: ${e?.message || e}` }; }
 }
 
 async function runInTab(tabId, request) {
-  const [r] = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: pageFetch, args: [request] });
+  // A frozen or still-loading tab can leave executeScript hanging: give up a little after the
+  // request's own time limit so the app gets a real reason instead of its generic timeout.
+  const run = chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: pageFetch, args: [request] });
+  const [r] = request.timeoutMs
+    ? await Promise.race([run, sleep(request.timeoutMs + 1500).then(() => { throw new Error(`the tab didn't respond in ${Math.round(request.timeoutMs / 1000) + 1}s (frozen or still loading)`); })])
+    : await run;
   if (!r || r.result === undefined) return { error: 'could not run in that tab (reload the tab and try again)' };
   return r.result;
 }
@@ -608,6 +616,8 @@ async function handle(msg) {
     // If Gambit refuses the token, try the other recent ones before giving up on this poll.
     if (msg.book === 'gambit') {
       const refused = (r) => r.status === 401 || r.status === 403;
+      // Two tries (from the extension, then from the tab) must both fit inside the app's 15s wait.
+      msg.request.timeoutMs = msg.request.timeoutMs || 6000;
       let a = await extFetch(msg.request);
       while (a.status === 401 && msg.request.headers.authorization === gambitAuth && dropGambitToken(gambitAuth)) {
         msg.request.headers.authorization = gambitAuth;
@@ -619,6 +629,7 @@ async function handle(msg) {
       // Refused over and over (about 20s of polls): the page's login has stalled, a reload renews it.
       if (refused(a) && ++gambitRefused >= 10) reloadTab('gambit', `Gambit answered HTTP ${a.status} ${gambitRefused} times in a row (login not accepted)`);
       if (!b.error && b.status) return reply(b);
+      if (a.timedOut && b.timedOut) return reply({ error: `Gambit didn't answer in ${Math.round(msg.request.timeoutMs / 1000)}s, twice (from the extension and from the Gambit tab): Chrome's internet is down or very slow, or Gambit's site is` });
       return reply({ error: `Gambit: ${a.error || `HTTP ${a.status}`}; ${b.error || `HTTP ${b.status}`}` });
     }
     const r = await runInTab(tab.id, msg.request);
