@@ -22,7 +22,7 @@ export function stageLabels(cfg) {
     odds: `odds outside ${cfg.minOdds ?? 'any'}..${cfg.maxOdds ?? 'any'}`,
     evCap: `above ${cfg.maxEvPct}% EV`,
     pregameFar: `pre-game, starts more than ${cfg.pregameMaxHours}h away`,
-    noSharp: `live, no ${(cfg.sharp.livePropNeeds || []).join('/')} price`,
+    noSharp: `no ${(cfg.sharp.livePropNeeds || []).join('/')} price (live) or ${(cfg.sharp.pregamePropNeeds || []).join('/')} (pre-game)`,
     sharpSpread: `sharp books more than ${cfg.sharp.maxSpreadPts} pts apart`,
     stale: `live, no ${(cfg.sharp.livePropNeeds || []).join('/')} move in ${cfg.sharp.livePropMaxAgeSec ?? cfg.sharp.liveMaxAgeSec}s`,
     group: 'group already bet',
