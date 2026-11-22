@@ -451,7 +451,13 @@ export function makeFanDuel(name, label, cfg, bridge) {
       const why = fdWhy(j) || `HTTP ${res.status}`;
       const err = new Error(`rejected: ${why} (FanDuel's full reply is in debug.log)`);
       err.detail = detail;
-      if (/PRICE|ODDS/i.test(why)) err.priceMoved = true;      // re-checked and retried once by the engine
+      if (/PRICE|ODDS/i.test(why)) {
+        // REQUESTED_PRICE_NOT_AVAILABLE: the price moved between the slip check and the bet. The
+        // reply carries FanDuel's current price; the engine checks every rule again at it.
+        err.priceMoved = true;
+        const now = Number(r?.runners?.[0]?.winOdds?.americanDisplayOdds?.americanOdds ?? r?.legs?.[0]?.winOdds?.americanDisplayOdds?.americanOdds);
+        if (Number.isFinite(now) && now !== 0 && now !== quote.odds) err.newOdds = now;
+      }
       else if (/SUSPEND|CLOSED|UNAVAILABLE|NOT_ACTIVE|INACTIVE/i.test(why)) err.gone = true;
       throw err;
     },
