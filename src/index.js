@@ -90,7 +90,7 @@ async function fetchResultsWhileOpen() {
       if (!told && Date.now() - started > 45e3) { told = true; console.log(`Not connected to Chrome yet. Open Chrome with the ${names} tab; I'll keep trying for a minute, otherwise results fill in next time you run the placer or Show bets.`); }
       return false;
     }
-    const n = await rs.sync();
+    const n = await rs.sync({ force: true });
     if (n) { try { writeSnapshot(appDir, {}); } catch {} console.log('Chart updated, it refreshes by itself in a few seconds.'); }
     else console.log('No newly settled bets yet.');
     return true;
@@ -705,7 +705,11 @@ if (source.arb) {
 const resultsEvery = (cfg.results?.everyMinutes ?? 10) * 60e3;
 if (!dryRun && bridge && resultsEvery > 0) {
   const rs = makeResultSync({ cfg, bridge, root, dryRun, log, bets: () => allBets(root, { dryRun }), books });
-  setTimeout(rs.sync, 15e3); setInterval(rs.sync, resultsEvery);
+  // Checked every 15s; each book is read once every everyMinutes, but until its first good
+  // read (and after a failed one) every minute, so bets that settled while the app was off
+  // fill in right after it starts.
+  const syncResults = () => rs.sync().catch(() => {});
+  setTimeout(syncResults, 15e3); setInterval(syncResults, 15e3);
 }
 
 log.info(`${betLog.summaryLine()} (ev-placer bets for details, file ${path.basename(betLog.csvPath)})`);
