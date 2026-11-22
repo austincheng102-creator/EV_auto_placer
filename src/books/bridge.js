@@ -9,7 +9,12 @@ export function startBridge(port, { reloadExtension = false, quiet = false, hell
   let sock = null;
   let tabs = [];
   let seq = 0;
-  const pending = new Map();
+  const pending = new Map();   // id -> { resolve, reject, t, book, at }
+  // Requests still waiting when the extension's link drops can never be answered: fail them now
+  // instead of letting each one sit until its own timeout.
+  const failPending = (why) => {
+    for (const [id, p] of pending) { clearTimeout(p.t); pending.delete(id); p.reject(new Error(why)); }
+  };
 
   wss.on('connection', (ws, req) => {
     // Only accept the extension (chrome-extension:// origin) on localhost.
@@ -21,7 +26,10 @@ export function startBridge(port, { reloadExtension = false, quiet = false, hell
       ws.send(JSON.stringify({ type: 'reload' }));
       return;
     }
+    if (sock && sock !== ws) sock.terminate();   // an older link the extension already gave up on
     sock = ws;
+    ws.alive = true;
+    ws.on('pong', () => { ws.alive = true; });
     if (!quiet) log.info('Chrome extension connected');
     if (hello) ws.send(JSON.stringify(hello));   // settings the extension needs (Gambit auto login on/off)
     ws.on('message', (buf) => {
@@ -39,12 +47,33 @@ export function startBridge(port, { reloadExtension = false, quiet = false, hell
       const p = pending.get(m.id);
       if (p) { pending.delete(m.id); clearTimeout(p.t); p.resolve(m); }
     });
-    ws.on('close', () => { if (sock === ws) { sock = null; tabs = []; if (!quiet) log.warn('Chrome extension disconnected'); } });
+    ws.on('close', () => {
+      if (sock !== ws) return;
+      sock = null; tabs = [];
+      if (!quiet) log.warn('Chrome extension disconnected');
+      failPending('Chrome extension disconnected while waiting for its answer');
+    });
   });
+
+  // Heartbeat: Chrome answers a ping on its own. A link that stops answering (Chrome froze, the
+  // PC slept, the extension's worker was stopped without closing the socket) is cut so the
+  // extension's reconnect (every 3s) gives a fresh one, instead of every request timing out.
+  const beat = setInterval(() => {
+    const ws = sock;
+    if (!ws) return;
+    if (!ws.alive) {
+      log.warn('Chrome extension stopped answering: dropping the link so it reconnects');
+      ws.terminate();   // 'close' handler clears sock and fails what was waiting
+      return;
+    }
+    ws.alive = false;
+    try { ws.ping(); } catch {}
+  }, 10000);
+  beat.unref?.();
 
   return {
     /** Let go of the port (so the placer can take it). */
-    close: () => new Promise((r) => { for (const c of wss.clients) c.terminate(); wss.close(() => r()); }),
+    close: () => new Promise((r) => { clearInterval(beat); for (const c of wss.clients) c.terminate(); wss.close(() => r()); }),
     connected: () => !!sock,
     hasTab: (book) => tabs.some((t) => t.book === book),
     /** Tell the extension something without waiting for a reply (alerts, tab reloads). */
@@ -54,8 +83,11 @@ export function startBridge(port, { reloadExtension = false, quiet = false, hell
       if (!sock) return Promise.reject(new Error('Chrome extension not connected'));
       const id = ++seq;
       return new Promise((resolve, reject) => {
-        const t = setTimeout(() => { pending.delete(id); reject(new Error('bridge timeout')); }, timeoutMs);
-        pending.set(id, { resolve, t });
+        const t = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`no answer from the Chrome extension in ${Math.round(timeoutMs / 1000)}s (bridge timeout${book === 'gambit' ? ': Gambit or the internet is slow' : ''})`));
+        }, timeoutMs);
+        pending.set(id, { resolve, reject, t });
         sock.send(JSON.stringify({ id, type: 'fetch', book, request }));
       }).then((m) => { if (m.error) throw new Error(m.error); return m; });
     },

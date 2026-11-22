@@ -43,11 +43,15 @@ export function makeGambitSource(cfg, bridge, { root = null, log = null } = {}) 
     return url.replace(m[0], m[1] + [...have].join(','));
   }
 
-  async function fetchOne(url) {
+  // tryMs: how long the extension waits for Gambit on each of its two tries (from the extension,
+  // then from the Gambit tab) before cancelling it. Cancelling matters: a request the app gave
+  // up on used to keep downloading in Chrome, and with a poll every 2s they piled up and starved
+  // every later Gambit request ("bridge timeout" over and over).
+  async function fetchOne(url, { tryMs = 9000 } = {}) {
     if (via === 'extension') {
       if (!bridge?.connected()) throw new Error('Chrome extension not connected (needed to read Gambit)');
-      const res = await bridge.send('gambit', { kind: 'gambit', url: withCacheBuster(url), method: 'GET',
-        headers: { accept: 'application/json, text/plain, */*', ...(g.headers || {}) }, useGambitAuth: true });
+      const res = await bridge.send('gambit', { kind: 'gambit', url: withCacheBuster(url), method: 'GET', timeoutMs: tryMs,
+        headers: { accept: 'application/json, text/plain, */*', ...(g.headers || {}) }, useGambitAuth: true }, 2 * tryMs + 4000);
       if (res.status === 401 || res.status === 403) throw new Error(`Gambit HTTP ${res.status}: log in again in the Gambit tab`);
       if (res.status >= 400 || !res.json) throw new Error(`Gambit HTTP ${res.status}${res.text ? `: ${String(res.text).slice(0, 120)}` : ''}`);
       return res.json;
@@ -71,30 +75,44 @@ export function makeGambitSource(cfg, bridge, { root = null, log = null } = {}) 
   const sampled = new Set();   // arbs.json links already saved to a sample file
   let arbFair = new Map();   // DK/FD/Caesars fair price of every prop in the arbitrage table (closing line value)
   const arbState = { error: null, rows: 0 };
-  async function fetchArbs() {
-    if (!arb || !arbBooks.length || !arb.urls.length) return [];
-    const out = [];
-    const nextArbFair = new Map();   // kept from the last good fetch if this one fails
-    try {
-      for (const url of arb.urls) {
-        const json = await fetchOne(withBookIds(url, arbIds));
-        // One real response per link that has player props in it (live and pre-game files), so the
-        // reading of arbs.json can be checked: arbs-sample-live.json / arbs-sample-pregame.json.
-        if (root && !sampled.has(url) && /PLAYER_PROP/.test(JSON.stringify(json))) {
-          sampled.add(url);
-          const kind = /[?&]isLive=true/.test(url) ? 'live' : /[?&]isLive=false/.test(url) ? 'pregame' : String(arb.urls.indexOf(url) + 1);
-          try { fs.writeFileSync(path.join(root, `arbs-sample-${kind}.json`), JSON.stringify(json, null, 1)); } catch {}
+  // The arbitrage table is big (pre-game is tens of MB on a busy evening) and can take longer to
+  // download than a 2s poll. So it loads in the background, one download at a time, and never
+  // holds up the +EV table. Its rows are used while they're fresh (arbProps.maxAgeSec, default 15).
+  const arbMaxAge = (Number(arb?.maxAgeSec) || 15) * 1000;
+  const arbTryMs = (Number(arb?.timeoutSec) || 25) * 1000;
+  let arbRows = [], arbAt = 0, arbLoading = null;
+  function loadArbs() {
+    if (arbLoading || !arb || !arbBooks.length || !arb.urls.length) return arbLoading;
+    arbLoading = (async () => {
+      const out = [];
+      const nextArbFair = new Map();   // kept from the last good fetch if this one fails
+      try {
+        for (const url of arb.urls) {
+          const json = await fetchOne(withBookIds(url, arbIds), { tryMs: arbTryMs });
+          // One real response per link that has player props in it (live and pre-game files), so the
+          // reading of arbs.json can be checked: arbs-sample-live.json / arbs-sample-pregame.json.
+          if (root && !sampled.has(url) && /PLAYER_PROP/.test(JSON.stringify(json))) {
+            sampled.add(url);
+            const kind = /[?&]isLive=true/.test(url) ? 'live' : /[?&]isLive=false/.test(url) ? 'pregame' : String(arb.urls.indexOf(url) + 1);
+            try { fs.writeFileSync(path.join(root, `arbs-sample-${kind}.json`), JSON.stringify(json, null, 1)); } catch {}
+          }
+          out.push(...arbsToRows(json, g, { ...arb, books: arbBooks }, nextArbFair));
         }
-        out.push(...arbsToRows(json, g, { ...arb, books: arbBooks }, nextArbFair));
-      }
-      arbFair = nextArbFair;
-      arbState.error = null;
-    } catch (e) {
-      arbState.error = e.message;
-      if (Date.now() - arbErrAt > 60e3) { arbErrAt = Date.now(); log?.warn(`Gambit arbitrage table fetch failed (${e.message}); +EV table still used`); }
-    }
-    arbState.rows = out.length;
-    return out;
+        arbFair = nextArbFair;
+        arbRows = out; arbAt = Date.now();
+        arbState.error = null;
+      } catch (e) {
+        arbState.error = e.message;
+        if (Date.now() - arbErrAt > 60e3) { arbErrAt = Date.now(); log?.warn(`Gambit arbitrage table fetch failed (${e.message}); +EV table still used`); }
+      } finally { arbLoading = null; }
+    })();
+    return arbLoading;
+  }
+  function fetchArbs() {
+    loadArbs();
+    const rows = Date.now() - arbAt <= arbMaxAge ? arbRows : [];
+    arbState.rows = rows.length;
+    return rows;
   }
   let fair = new Map();   // every selection's fair price in the last poll (for closing line value)
   return {
@@ -115,7 +133,7 @@ export function makeGambitSource(cfg, bridge, { root = null, log = null } = {}) 
         out.push(...rows.map((r) => normalizeRow(r, g.fields)));
       }
       fair = nextFair;
-      out.push(...await fetchArbs());
+      out.push(...fetchArbs());
       return out;
     },
   };
