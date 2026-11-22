@@ -5,7 +5,7 @@ import { evPct } from '../ev.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { evsToRows, bookIdLists } from './gambit-evs.js';
-import { arbDefaults, arbsToRows } from './gambit-arbs.js';
+import { arbDefaults, arbsToRows, arbStats } from './gambit-arbs.js';
 
 const get = (obj, path) => path.split('.').reduce((o, k) => (o == null ? o : o[k]), obj);
 
@@ -73,39 +73,56 @@ export function makeGambitSource(cfg, bridge, { root = null, log = null } = {}) 
   const arbIds = arb ? Object.values(arb.refBooks).flat() : [];
   let arbErrAt = 0;
   const sampled = new Set();   // arbs.json links already saved to a sample file
-  let arbFair = new Map();   // DK/FD/Caesars fair price of every prop in the arbitrage table (closing line value)
   const arbState = { error: null, rows: 0 };
-  // The arbitrage table is big (pre-game is tens of MB on a busy evening) and can take longer to
-  // download than a 2s poll. So it loads in the background, one download at a time, and never
-  // holds up the +EV table. Its rows are used while they're fresh (arbProps.maxAgeSec, default 30).
-  // It only starts after the +EV table has come in (so the two never share a slow connection)
-  // and at most once per arbProps.everySec (default 20), which also keeps the data use down.
+  // The arbitrage table is big: the pre-game one is about 25 MB of JSON on a busy evening (about
+  // 1 MB over the wire, Gambit compresses it). Almost all of that is spreads/totals/moneylines,
+  // which this table isn't used for, and Gambit can't be asked for player props only (its own
+  // site filters markets in the browser too). So the saving comes from downloading it less often:
+  //  - live link: every arbProps.everySec (default 20)
+  //  - pre-game link: every arbProps.pregameEverySec (default 60). Pre-game prop prices move
+  //    slowly, and every bet's price is still re-checked at the book right before it's placed.
+  // Each link loads in the background, one download at a time, never holding up the +EV table,
+  // and only after the +EV table has come in. Its rows are used while fresh: arbProps.maxAgeSec
+  // (default 30) live, pregameEverySec + 30s pre-game.
   const arbMaxAge = (Number(arb?.maxAgeSec) || 30) * 1000;
   const arbEvery = (Number(arb?.everySec) || 20) * 1000;
-  let arbStartedAt = 0;
+  const arbPreEvery = (Number(arb?.pregameEverySec) || 60) * 1000;
   const arbTryMs = (Number(arb?.timeoutSec) || 25) * 1000;
-  let arbRows = [], arbAt = 0, arbLoading = null;
+  const isPregameUrl = (u) => /[?&]isLive=false/.test(u);
+  // One slot per link: when it last started, its rows, its fair prices and its counts.
+  const slots = (arb?.urls || []).map((url) => {
+    const pre = isPregameUrl(url);
+    return { url, pre, every: pre ? arbPreEvery : arbEvery, maxAge: pre ? Math.max(arbMaxAge, arbPreEvery + 30e3) : arbMaxAge,
+      startedAt: 0, at: 0, rows: [], fair: new Map(), stats: null };
+  });
+  let arbLoading = null;
   function loadArbs() {
-    if (arbLoading || !arb || !arbBooks.length || !arb.urls.length) return arbLoading;
-    if (Date.now() - arbStartedAt < arbEvery) return null;
-    arbStartedAt = Date.now();
+    if (arbLoading || !arb || !arbBooks.length || !slots.length) return arbLoading;
+    const now = Date.now();
+    // The link that is most overdue goes next.
+    const due = slots.filter((s) => now - s.startedAt >= s.every).sort((x, y) => (x.startedAt + x.every) - (y.startedAt + y.every))[0];
+    if (!due) return null;
+    due.startedAt = now;
     arbLoading = (async () => {
-      const out = [];
-      const nextArbFair = new Map();   // kept from the last good fetch if this one fails
+      const { url } = due;
       try {
-        for (const url of arb.urls) {
-          const json = await fetchOne(withBookIds(url, arbIds), { tryMs: arbTryMs });
-          // One real response per link that has player props in it (live and pre-game files), so the
-          // reading of arbs.json can be checked: arbs-sample-live.json / arbs-sample-pregame.json.
-          if (root && !sampled.has(url) && /PLAYER_PROP/.test(JSON.stringify(json))) {
-            sampled.add(url);
-            const kind = /[?&]isLive=true/.test(url) ? 'live' : /[?&]isLive=false/.test(url) ? 'pregame' : String(arb.urls.indexOf(url) + 1);
-            try { fs.writeFileSync(path.join(root, `arbs-sample-${kind}.json`), JSON.stringify(json, null, 1)); } catch {}
-          }
-          out.push(...arbsToRows(json, g, { ...arb, books: arbBooks }, nextArbFair));
+        const json = await fetchOne(withBookIds(url, arbIds), { tryMs: arbTryMs });
+        // One real response per link that has player props in it (live and pre-game files), so the
+        // reading of arbs.json can be checked: arbs-sample-live.json / arbs-sample-pregame.json.
+        if (root && !sampled.has(url) && /PLAYER_PROP/.test(JSON.stringify(json))) {
+          sampled.add(url);
+          const kind = /[?&]isLive=true/.test(url) ? 'live' : isPregameUrl(url) ? 'pregame' : String(arb.urls.indexOf(url) + 1);
+          try { fs.writeFileSync(path.join(root, `arbs-sample-${kind}.json`), JSON.stringify(json, null, 1)); } catch {}
         }
-        arbFair = nextArbFair;
-        arbRows = out; arbAt = Date.now();
+        const nextFair = new Map();   // the last good one is kept if this fetch fails
+        due.rows = arbsToRows(json, g, { ...arb, books: arbBooks }, nextFair);
+        due.stats = { ...arbStats };
+        due.fair = nextFair;
+        due.at = Date.now();
+        // The scan line's counts: every link's latest parse added up.
+        const sum = {};
+        for (const s of slots) for (const [k, v] of Object.entries(s.stats || {})) sum[k] = (sum[k] || 0) + v;
+        Object.assign(arbStats, sum);
         arbState.error = null;
       } catch (e) {
         arbState.error = e.message;
@@ -116,15 +133,27 @@ export function makeGambitSource(cfg, bridge, { root = null, log = null } = {}) 
   }
   function fetchArbs() {
     loadArbs();
-    const rows = Date.now() - arbAt <= arbMaxAge ? arbRows : [];
+    const now = Date.now();
+    const rows = slots.flatMap((s) => (now - s.at <= s.maxAge ? s.rows : []));
     arbState.rows = rows.length;
     return rows;
+  }
+  // DK/FD/Caesars fair price of every prop in the arbitrage table (closing line value), all links.
+  let fairMerged = null, fairMergedAt = -1;
+  function arbFairIndex() {
+    if (slots.length === 1) return slots[0].fair;
+    const stamp = slots.reduce((t, s) => t + s.at, 0);
+    if (fairMerged && fairMergedAt === stamp) return fairMerged;
+    const m = new Map();
+    for (const s of slots) for (const [k, v] of s.fair) { const had = m.get(k); if (!had || v.prob < had.prob) m.set(k, v); }
+    fairMerged = m; fairMergedAt = stamp;
+    return m;
   }
   let fair = new Map();   // every selection's fair price in the last poll (for closing line value)
   return {
     needsBridge: via === 'extension',
     fairIndex: () => fair,
-    arbFairIndex: () => arbFair,
+    arbFairIndex,
     arb: arb ? { cfg: arb, books: arbBooks, state: arbState } : null,
     async fetchRows() {
       const list = urls();
