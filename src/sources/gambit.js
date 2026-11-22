@@ -77,11 +77,11 @@ export function makeGambitSource(cfg, bridge, { root = null, log = null } = {}) 
   const arbState = { error: null, rows: 0 };
   // The arbitrage table is big (pre-game is tens of MB on a busy evening) and can take longer to
   // download than a 2s poll. So it loads in the background, one download at a time, and never
-  // holds up the +EV table. Its rows are used while they're fresh (arbProps.maxAgeSec, default 15).
+  // holds up the +EV table. Its rows are used while they're fresh (arbProps.maxAgeSec, default 30).
   // It only starts after the +EV table has come in (so the two never share a slow connection)
-  // and at most once per arbProps.everySec (default 60), which also keeps the data use down.
-  const arbMaxAge = (Number(arb?.maxAgeSec) || 15) * 1000;
-  const arbEvery = (Number(arb?.everySec) || 60) * 1000;
+  // and at most once per arbProps.everySec (default 20), which also keeps the data use down.
+  const arbMaxAge = (Number(arb?.maxAgeSec) || 30) * 1000;
+  const arbEvery = (Number(arb?.everySec) || 20) * 1000;
   let arbStartedAt = 0;
   const arbTryMs = (Number(arb?.timeoutSec) || 25) * 1000;
   let arbRows = [], arbAt = 0, arbLoading = null;
