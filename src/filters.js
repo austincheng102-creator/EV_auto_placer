@@ -10,6 +10,7 @@
 //    Player props: per player, so Over/Under on one player's stat are one group.
 //    group.perBook (default on): each book gets its own maxBets/maxStake in the group, so the same side
 //    can go on BetRivers and Hard Rock once each. The other side waits out the cooldown (group.otherSide).
+//    group.pregameMaxBets (default 1): pre-game bets get this many per group (per book) instead of maxBets.
 //    group.cooldownSec (default 60): a repeat bet in the same group (same book with perBook) waits this
 //    long after the last one, and must still pass every rule. Different markets in one game don't wait.
 import { impliedProb } from './ev.js';
@@ -35,6 +36,9 @@ export function applyFilterDefaults(cfg) {
   const g = (cfg.group ||= {});
   if (g.maxBets === undefined) g.maxBets = 3;
   if (g.maxStake === undefined) g.maxStake = 3;
+  // Pre-game bets: at most this many per group (per book with perBook). Live keeps maxBets.
+  // A pre-game bet still counts once the game goes live, so live can add up to maxBets in all. null = use maxBets.
+  if (g.pregameMaxBets === undefined) g.pregameMaxBets = 1;
   if (g.bothSides === undefined) g.bothSides = false;
   if (g.perBook === undefined) g.perBook = true;
   if (g.cooldownSec === undefined) g.cooldownSec = 60;
@@ -209,10 +213,17 @@ export function groupRoom(cfg, totals, row, now = Date.now()) {
   const all = totals.get(groupKey(row));
   if (otherSideBlocked(cfg, all, row, now)) return null;
   const g = (cfg.group.perBook ? all?.byBook.get(row.book) : all) || { bets: 0, staked: 0, lastAt: 0 };
-  if (cfg.group.maxBets != null && g.bets >= cfg.group.maxBets) return null;
+  const max = groupMaxBets(cfg, row);
+  if (max != null && g.bets >= max) return null;
   if (groupWaitSec(cfg, g, now) > 0) return null;
   const left = cfg.group.maxStake == null ? Infinity : cfg.group.maxStake - g.staked;
   return left > 0.0001 ? left : null;
+}
+
+/** Bet limit for a row's group: group.pregameMaxBets for a pre-game row, else group.maxBets. null = no limit. */
+export function groupMaxBets(cfg, row) {
+  const g = cfg.group;
+  return row?.isLive === false && g.pregameMaxBets != null ? g.pregameMaxBets : g.maxBets;
 }
 
 /** Seconds until the group's cooldown ends (0 = no wait). */
