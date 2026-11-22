@@ -628,7 +628,7 @@ async function tick() {
     why.noProps && `${why.noProps} props on a book with props off`,
     why.odds && `${why.odds} outside ${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)} to ${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)}`,
     why.evCap && `${why.evCap} above ${cfg.maxEvPct}% EV`,
-    why.noSharp && `${why.noSharp} live without the needed sharp book`,
+    why.noSharp && `${why.noSharp} without the needed sharp book (live, or pre-game props without ${(cfg.sharp.pregamePropNeeds || []).join('/') || 'any'})`,
     why.sharpSpread && `${why.sharpSpread} sharp books more than ${cfg.sharp.maxSpreadPts} pts apart`,
     why.softBooks && `${why.softBooks} not above ${cfg.softCheck.minEvPct}% EV on ${cfg.softCheck.minBooks}+ of ${Object.keys(cfg.softCheck.books).join('/')}`,
     why.stale && `${why.stale} live with no sharp move in the last ${ageMax}s`,

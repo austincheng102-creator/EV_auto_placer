@@ -5,7 +5,7 @@
 //    (Pinnacle, Polymarket, Novig; FanDuel left out since 2026-11-19, sharp.spreadBooks)
 //  - Kalshi is not a sharp book (since 2026-11-22, sharp.excludeBooks): it's taken out of every sharp list,
 //    even when config.json still names it
-//  - live mainlines need Pinnacle, Polymarket or Novig listed; live props need FanDuel
+//  - live mainlines need Pinnacle, Polymarket or Novig listed; props (live and pre-game) need FanDuel
 //  - soft-book check (softCheck): our price must be above 0% EV against the no-vig price of at least
 //    2 of DraftKings, Caesars and FanDuel (the book we're betting doesn't count for itself)
 //  - odds bands (minEvByOdds): +201 to +250 needs 12% EV, everything else minEvPct
@@ -31,6 +31,8 @@ export function applyFilterDefaults(cfg) {
   s.ids = { ...DEFAULT_SHARP_IDS, ...(s.ids || {}) };
   if (s.liveMainlineNeeds === undefined) s.liveMainlineNeeds = ['pinnacle', 'polymarket', 'novig'];
   if (s.livePropNeeds === undefined) s.livePropNeeds = ['fanduel'];
+  // Pre-game player props need FanDuel listed too (Austin, 2026-11-22). [] = no requirement.
+  if (s.pregamePropNeeds === undefined) s.pregamePropNeeds = ['fanduel'];
   if (s.maxSpreadPts === undefined) s.maxSpreadPts = 3;
   // Books compared by the 3-point rule. FanDuel isn't in it: it isn't sharp on props and kept
   // knocking them out. Add "fanduel" here to compare it again on props.
@@ -38,7 +40,7 @@ export function applyFilterDefaults(cfg) {
   // Books never used as sharp, even if a list above names them (Austin, 2026-11-22: no Kalshi).
   if (s.excludeBooks === undefined) s.excludeBooks = ['kalshi'];
   const out = new Set(s.excludeBooks || []);
-  for (const k of ['liveMainlineNeeds', 'livePropNeeds', 'spreadBooks']) if (Array.isArray(s[k])) s[k] = s[k].filter((n) => !out.has(n));
+  for (const k of ['liveMainlineNeeds', 'livePropNeeds', 'pregamePropNeeds', 'spreadBooks']) if (Array.isArray(s[k])) s[k] = s[k].filter((n) => !out.has(n));
   if (s.liveMaxAgeSec === undefined) s.liveMaxAgeSec = 5;
   // Live props: FanDuel's prop prices update slowly in Gambit's feed, so props get 30s.
   if (s.livePropMaxAgeSec === undefined) s.livePropMaxAgeSec = 30;
@@ -149,10 +151,14 @@ export function sharpSpread(cfg, row) {
   return { ok: cfg.sharp.maxSpreadPts == null || spread <= cfg.sharp.maxSpreadPts, n: vals.length, spread, probs };
 }
 
-/** Live only: mainlines need one of Pinnacle/Kalshi/Polymarket/Novig, props need FanDuel. */
+/**
+ * Needed sharp books: live mainlines need one of Pinnacle/Polymarket/Novig, live props need FanDuel,
+ * pre-game props need FanDuel too (sharp.pregamePropNeeds, 2026-11-22). Pre-game mainlines need none.
+ */
 export function liveSharpMissing(cfg, row) {
-  if (!row.isLive) return null;
-  const need = row.isProp ? cfg.sharp.livePropNeeds : cfg.sharp.liveMainlineNeeds;
+  const need = row.isLive
+    ? (row.isProp ? cfg.sharp.livePropNeeds : cfg.sharp.liveMainlineNeeds)
+    : (row.isProp && row.isLive === false ? cfg.sharp.pregamePropNeeds : null);
   if (!need?.length) return null;
   return sharpPresent(cfg, row, need).length ? null : need;
 }

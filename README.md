@@ -109,6 +109,7 @@ setting in `config.json`; one that isn't there gets the default below, and `null
 | Sharp books' no-vig win probabilities within 3 points of each other (Pinnacle, Polymarket, Novig; not FanDuel) | 3 | `"sharp": {"maxSpreadPts", "spreadBooks"}` |
 | Live mainlines need Pinnacle, Polymarket or Novig listed | | `"sharp": {"liveMainlineNeeds"}` |
 | Live player props need FanDuel listed | | `"sharp": {"livePropNeeds"}` |
+| Pre-game player props need FanDuel listed | fanduel | `"sharp": {"pregamePropNeeds"}` (`[]` turns it off) |
 | Live: a sharp price changed within the last 5 seconds | 5 | `"sharp": {"liveMaxAgeSec"}` |
 | Live player props: FanDuel's price changed within the last 30 seconds | 30 | `"sharp": {"livePropMaxAgeSec"}` |
 | Same game + market + period = one group (both sides): up to 3 bets live (1 pre-game), $3 per book, at least 60s apart on one book | 3 live / 1 pre-game, $3, 60s, per book | `"group": {"maxBets", "pregameMaxBets", "maxStake", "cooldownSec", "bothSides", "perBook"}` |
