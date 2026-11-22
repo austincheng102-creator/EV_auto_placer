@@ -230,15 +230,43 @@ export function makeFanDuel(name, label, cfg, bridge) {
     return hit.eventId;
   }
 
+  // Which CO market each Gambit row is: kept apart from the page cache (whose 200-page limit
+  // used to push these out, so the same games were looked up again and again).
+  const mapKey = (row) => `${row.event}|${row.marketKey}|${row.bookRef}`;
+  const mapCache = new Map();   // key -> { at, out } or { at, err }
+  const remember = (key, v) => {
+    mapCache.delete(key); mapCache.set(key, { at: Date.now(), ...v });
+    if (mapCache.size > 3000) mapCache.delete(mapCache.keys().next().value);
+  };
+  // Looking a game up can take several page reads through the FanDuel tab, so it runs in the
+  // background (a few at a time) and the scan uses whatever is already known. A row not found
+  // is looked up again after 60s.
+  const mapQueue = [], mapping = new Set();
+  let mapRunning = 0;
+  const mapNext = () => {
+    while (mapRunning < (f.lookupsAtOnce ?? 4) && mapQueue.length) {
+      const r = mapQueue.shift();
+      const key = mapKey(r);
+      mapRunning++;
+      coMarket(r).catch((e) => remember(key, { err: e.message }))
+        .finally(() => { mapRunning--; mapping.delete(key); mapNext(); });
+    }
+  };
+  const lookUpLater = (r) => {
+    const key = mapKey(r);
+    if (mapping.has(key)) return;
+    mapping.add(key); mapQueue.push(r); mapNext();
+  };
+
   async function coMarket(row) {
     if (row.coMarket) return row.coMarket;
     const sel = row.bookRef;
     if (!sel) throw new Error(`no FanDuel selection id in Gambit's link (${String(row.link || 'no link').slice(0, 160)})`);
     const want = marketKind(row.marketKey);
     if (!want) throw new Error(`FanDuel: market "${row.marketKey}" isn't supported yet`);
-    const key = `${row.event}|${row.marketKey}|${sel}`;
-    const c = cache.get(key);
-    if (c && Date.now() - c.at < 10 * 60e3) return c.json;
+    const key = mapKey(row);
+    const c = mapCache.get(key);
+    if (c?.out && Date.now() - c.at < 10 * 60e3) return c.out;
     const eventId = await findEvent(row, sel);
     const base = `${api}/event-page?_ak=${appKey}&eventId=${eventId}&useCombinedTouchdownsVirtualMarket=true&useQuickBets=true&useQuickBetsMLB=true`;
     const first = await getJson(base, 5 * 60e3);
@@ -250,9 +278,9 @@ export function makeFanDuel(name, label, cfg, bridge) {
       const j = t == null ? first : await getJson(`${base}&tab=${slug(t)}`, 5 * 60e3);
       const all = Object.values(j.attachments?.markets || {});
       const m = pickMarket(all, eventId, sel, want, row.line);
-      if (m) { const out = { marketId: m.marketId, selectionId: Number(sel), eventId }; cache.set(key, { at: Date.now(), json: out }); return out; }
+      if (m) { const out = { marketId: m.marketId, selectionId: Number(sel), eventId }; remember(key, { out }); return out; }
       const byName = pickByName(all, eventId, row.selection, want, row.line);
-      if (byName) { const out = { marketId: byName.m.marketId, selectionId: Number(byName.sel), eventId }; cache.set(key, { at: Date.now(), json: out }); return out; }
+      if (byName) { const out = { marketId: byName.m.marketId, selectionId: Number(byName.sel), eventId }; remember(key, { out }); return out; }
       for (const x of all) {
         if (x.eventId !== eventId) continue;
         if (r0(x, sel)) seenIn.add(`${x.marketType} at ${altLine(r0(x, sel))}`);
@@ -270,7 +298,7 @@ export function makeFanDuel(name, label, cfg, bridge) {
       for (const t of [...new Set([null, ...altTabs, ...tabs.filter((x) => /same game/i.test(x))])]) {
         const j = t == null ? first : await getJson(`${base}&tab=${slug(t)}`, 5 * 60e3);
         const a = pickAlt(Object.values(j.attachments?.markets || {}), eventId, sel, row.selection, want, row.line);
-        if (a) { const out = { marketId: a.m.marketId, selectionId: Number(a.sel), eventId, alt: true, line: a.line }; cache.set(key, { at: Date.now(), json: out }); return out; }
+        if (a) { const out = { marketId: a.m.marketId, selectionId: Number(a.sel), eventId, alt: true, line: a.line }; remember(key, { out }); return out; }
         if (t != null) tries.push(t);
       }
     }
@@ -306,9 +334,17 @@ export function makeFanDuel(name, label, cfg, bridge) {
       const mapped = [];
       // A row we can't match to a Colorado market keeps Gambit's NJ price; the scan line says why.
       const miss = (r, msg) => { st.unmatched++; if (!st.why) st.why = `${r.event} ${r.market || r.marketKey}: ${msg}`; };
-      await Promise.all(want.map(async (r) => {
-        try { r.coMarket = await coMarket(r); mapped.push(r); } catch (e) { miss(r, e.message); }
-      }));
+      // Only rows whose CO market is already known are priced now; the rest are looked up in
+      // the background and keep Gambit's price until then (the check before a bet always uses
+      // FanDuel CO's own price), so a slow FanDuel tab never holds up the scan.
+      for (const r of want) {
+        const c = mapCache.get(mapKey(r)), age = c ? Date.now() - c.at : Infinity;
+        if (c?.out && age < 10 * 60e3) { r.coMarket = c.out; mapped.push(r); continue; }
+        if (c?.err && age < 60e3) { miss(r, c.err); continue; }
+        if (!r.bookRef) { miss(r, `no FanDuel selection id in Gambit's link (${String(r.link || 'no link').slice(0, 160)})`); continue; }
+        st.lookingUp = (st.lookingUp || 0) + 1;
+        lookUpLater(r);
+      }
       if (!mapped.length) return st;
       const ids = [...new Set(mapped.map((r) => r.coMarket.marketId))];
       const got = new Map();

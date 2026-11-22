@@ -160,8 +160,9 @@ export function makeGambitSource(cfg, bridge, { root = null, log = null } = {}) 
       if (!list.length || list.some((u) => u.startsWith('PASTE_'))) throw new Error('gambit.url not set in config.json');
       const out = [];
       const nextFair = new Map();
-      for (const url of list) {
-        const json = await fetchOne(withBookIds(url));
+      // Live and pre-game links load at the same time (one slow link no longer doubles the wait).
+      const jsons = await Promise.all(list.map((url) => fetchOne(withBookIds(url))));
+      for (const json of jsons) {
         if (Array.isArray(json?.evs)) { out.push(...evsToRows(json, g, nextFair, { shadow })); continue; }   // Gambit's evs.json
         const rows = g.rowsPath ? get(json, g.rowsPath) : json;
         if (!Array.isArray(rows)) throw new Error(`Gambit: rowsPath "${g.rowsPath}" is not an array`);
