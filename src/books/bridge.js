@@ -94,7 +94,8 @@ export function startBridge(port, { reloadExtension = false, quiet = false, hell
         if (!m.error) return m;
         const e = new Error(m.error);
         if (m.notSent) e.notSent = true;           // the extension sent nothing to the book (safe to check again)
-        if (m.geoRenewed) e.geoRenewed = true;     // FanDuel's location check was just renewed
+        if (m.geoRenewed) e.geoRenewed = true;     // the book's location check was just renewed (BetRivers)
+        if (m.geoRenewing) e.geoRenewing = true;   // FanDuel's location check is being renewed
         throw e;
       });
     },

@@ -7,8 +7,8 @@
 //            check and acceptLowerOdds=false, so FanDuel refuses the bet if the price dropped.
 //  - auth:   x-authentication header (FanDuel login, about an hour, the page renews it) and, for
 //            placeBet only, x-geo-packet (FanDuel's location check, lasts 20 minutes). The
-//            extension copies both from your FanDuel tab, and renews the location check by
-//            reloading the tab when it's about to run out.
+//            extension copies both from your FanDuel tab, and gets the page to renew the location
+//            check when it's about to run out (see background.js).
 // Gambit only carries FanDuel New Jersey (id 100, market ids "42.x"); Colorado's market ids are
 // different ("708.x"), so each row is first matched to the Colorado market (coMarket below).
 // Player props are not bet on FanDuel (Austin, 2026-11-21): FanDuel is the live-prop sharp
@@ -412,7 +412,7 @@ export function makeFanDuel(name, label, cfg, bridge) {
         }],
       };
       // Live bets wait out FanDuel's bet delay (betDelay seconds) before it answers.
-      const res = await send('place', `${host('spb')}/api/sports/fixedodds/transactional/v1/placeBet`, 'POST', body, { 'x-geo-packet': GEO }, 150000);   // up to ~2 min more if the location check has to be renewed first
+      const res = await send('place', `${host('spb')}/api/sports/fixedodds/transactional/v1/placeBet`, 'POST', body, { 'x-geo-packet': GEO }, 60000);
       const j = res.json || {};
       if (authFail(res)) throw new Error(loginMsg);
       const r = j.result?.[0];
