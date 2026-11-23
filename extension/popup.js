@@ -27,6 +27,8 @@ async function render() {
   const last = s.fanduelGeoLast && !s.fanduelGeoLast.ok ? ` (last renewal didn't work: ${s.fanduelGeoLast.why})` : '';
   $('fdgeo').textContent = (gl == null ? 'not seen yet (renewing automatically)' : gl > 0 ? `good for ${gl} min (renewed automatically)` : 'ran out (renewing automatically)') + last;
   $('fdgeo').className = gl > 0 ? 'on' : 'off';
+  { const n = s.betmgmGeoNext ? Math.round((s.betmgmGeoNext - Date.now()) / 60000) : null; const l = s.betmgmGeoLast ? ` (last renewal: ${s.betmgmGeoLast.ok ? 'worked' : 'failed'})` : '';
+    $('bmgeo').textContent = (n == null ? 'not seen yet (renewed automatically)' : n >= 0 ? `next check due in ${n} min (renewed automatically)` : 'due now (renewing automatically)') + l; $('bmgeo').className = n != null && n >= 0 ? 'on' : 'off'; }
   $('bm').textContent = s.betmgmLogin ? 'seen' : 'not yet (refresh the BetMGM tab)'; $('bm').className = s.betmgmLogin ? 'on' : 'off';
   { const h = s.thescoreHeaders || []; $('ts').textContent = h.length ? h.join(', ') : 'none seen yet (cookies only; refresh the theScore tab)'; $('ts').className = h.length ? 'on' : 'off'; }
   $('armed').textContent = armed ? 'ARMED' : 'disarmed (re-checks only)'; $('armed').className = armed ? 'on' : 'off';
