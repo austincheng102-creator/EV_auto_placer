@@ -607,8 +607,75 @@ const clearPageGeo = (pattern) => {
   }
   return out;
 };
-function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch }) {
-  const k = { book, label, setting, g: {}, job: null, triedAt: 0, fails: 0, busyAt: 0, refusedAt: 0, last: null };
+// Runs in the BetMGM page. mode 'find': picks one odds button (not on the bet slip, not already
+// picked), marks it, scrolls it into view and says where it is. mode 'state': where the marked one is
+// now and whether it's picked.
+function mgmOddsPick(mode) {
+  const vis = (el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+  const picked = (el) => /(^|[\s-])(selected|active|picked)(\s|$)/i.test(String(el.className || '')) || el.getAttribute('aria-pressed') === 'true' || !!el.querySelector('.selected, .active');
+  const at = (el) => { const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; };
+  const inView = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth; };
+  if (mode === 'state') {
+    const el = document.querySelector('[data-ev-placer-pick]');
+    if (!el || !vis(el)) return { found: false };
+    if (!inView(el)) el.scrollIntoView({ block: 'center' });
+    return { found: true, picked: picked(el), ...at(el) };
+  }
+  document.querySelectorAll('[data-ev-placer-pick]').forEach((e) => e.removeAttribute('data-ev-placer-pick'));
+  const odds = /^[+\-\u2212]\d{3,5}$/;
+  const cands = [...document.querySelectorAll('ms-event-pick, ms-option, .option-indicator, [class*="option-pick"], button')]
+    .map((el) => el.closest('ms-event-pick') || el.closest('ms-option') || el)
+    .filter((el, i, a) => a.indexOf(el) === i && vis(el) && odds.test((el.textContent || '').trim().split(/\s+/).pop() || ''))
+    .filter((el) => !el.closest('ms-bet-slip, bs-betslip, [class*="betslip"], [class*="bet-slip"], [class*="my-bets"]') && !el.closest('[disabled], [class*="locked"], [class*="suspended"]') && !picked(el));
+  const el = cands.find(inView) || cands[0];
+  if (!el) return { found: false, seen: cands.length };
+  el.setAttribute('data-ev-placer-pick', '1');
+  if (!inView(el)) el.scrollIntoView({ block: 'center' });
+  return { found: true, picked: false, text: (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 60), ...at(el) };
+}
+const mgmPickIn = async (tabId, mode) => (await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: mgmOddsPick, args: [mode] }).catch(() => []))[0]?.result || { found: false };
+
+// BetMGM runs its location check when a pick is added to the bet slip (Austin's HAR, 2026-11-23:
+// add to slip, then the check 0.1s later), not on a page load. So to renew it: a real click (through
+// Chrome's debugger, like the Gambit login) on one odds button in the BetMGM tab, wait for the new
+// check, then a second click on the same button to take the pick off the slip again. Bets are placed
+// by the app, never from this slip. Returns { ok, why, fresh }.
+async function mgmClickRenew(tabId, label, since, waitFresh) {
+  if (!chrome.debugger) return { ok: false, why: 'the extension is missing the "debugger" permission: reload it in chrome://extensions' };
+  const target = { tabId };
+  let attached = false, added = false, removed = false, text = '';
+  try {
+    let p = await mgmPickIn(tabId, 'find');
+    if (!p.found) return { ok: false, why: `no odds buttons visible in the ${label} tab (open the ${label} home page or any game there)` };
+    text = p.text || '';
+    await new Promise((res, rej) => chrome.debugger.attach(target, '1.3', () => (chrome.runtime.lastError ? rej(new Error(chrome.runtime.lastError.message)) : res())));
+    attached = true;
+    await dbgCmd(target, 'Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
+    await sleep(300);
+    p = await mgmPickIn(tabId, 'state');
+    if (!p.found) return { ok: false, why: `the odds button in the ${label} tab went away before the click` };
+    await realClick(target, p);
+    for (let i = 0; i < 10 && !added; i++) { await sleep(300); added = !!(await mgmPickIn(tabId, 'state')).picked; }
+    const fr = await waitFresh();
+    // Take the pick off the slip again (up to 3 tries).
+    for (let i = 0; i < 3; i++) {
+      const q = await mgmPickIn(tabId, 'state');
+      if (!q.found || !q.picked) { removed = q.found || !added; break; }
+      await realClick(target, q);
+      await sleep(800);
+    }
+    const left = added && !removed ? ` The pick "${text}" may still be on the ${label} bet slip: remove it there.` : '';
+    return { ok: fr, why: `clicked "${text}" in the ${label} tab${added ? '' : ' (the button didn\'t show as picked)'}${left}` };
+  } catch (e) {
+    const m = String(e?.message || e);
+    return { ok: false, why: m.includes('Another debugger') ? `Chrome DevTools is open on the ${label} tab: close it` : `clicking odds failed: ${m}` };
+  } finally {
+    if (attached) chrome.debugger.detach(target, () => void chrome.runtime.lastError);
+  }
+}
+
+function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch, passive = false, passiveHelp = '', clickRenew = null }) {
+  const k = { book, label, setting, passive, g: {}, job: null, triedAt: 0, fails: 0, busyAt: 0, refusedAt: 0, last: null, toldAt: 0 };
   store.get(`geo_${book}`).then((v) => { if (v?.[`geo_${book}`] && !k.g.updateAt) k.g = v[`geo_${book}`]; });
   const note = (text, level = 'warn') => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book, level, text })); };
   const tab = async () => (await bookTabs()).find((t) => t.book === book && host.test(new URL(t.url).hostname));
@@ -624,6 +691,8 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch }) {
     if (k.refusedAt > Math.max(g.updateAt || 0, /^(VALID|OK)/i.test(String(g.status || '')) ? g.statusAt || 0 : 0)) return 'a bet was refused because it had lapsed';
     if (!g.updateAt && !g.statusAt) return 'no location check seen in this page yet';
     if (g.statusAt > (g.updateAt || 0) + 5e3 && g.status && !/^(VALID|OK)/i.test(g.status) && now - g.statusAt > 30e3) return `${label} answered ${g.status}`;
+    // Clicking odds: give the page's own next check (due at nextAt) 20s first.
+    if (clickRenew && settings.betmgmGeoClick !== false) { if (g.nextAt && now > g.nextAt + 20e3) return `it was due ${mins(now - g.nextAt)} ago`; return ''; }
     if (g.nextAt && now > g.nextAt - GEO_RENEW_BEFORE_MS) return now > g.nextAt ? `it ran out ${mins(now - g.nextAt)} ago` : `it runs out in ${mins(g.nextAt - now)}`;
     return '';
   };
@@ -638,6 +707,27 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch }) {
       for (let i = 0; i < 60 && (placing[book] > 0 || Date.now() - k.busyAt < 20e3); i++) await sleep(1000);
       if (placing[book] > 0 || Date.now() - k.busyAt < 20e3) return { ok: false, why: `a ${label} bet was still being sent` };
       k.triedAt = Date.now();
+      if (clickRenew) {
+        const since = Date.now();
+        note(`renewing ${label}'s location check (${why}): clicking odds in the ${label} tab`, 'info');
+        let g = {};
+        const r = await clickRenew(t.id, label, since, async () => {
+          while (Date.now() - since < 45e3) { await sleep(1500); g = await k.now(t.id); if (fresh(g, since)) return true; }
+          return false;
+        });
+        if (r.ok) {
+          k.fails = 0;
+          const left = g.nextAt > Date.now() ? `, good for ${mins(g.nextAt - Date.now())}` : '';
+          k.last = { at: Date.now(), ok: true, why: `${r.why}, after ${Math.round((Date.now() - since) / 1000)}s${left}` };
+          note(`${label} location check renewed: ${k.last.why}`, 'good');
+          return { ok: true, why: k.last.why };
+        }
+        k.fails++;
+        const msg = `${r.why}; no new location check in 45s. ${help}`;
+        k.last = { at: Date.now(), ok: false, why: msg };
+        note(`${label} location check NOT renewed: ${msg} Trying again in ${k.fails >= 3 ? 10 : 2} min`);
+        return { ok: false, why: msg };
+      }
       const front = k.fails % 2 === 1;   // every other failed round, bring the tab to the front too
       const name = front ? `bringing the ${label} tab to the front and reloading` : `reloading the ${label} tab`;
       note(`renewing ${label}'s location check (${why}): ${name}`, 'info');
@@ -692,14 +782,37 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch }) {
     const t = await tab();
     if (!t || t.discarded) return;
     await brVisible(t.id);
-    const why = k.due(await k.now(t.id));
+    const g = await k.now(t.id);
+    if (passive && !(clickRenew && settings.betmgmGeoClick !== false)) {
+      // The page runs its own next check when the location server said to (timeForNextCall); a
+      // reload cancels that and doesn't start a new one, so the extension only watches and says so
+      // (once every 10 minutes) when the check is more than 3 minutes overdue.
+      if (g.nextAt && Date.now() > g.nextAt + 180e3 && (g.updateAt || 0) < g.nextAt && Date.now() - k.toldAt > 10 * 60e3) {
+        k.toldAt = Date.now();
+        note(`${label}'s location check is ${mins(Date.now() - g.nextAt)} overdue and the page hasn't run it. ${passiveHelp}`);
+      }
+      return;
+    }
+    const why = k.due(g);
     if (why) k.renew(why, k.refusedAt > Date.now() - 120e3).catch(() => {});
   };
-  k.refused = (why) => { k.refusedAt = Date.now(); if (settings[setting] !== false) k.renew(why || 'a bet was refused because it had lapsed', true).catch(() => {}); };
+  k.refused = (why) => {
+    k.refusedAt = Date.now();
+    if (passive && !(clickRenew && settings.betmgmGeoClick !== false)) { if (Date.now() - k.toldAt > 2 * 60e3) { k.toldAt = Date.now(); note(`${label} refused a bet because its location check had lapsed. ${passiveHelp}`); } return; }
+    if (settings[setting] !== false) k.renew(why || 'a bet was refused because it had lapsed', true).catch(() => {});
+  };
   return k;
 }
 const geoKeepers = {
   betmgm: makeGeoKeeper({ book: 'betmgm', label: 'BetMGM', key: 'evPlacerMgmGeo', host: /(^|\.)betmgm\.com$/, setting: 'betmgmGeoRenew', clearMatch: '^(lastFetchLocationCommand|lastLocationInfoStatus)$',
+    // BetMGM doesn't start a location check on a page load (Austin, 2026-11-23: every reload "didn't
+    // start a location check"); it runs the next one itself ~19.5 min after the last (timeForNextCall),
+    // and when you use the site. Reloading cancelled that, so the BetMGM tab is never reloaded for it.
+    // It does start one when a pick is added to the slip, so the extension renews it that way (Austin
+    // asked for it fully automatic, 2026-11-23): see mgmClickRenew. Off with config.json "session":
+    // {"betmgmGeoClick": false} (then it only watches and tells you, as passiveHelp says).
+    clickRenew: mgmClickRenew,
+    passive: true, passiveHelp: 'BetMGM runs it when you use the site: click any odds in the BetMGM tab (then remove it from the slip) to run it now. Keep the GeoComply app running.',
     help: 'Is the GeoComply location app running on this PC, and are you logged in to BetMGM?' }),
   thescore: makeGeoKeeper({ book: 'thescore', label: 'theScore', key: 'evPlacerTsGeo', host: /^sportsbook\.thescore\.bet$/, setting: 'thescoreGeoRenew', clearMatch: '__GEOCOMPLY__$',
     help: 'Is the GeoComply location app running on this PC, does Chrome allow theScore to use your location, and are you logged in to theScore?' }),
@@ -737,7 +850,7 @@ const jwtExp = (tok) => {
 // debugger (chrome.debugger), which Chrome treats as real mouse/keyboard input. While it runs
 // (a few seconds) Chrome shows a bar "EV Placer Bridge started debugging this browser"; it goes
 // away by itself. Off with config.json "session": {"gambitAutoLogin": false}.
-let settings = { gambitAutoLogin: true, fanduelGeoRenew: true, betriversGeoRenew: true, betmgmGeoRenew: true, thescoreGeoRenew: true, draftkingsPlaySpan: true };
+let settings = { gambitAutoLogin: true, fanduelGeoRenew: true, betriversGeoRenew: true, betmgmGeoRenew: true, betmgmGeoClick: true, thescoreGeoRenew: true, draftkingsPlaySpan: true };
 chrome.storage.local.get('settings').then((v) => { if (v?.settings) settings = { ...settings, ...v.settings }; }).catch(() => {});
 let lastLogin = null;          // { at, ok, why } for the popup
 let loginBusy = false;

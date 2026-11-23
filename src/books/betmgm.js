@@ -266,7 +266,7 @@ export function makeBetMGM(name, label, cfg, bridge) {
         // BetMGM's location check (run by its own page) had lapsed: nothing was placed. A reload of the
         // BetMGM tab makes the page run it again; the bet is checked again from the start next scan.
         bridge.tell?.({ type: 'mgmGeoRenew', why: 'a bet was refused with SessionTokenInvalid' });
-        const e = new Error('refused with SessionTokenInvalid: BetMGM\'s location check had lapsed, nothing was placed; renewing it now (the extension reloads the BetMGM tab), the bet is checked again next scan');
+        const e = new Error('refused with SessionTokenInvalid: BetMGM\'s location check had lapsed, nothing was placed; the extension renews it by clicking odds in the BetMGM tab; the bet is checked again next scan');
         e.detail = detail; e.notSent = true; e.geoRenewing = true;
         throw e;
       }
