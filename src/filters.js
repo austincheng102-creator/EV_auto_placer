@@ -3,7 +3,7 @@
 //  - EV cap: nothing above 25% EV (maxEvPct), it's usually a stale or wrong price
 //  - sharp books must agree: their no-vig win probabilities within 3 points of each other
 //    (Pinnacle, plus liquid Kalshi/Polymarket; FanDuel left out since 2026-11-19, sharp.spreadBooks)
-//  - Prediction markets (Kalshi, Polymarket, Novig) are sharp books (2026-11-23, sharp.predictionMarkets), but a
+//  - Prediction markets (Kalshi, Polymarket, Novig, ProphetX) are sharp books (2026-11-23, sharp.predictionMarkets), but a
 //    price only counts when its two sides add up to 103% or less and the thinner side has $500+ (Gambit's
 //    liquidity). Its fair is the lower of the mid and the size-weighted mid. If Kalshi and Polymarket both count,
 //    they must be within 2 points or neither counts. Ones that don't count are ignored everywhere: sharp rules,
@@ -27,7 +27,7 @@
 import { impliedProb } from './ev.js';
 
 // Gambit sportsbook ids. PS3838 is Pinnacle's feed. Polymarket has two listings.
-export const DEFAULT_SHARP_IDS = { pinnacle: 1014, kalshi: 194, polymarket: [193, 1011], novig: 192, fanduel: 100 };
+export const DEFAULT_SHARP_IDS = { pinnacle: 1014, kalshi: 194, polymarket: [193, 1011], novig: 192, prophetx: 191, fanduel: 100 };
 
 // Soft books the marketCheck median is taken over (Gambit ids). Prediction markets and exchanges
 // (Kalshi, Polymarket, Novig, ProphetX) aren't soft books and aren't in it.
@@ -53,7 +53,7 @@ export function applyFilterDefaults(cfg) {
   // Books never used as sharp, even if a list above names them (Austin, 2026-11-22: no Kalshi; 2026-11-23:
   // Kalshi back via predictionMarkets below).
   if (s.excludeBooks === undefined) s.excludeBooks = [];
-  // Prediction markets (Austin, 2026-11-23): Kalshi, Polymarket and Novig count as sharp books for mainlines.
+  // Prediction markets (Austin, 2026-11-23): Kalshi, Polymarket, Novig and ProphetX count as sharp books for mainlines.
   // A price is valid when its two sides' implied % add up to 100 + maxHoldPct (3) or less, i.e. a 3 cent
   // spread, and the thinner side has at least minLiquidity $ (500). Its fair for our side is the lower of
   // the mid and the size-weighted mid (not the 4 no-vig methods). agreeBooks (Kalshi, Polymarket): when both
@@ -63,7 +63,7 @@ export function applyFilterDefaults(cfg) {
   // that still say "excludeBooks": ["kalshi"] or list only Pinnacle get them too. enabled: false = off.
   const pm = (s.predictionMarkets ||= {});
   if (pm.enabled === undefined) pm.enabled = true;
-  if (pm.books === undefined) pm.books = ['kalshi', 'polymarket', 'novig'];
+  if (pm.books === undefined) pm.books = ['kalshi', 'polymarket', 'novig', 'prophetx'];
   if (pm.minLiquidity === undefined) pm.minLiquidity = 500;
   if (pm.maxHoldPct === undefined) pm.maxHoldPct = 3;
   if (pm.agreeBooks === undefined) pm.agreeBooks = ['kalshi', 'polymarket'];

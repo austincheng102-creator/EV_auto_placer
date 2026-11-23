@@ -652,7 +652,7 @@ async function tick() {
     propFunnel.tick();
   }
   const whyText = [
-    noSharpFair && `${noSharpFair} with no sharp price for the fair (Pinnacle, or a valid Kalshi/Polymarket/Novig price)`,
+    noSharpFair && `${noSharpFair} with no sharp price for the fair (Pinnacle, or a valid Kalshi/Polymarket/Novig/ProphetX price)`,
     why.noProps && `${why.noProps} props on a book with props off`,
     why.odds && `${why.odds} outside ${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)} to ${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)}`,
     why.evCap && `${why.evCap} above ${cfg.maxEvPct}% EV`,

@@ -66,6 +66,7 @@
         1011
       ],
       "novig": 192,
+      "prophetx": 191,
       "fanduel": 100
     },
     "excludeBooks": [],
@@ -74,7 +75,8 @@
       "books": [
         "kalshi",
         "polymarket",
-        "novig"
+        "novig",
+        "prophetx"
       ],
       "minLiquidity": 500,
       "maxHoldPct": 3,
