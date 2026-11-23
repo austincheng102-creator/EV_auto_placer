@@ -51,3 +51,18 @@ export const SPREAD_COLUMNS = ['time', 'book', 'live', 'league', 'event', 'marke
 export function makeSpreadSkipLog(dir, { dryRun = false } = {}) {
   return makeCsvLog(path.join(dir, dryRun ? 'sharp-skips.dry.csv' : 'sharp-skips.csv'), SPREAD_COLUMNS);
 }
+
+// Bet timing (bet-timing.csv): one line for each bet sent to a book, with where the seconds went.
+//  - foundBy: scan (Gambit poll) or fast (the 1s price check of the book's own prices)
+//  - findMs: Gambit poll (or fast price read) start -> the bet's price re-check starts
+//  - gambitMs / bookPricesMs: of findMs, the Gambit request and the wait for the books' own prices
+//  - checkMs: the book's price re-check; rulesMs: re-check answer -> bet sent (our rules)
+//  - answerMs: bet sent -> the book's answer (includes the book's own live bet delay)
+//  - bookDelaySec: the live bet delay the book says it holds bets for, if it says
+//  - retries / totalMs: price-moved re-tries, and poll start -> the last answer
+export const TIMING_COLUMNS = ['time', 'book', 'live', 'event', 'market', 'selection', 'line', 'odds', 'outcome', 'foundBy',
+  'findMs', 'gambitMs', 'bookPricesMs', 'checkMs', 'rulesMs', 'answerMs', 'bookDelaySec', 'retries', 'totalMs'];
+
+export function makeTimingLog(dir, { dryRun = false } = {}) {
+  return makeCsvLog(path.join(dir, dryRun ? 'bet-timing.dry.csv' : 'bet-timing.csv'), TIMING_COLUMNS);
+}

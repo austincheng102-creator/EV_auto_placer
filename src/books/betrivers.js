@@ -229,7 +229,15 @@ export function makeBetRivers(name, label, cfg, bridge) {
       const rows = [{ index: 0, odds: quote.kambiOdds, outcomeId: Number(row.bookRef), type: 'SIMPLE' }];
       const bets = [{ couponRowIndexes: [0], eachWay: false, stake: Math.round(stake * 1000) }];
 
-      // Same pre-check the bet slip does; also tells us if the BetRivers session is still valid.
+      // The slip's validate call is one more round trip through the BetRivers tab before the bet.
+      // The bet request itself is refused for the same reasons (price, login, location), so it's
+      // skipped unless "betrivers": {"validateFirst": true}.
+      if (cfg.betrivers?.validateFirst === true) await validate(rows, bets, quote);
+      return placeCoupon(row, rows, bets, quote);
+    },
+  };
+
+  async function validate(rows, bets, quote) {
       const v = await inTab('validate', `${k.authHost}/player/api/v2019/${k.offering}/coupon/validate.json?${qs()}`, 'POST',
         { couponRows: rows, bets, isUserLoggedIn: true });
       if (v.renewed && !v.renewError) log.bet('BetRivers: login token was stale, got a fresh one from the BetRivers tab');
@@ -240,7 +248,9 @@ export function makeBetRivers(name, label, cfg, bridge) {
         err.detail = `Kambi validate response (HTTP ${v.status}): ${JSON.stringify(v.json ?? v.text)}`;
         throw classify(err, v.json, quote, v);
       }
+  }
 
+  async function placeCoupon(row, rows, bets, quote) {
       const requestId = crypto.randomUUID();
       const res = await inTab('place', `${k.authHost}/player/api/v2019/${k.offering}/coupon.json?${qs()}`, 'POST', {
         couponRows: rows,
@@ -254,7 +264,9 @@ export function makeBetRivers(name, label, cfg, bridge) {
           stakeInputOption: 'stake', reward: {}, isMultiBuilder: false, isPrePackCombination: false, partnerSpecials: [],
         },
       });
+      if (res.renewed && !res.renewError) log.bet('BetRivers: login token was stale, got a fresh one from the BetRivers tab');
       const j = res.json || {};
+      if (res.status === 401 || j.validSession === false) throw new Error(`BetRivers didn't accept the login token, and getting a fresh one failed (${res.renewError || 'no reason given'}): reload the BetRivers tab and check you're logged in`);
       const ref = j.couponRef ?? j.coupon?.couponRef;
       if (!ref || !['SUCCESS', 'LIVE_DELAY_PENDING'].includes(j.status)) {
         const err = new Error(`rejected: ${j.status || `HTTP ${res.status}`} ${kambiWhy(j) || JSON.stringify(j.generalErrors || j.couponRowErrors || j.betErrors || j).slice(0, 200)}`);
@@ -265,6 +277,7 @@ export function makeBetRivers(name, label, cfg, bridge) {
 
       // Live bets wait out Kambi's delay; poll until accepted or rejected (max ~20s).
       if (j.status === 'LIVE_DELAY_PENDING') {
+        quote.betDelaySec = Number(j.delayBeforeAcceptingBet) || null;   // for the bet timing log
         await new Promise((r) => setTimeout(r, ((j.delayBeforeAcceptingBet || 1) * 1000) + 300));
         for (let i = 0; i < 20 && (!status || status === 'WAITING_FOR_APPROVAL'); i++) {
           const h = await inTab('status', `${k.authHost}/player/api/v2019/${k.offering}/coupon/history/${ref}.json?${qs('&liveDelayPoll=true')}`);
@@ -283,6 +296,5 @@ export function makeBetRivers(name, label, cfg, bridge) {
       const ko = Number(j.coupon?.couponRows?.[0]?.odds ?? j.coupon?.bets?.[0]?.odds);
       return { betId: `coupon:${ref}`, confirmedOdds: Number.isFinite(ko) && ko > 1000 ? decimalToAmerican(ko / 1000) : null,
         detail: `BetRivers coupon response: ${JSON.stringify(j)}` };
-    },
-  };
+  }
 }

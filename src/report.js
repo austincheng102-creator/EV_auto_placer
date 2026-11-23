@@ -162,7 +162,7 @@ select { font: inherit; font-size: 12px; background: var(--surface); color: var(
 .info { display: inline-block; margin-left: 6px; font-size: 12px; color: var(--text-3); }
 tr.hasodds { cursor: default; }
 tr.hasodds:hover td { background: var(--chip); }
-#oddsTip { position: fixed; z-index: 50; display: none; max-width: 340px; background: var(--surface); color: var(--text);
+#oddsTip { position: fixed; z-index: 50; display: none; max-width: 440px; background: var(--surface); color: var(--text);
   border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; font-size: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.18); pointer-events: none; }
 #oddsTip.on { display: block; }
 #oddsTip .tt { font-weight: 600; margin-bottom: 2px; }
@@ -173,6 +173,7 @@ tr.hasodds:hover td { background: var(--chip); }
 #oddsTip th.n, #oddsTip td.n { text-align: right; padding-right: 0; padding-left: 10px; }
 #oddsTip tr.mine td { font-weight: 700; }
 #oddsTip td.better { color: var(--good); font-weight: 600; }
+#oddsTip td.thin { color: var(--text-3); text-decoration: line-through; }
 #oddsTip .tf { margin-top: 8px; color: var(--text-2); }
 </style>
 </head>
@@ -637,20 +638,31 @@ if (LIVE) setInterval(async () => {
   const fmt = (o) => (o == null ? '?' : (o > 0 ? '+' : '') + o);
   function html(b) {
     const rows = String(b.otherBooks || '').split('; ').filter(Boolean).map((part) => {
-      const m = part.match(/^(.*) (\S+)\/(\S+)$/);
-      return m ? { name: m[1], ours: m[2], other: m[3] } : null;
+      // "Kalshi -112/-107 [$950/$420]": the [..] part is $ liquidity (our side/other side), prediction markets only.
+      const m = part.match(/^(.*?) (\S+)\/(\S+?)(?: \[\$(\S+)\/\$(\S+)\])?$/);
+      return m ? { name: m[1], ours: m[2], other: m[3], liq: m[4] != null ? [m[4], m[5]] : null } : null;
     }).filter(Boolean).filter((r, i, all) => all.findIndex((q) => q.name === r.name && q.ours === r.ours && q.other === r.other) === i);  // Gambit lists some books under several ids
     const mine = num(b.odds);
     let h = '<div class="tt">' + esc((b.event || '') + ': ' + (b.market || '') + ' ' + (b.selection || '') + (b.line != null ? ' ' + b.line : '')) + '</div>';
     h += '<div class="ts">Odds when placed. We got ' + esc(fmt(mine)) + ' on ' + esc(BOOKS[b.book] || b.book || '?') + '.</div>';
     if (rows.length) {
-      h += '<table><tr><th>Book</th><th class="n">Our side</th><th class="n">Other side</th></tr>';
-      h += '<tr class="mine"><td>' + esc(BOOKS[b.book] || b.book || 'Our book') + ' (bet)</td><td class="n">' + esc(fmt(mine)) + '</td><td class="n"></td></tr>';
+      const hasLiq = rows.some((r) => r.liq);
+      h += '<table><tr><th>Book</th><th class="n">Our side</th><th class="n">Other side</th>' + (hasLiq ? '<th class="n">Liquidity</th>' : '') + '</tr>';
+      h += '<tr class="mine"><td>' + esc(BOOKS[b.book] || b.book || 'Our book') + ' (bet)</td><td class="n">' + esc(fmt(mine)) + '</td><td class="n"></td>' + (hasLiq ? '<td class="n"></td>' : '') + '</tr>';
       for (const r of rows) {
         const o = num(r.ours);
         // Green: that book paid more on our side than we got.
         const better = mine != null && o != null && dec(o) > dec(mine) + 1e-9;
-        h += '<tr><td>' + esc(r.name) + '</td><td class="n' + (better ? ' better' : '') + '">' + esc(r.ours) + '</td><td class="n">' + esc(r.other) + '</td></tr>';
+        // Liquidity: $ on our side / other side. Crossed out = not counted as sharp: thinner side under $500,
+        // or the two sides add up to more than 103% (a spread over 3 cents).
+        let lq = '';
+        if (hasLiq) {
+          const imp = (x) => { const n = num(x); return n == null ? null : 1 / dec(n); };
+          const pq = imp(r.ours) != null && imp(r.other) != null ? imp(r.ours) + imp(r.other) : null;
+          const thin = r.liq && (!(Math.min(Number(r.liq[0]), Number(r.liq[1])) >= 500) || pq == null || pq > 1.03 + 1e-9);
+          lq = '<td class="n' + (thin ? ' thin' : '') + '"' + (thin ? ' title="Not used as a sharp price: under $500 on the thinner side, or spread over 3 cents"' : '') + '>' + (r.liq ? esc('$' + r.liq[0] + ' / $' + r.liq[1]) : '') + '</td>';
+        }
+        h += '<tr><td>' + esc(r.name) + '</td><td class="n' + (better ? ' better' : '') + '">' + esc(r.ours) + '</td><td class="n">' + esc(r.other) + '</td>' + lq + '</tr>';
       }
       h += '</table>';
     } else h += '<div class="ts">No other books were saved for this bet.</div>';

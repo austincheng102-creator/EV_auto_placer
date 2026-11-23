@@ -118,7 +118,10 @@ setting in `config.json`; one that isn't there gets the default below, and `null
 | Hard Rock: skip when its price changed under 3s before the scan and shows 3+ points more EV than Gambit's copy (the game likely moved before the sharp prices caught up) | 3s, 3 pts | `"freshJump": {"books", "sec", "evPts"}`, `false` turns it off |
 | Bets at +201 to +250 need 12% EV (everything else `minEvPct`) | 12% | `"minEvByOdds": [{"from": 201, "to": 250, "minEvPct": 12}]` |
 | Soft-book check: the price is above 0% EV against the no-vig price of at least 2 of DraftKings, Caesars, FanDuel. A book that doesn't list both sides doesn't count; fewer than 2 priced = skip. The book being bet isn't checked against itself (a FanDuel bet needs DraftKings and Caesars) | 2 of 3, >0% | `"softCheck": {"enabled", "books", "minBooks", "minEvPct", "skipOwnBook"}` |
-| Kalshi is not a sharp book: taken out of every sharp list below, even if config.json names it | kalshi | `"sharp": {"excludeBooks"}` |
+| Pinnacle vs the market: skip when Pinnacle's no-vig win % for our side is more than 3 points above the median no-vig % of the soft books on the row (DraftKings, FanDuel, Caesars, BetMGM, theScore, Hard Rock, BetRivers/Kambi, BetParx, Fliff, bet365, Bovada, BetOnline; each needs both sides; the book being bet is left out, and Kambi too for BetRivers). Needs 3+ soft books priced, otherwise it passes. Live and pre-game +EV rows on every book; Arb-table rows skip it (`"arb": true` adds them). Each skip is logged with both numbers | 3 pts, 3 books | `"marketCheck": {"enabled", "maxPts", "minBooks", "books", "ownAlso", "arb"}` |
+| Prediction markets (Kalshi, Polymarket, Novig, ProphetX) are sharp books. A price counts only when its two sides add up to 103% or less (3 cent spread) and the thinner side has $500+ (Gambit's liquidity number). Its fair is the lower of the mid ((ours + 100 - other) / 2) and the size-weighted mid. If Kalshi and Polymarket both count they must be within 2 points, or neither counts. Ones that don't count are ignored by every sharp rule, the live timing rule and the fair price. They're added to the 3-point rule and the live mainline list even if config.json lists only Pinnacle | on, $500, 3c, 2 pts | `"sharp": {"predictionMarkets": {"enabled", "books", "minLiquidity", "maxHoldPct", "agreeBooks", "agreePts", "inFair"}}` |
+| Fair price (+EV table): the lowest of Pinnacle's no-vig win % and each counted prediction market's fair (FanDuel too on props). Rows where Gambit's fair came from its "market" blend are recomputed from those books (the blend can hold thin prices); with none priced the row is skipped. Arb-table rows keep their own fair | on | `"sharp": {"predictionMarkets": {"inFair"}}` |
+| Books never used as sharp, even if a list names them | none | `"sharp": {"excludeBooks"}` |
 | Sharp books' no-vig win probabilities within 3 points of each other (Pinnacle, Polymarket, Novig; not FanDuel) | 3 | `"sharp": {"maxSpreadPts", "spreadBooks"}` |
 | Live mainlines need Pinnacle, Polymarket or Novig listed | | `"sharp": {"liveMainlineNeeds"}` |
 | Live player props need FanDuel listed | | `"sharp": {"livePropNeeds"}` |
@@ -194,6 +197,25 @@ all the rules above), and nothing is placed at a price that didn't pass.
   checked at the book first). FanDuel CO game lookups run in the background and are remembered
   for 10 minutes (a game not found is tried again after 60s). If a scan takes much longer than
   `pollSeconds`, a warning says how long Gambit and the book reads took.
+- **Fast price check between Gambit polls.** Every `fastPrices.everySec` (default 1) seconds the
+  app reads each book's own prices again for the selections from the last scan that are within
+  `fastPrices.marginPts` (default 3) points of min EV and still pass the rules that don't depend on
+  the price (up to `fastPrices.max`, default 20, per book). One that now clears min EV goes through
+  every rule and the book's price re-check, exactly like a bet found by a scan, and the screen says
+  "Fast price check". The fair price is still the last Gambit poll's. Any book with direct prices
+  (BetRivers, Hard Rock, FanDuel, and books added later) takes part. `"fastPrices": {"everySec": 0}`
+  turns it off.
+- **Quicker re-checks:** FanDuel's market read and slip check go out together (one round trip
+  instead of two); BetRivers sends the bet without the slip's separate validate call first (the bet
+  is refused for the same reasons; `"betrivers": {"validateFirst": true}` puts it back); Hard Rock
+  reuses a selection's max stake from the last `hardrock.stakeCheckCacheSec` (default 300) seconds
+  when its live feed has the price (`0` = check every time). Price changes are still never accepted
+  without a check.
+- **Bet timing:** for each bet sent to a book, a `timing:` line on screen and a line in
+  `bet-timing.csv` say where the seconds went: Gambit poll, waiting for book prices, the re-check,
+  our rules, and how long the book took to answer (with the book's own live bet delay when it says,
+  FanDuel and BetRivers). Book delays are the book holding a live bet before it re-prices it; the
+  app can't shorten those.
 - `prices.csv` next to the app gets a line for each check: Gambit's price, how long Gambit had shown
   it, the book's real price and EV, how long ago BetRivers last changed that price, and what happened. This shows how far behind Gambit is.
 - `sharp-skips.csv` next to the app gets a line for each bet skipped by the sharp-books rule

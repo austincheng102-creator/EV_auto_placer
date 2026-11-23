@@ -39,11 +39,17 @@ export const GAMBIT_BOOK_NAMES = {
 };
 const SHARP_FIRST = [1014, 194, 193, 1011, 192, 100];
 const am = (o) => (Number.isFinite(o) ? fmtAmerican(o) : '?');
-/** "Pinnacle -120/+100; Kalshi -125/+105; ..." = each book's price on our side / the other side. */
+const usd = (v) => (Number.isFinite(v) ? `$${Math.round(v)}` : '$?');
+/** "Pinnacle -120/+100; Kalshi -125/+105 [$950/$420]; ..." = each book's price on our side / the other side.
+ *  [..] = Gambit's $ liquidity on our side / the other side, for books that show one (prediction markets). */
 export function otherBooksText(prices, ownId) {
   const ids = Object.keys(prices || {}).map(Number).filter((id) => id !== Number(ownId));
   ids.sort((a, b) => ((SHARP_FIRST.indexOf(a) + 1 || 99) - (SHARP_FIRST.indexOf(b) + 1 || 99)) || a - b);
-  return ids.map((id) => `${GAMBIT_BOOK_NAMES[id] || `book ${id}`} ${am(prices[id].odds)}/${am(prices[id].oppOdds)}`).join('; ') || null;
+  return ids.map((id) => {
+    const pr = prices[id];
+    const liq = pr.liq > 0 || pr.oppLiq > 0 ? ` [${usd(pr.liq)}/${usd(pr.oppLiq)}]` : '';
+    return `${GAMBIT_BOOK_NAMES[id] || `book ${id}`} ${am(pr.odds)}/${am(pr.oppOdds)}${liq}`;
+  }).join('; ') || null;
 }
 
 const LIVE_UNSEEN_MS = 15 * 60 * 1000;      // live bet gone from Gambit this long -> close it
@@ -58,7 +64,7 @@ const COLUMNS = [
   ['oddsMatch', 'confirmed = sent'], ['fairOdds', 'fair odds used (lowest method)'],
   ['fairPower', 'fair Power'], ['fairMultiplicative', 'fair Multiplicative'], ['fairAdditive', 'fair Additive'], ['fairShin', 'fair Shin'],
   ['fairBooks', 'books behind fair'], ['fairSource', 'fair source'],
-  ['otherBooks', "other books' odds (our side/other side)"], ['sharpNoVig', 'sharp books no-vig win % (arb: reference books)'], ['sharpSpreadPts', 'sharp spread pts (arb: reference books)'],
+  ['otherBooks', "other books' odds (our side/other side) [$ liquidity our side/other side]"], ['sharpNoVig', 'sharp books no-vig win % (arb: reference books)'], ['sharpSpreadPts', 'sharp spread pts (arb: reference books)'],
   ['gambitEv', 'EV at Gambit price %'], ['ev', 'EV at placed price %'],
   ['novigOdds', 'Novig odds'], ['novigOppOdds', 'Novig other side'], ['novigEv', 'Novig EV %'],
   ['stake', 'stake $'], ['maxStake', 'book max stake $'],
