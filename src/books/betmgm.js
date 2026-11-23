@@ -288,8 +288,11 @@ export function makeBetMGM(name, label, cfg, bridge) {
         throw e;
       }
       const why = [...new Set(types)].join(', ') || bmWhy(j) || `HTTP ${res.status}`;
-      const err = new Error(`rejected: ${why}`);
-      err.detail = detail;
+      const err = new Error(`rejected: ${why}${types.length ? '' : ` (${hit.v1 ? 'older' : 'newer'} BetMGM market, fixture ${fx.id})`}`);
+      // An error with no reasons (Austin 2026-11-23: "HTTP 500" with an empty {} answer): keep the raw
+      // text, any network error and the request we sent, so the cause can be found.
+      err.detail = Object.keys(j).length ? detail
+        : `BetMGM place: HTTP ${res.status}${res.error ? `, ${res.error}` : ''}, answer ${JSON.stringify(String(res.text ?? '').slice(0, 1500))}; we sent ${JSON.stringify(body).slice(0, 2500)}`;
       const moved = errs.find((e) => /OddsChanged|PriceChanged/i.test(String(e?.type)));
       if (moved || (/odds|price/i.test(why) && /chang|moved|differ|new/i.test(why))) {
         err.priceMoved = true;

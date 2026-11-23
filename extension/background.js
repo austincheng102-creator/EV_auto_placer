@@ -753,7 +753,20 @@ async function mgmClickRenew(tabId, label, since, waitFresh) {
   dbgBusy.add(tabId);
   try {
     let p = await mgmPickIn(tabId, 'find');
-    if (!p.found) return { ok: false, why: `no odds buttons visible in the ${label} tab (open the ${label} home page or any game there)` };
+    // A page with no odds (a finished game's page, My Bets...; Austin 2026-11-23: the tab was left on a
+    // game that had ended): go to BetMGM's sports home page, which always lists odds, and look again.
+    let moved = '';
+    if (!p.found) {
+      const tb = await chrome.tabs.get(tabId).catch(() => null);
+      const home = tb?.url ? `${new URL(tb.url).origin}/en/sports` : null;
+      if (home) {
+        await chrome.tabs.update(tabId, { url: home }).catch(() => {});
+        for (let i = 0; i < 40; i++) { await sleep(500); const t2 = await chrome.tabs.get(tabId).catch(() => null); if (t2?.status === 'complete' && i > 3) break; }
+        for (let i = 0; i < 10 && !p.found; i++) { await sleep(1000); p = await mgmPickIn(tabId, 'find'); }
+        moved = ' (the tab had no odds on it, so it was moved to the BetMGM sports home page first)';
+      }
+    }
+    if (!p.found) return { ok: false, why: `no odds buttons visible in the ${label} tab${moved ? ', even on the BetMGM sports home page' : ''} (open the ${label} home page or any game there)` };
     text = p.text || '';
     await new Promise((res, rej) => chrome.debugger.attach(target, '1.3', () => (chrome.runtime.lastError ? rej(new Error(chrome.runtime.lastError.message)) : res())));
     attached = true;
@@ -815,7 +828,7 @@ async function mgmClickRenew(tabId, label, since, waitFresh) {
       await sleep(800);
     }
     const left = added && !removed ? ` The pick "${text}" may still be on the ${label} bet slip: remove it there.` : '';
-    return { ok: fr, why: `clicked "${text}" in the ${label} tab${fronted ? ' (again with the tab in front)' : ''}${cont ? `, pressed Continue on BetMGM's "Location And Privacy" popup${cont > 1 ? ` ${cont} times` : ''}` : ''}${added ? '' : ` (the button didn't show as picked; before the click: ${diag}; after: ${after || 'gone'})`}${left}` };
+    return { ok: fr, why: `clicked "${text}" in the ${label} tab${moved}${fronted ? ' (again with the tab in front)' : ''}${cont ? `, pressed Continue on BetMGM's "Location And Privacy" popup${cont > 1 ? ` ${cont} times` : ''}` : ''}${added ? '' : ` (the button didn't show as picked; before the click: ${diag}; after: ${after || 'gone'})`}${left}` };
   } catch (e) {
     const m = String(e?.message || e);
     return { ok: false, why: m.includes('Another debugger') ? `Chrome DevTools is open on the ${label} tab: close it` : `clicking odds failed: ${m}` };
