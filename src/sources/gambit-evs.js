@@ -129,8 +129,9 @@ export function evsToRows(json, g = {}, fairOut = null, { shadow = [] } = {}) {
       // Every book's price for this selection (odds) and the other side (oppOdds), by Gambit id.
       // Used by the sharp-book rules in filters.js.
       const prices = {};
-      for (const c of b.comparableBets || []) if (prices[c.sportsbook_id]?.odds == null) (prices[c.sportsbook_id] ||= {}).odds = Number(c.odds);
-      for (const c of b.opposingBets || []) if (prices[c.sportsbook_id]?.oppOdds == null) (prices[c.sportsbook_id] ||= {}).oppOdds = Number(c.odds);
+      // liq/oppLiq: Gambit's $ liquidity behind each side (prediction markets only; 0 for sportsbooks).
+      for (const c of b.comparableBets || []) if (prices[c.sportsbook_id]?.odds == null) Object.assign(prices[c.sportsbook_id] ||= {}, { odds: Number(c.odds), liq: c.liquidity == null ? null : Number(c.liquidity) });
+      for (const c of b.opposingBets || []) if (prices[c.sportsbook_id]?.oppOdds == null) Object.assign(prices[c.sportsbook_id] ||= {}, { oppOdds: Number(c.odds), oppLiq: c.liquidity == null ? null : Number(c.liquidity) });
       const base = {
         event: ev.event_name, league: ev.league, isLive: !!ev.isLive, startDate: ev.startDate,
         market: prettyMarket(op.marketName), marketKey: op.marketName, selection, line,

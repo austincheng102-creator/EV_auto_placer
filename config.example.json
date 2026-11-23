@@ -68,9 +68,16 @@
       "novig": 192,
       "fanduel": 100
     },
-    "excludeBooks": [
-      "kalshi"
-    ],
+    "excludeBooks": [],
+    "predictionMarkets": {
+      "enabled": true,
+      "books": [
+        "kalshi",
+        "polymarket"
+      ],
+      "minLiquidity": 500,
+      "inFair": true
+    },
     "pregamePropNeeds": [
       "fanduel"
     ]
@@ -131,6 +138,11 @@
     "minBooks": 2,
     "minEvPct": 0,
     "skipOwnBook": true
+  },
+  "marketCheck": {
+    "enabled": true,
+    "maxPts": 3,
+    "minBooks": 3
   },
   "minEvByOdds": [
     {
