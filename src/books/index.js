@@ -3,19 +3,21 @@ import { makeSimBook } from './sim.js';
 import { makeBetRivers } from './betrivers.js';
 import { makeHardRock } from './hardrock.js';
 import { makeFanDuel } from './fanduel.js';
+import { makeBetMGM } from './betmgm.js';
 
 /** Books that skip player props unless config "<book>": {"props": true}. FanDuel is the live-prop
  *  sharp reference, so a FanDuel prop would be checked against itself (Austin, 2026-11-21). */
 export const NO_PROPS_DEFAULT = ['fanduel'];
 export const propsOff = (cfg, book) => (cfg[book]?.props ?? !NO_PROPS_DEFAULT.includes(book)) === false;
 
-export const BOOK_LABELS = { betrivers: 'BetRivers', fanduel: 'FanDuel', hardrock: 'Hard Rock Bet' };
+export const BOOK_LABELS = { betrivers: 'BetRivers', fanduel: 'FanDuel', hardrock: 'Hard Rock Bet', betmgm: 'BetMGM' };
 
 // Names people might type for each book (--book "hard rock", hrb, ...).
 const ALIASES = {
   betrivers: 'betrivers', rivers: 'betrivers', br: 'betrivers',
   hardrock: 'hardrock', hardrockbet: 'hardrock', hrb: 'hardrock', hr: 'hardrock',
   fanduel: 'fanduel', fd: 'fanduel',
+  betmgm: 'betmgm', mgm: 'betmgm',
 };
 
 /** "BetRivers, Hard Rock" -> ['betrivers', 'hardrock']. Throws on a name we don't know. */
@@ -39,6 +41,7 @@ export function makeBooks(cfg, bridge, dryRun) {
     else if (name === 'betrivers') out[name] = makeBetRivers(name, label, cfg, bridge);       // built-in Kambi
     else if (name === 'hardrock') out[name] = makeHardRock(name, label, cfg, bridge);
     else if (name === 'fanduel') out[name] = makeFanDuel(name, label, cfg, bridge);
+    else if (name === 'betmgm') out[name] = makeBetMGM(name, label, cfg, bridge);
     else out[name] = makeTemplateBook(name, label, cfg[name], bridge);
   }
   return out;

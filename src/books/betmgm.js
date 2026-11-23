@@ -64,6 +64,26 @@ export function betDetails(hit) {
   ];
 }
 
+// One settled bet slip from My Bets > Settled as a result for results.json. payout is the total
+// return (stake + winnings; 0 for a loss), the same as for the other books.
+export function settledSlip(x) {
+  if (!x?.betSlipNumber || (x.bets || []).length !== 1) return null;
+  const st = String(x.state || '').toUpperCase();
+  const result = /CASH/.test(st) || x.isEarlyPayout ? 'cashout'
+    : /HALF/.test(st) ? (/WON|WIN/.test(st) ? 'half-won' : 'half-lost')
+    : /WON|WIN/.test(st) ? 'won' : /LOST|LOSE/.test(st) ? 'lost'
+    : /PUSH|TIE|DRAW/.test(st) ? 'push' : /VOID|CANCEL|REFUND/.test(st) ? 'void' : null;
+  if (!result) return null;
+  const am = Number(x.totalOdds?.american ?? x.bets[0]?.odds?.american);
+  return {
+    betId: String(x.betSlipNumber), result, status: st,
+    payout: Math.round((Number(x.payout?.value) || 0) * 100) / 100,
+    stake: Number.isFinite(Number(x.stake?.value)) ? Number(x.stake.value) : null,
+    odds: Number.isFinite(am) && am !== 0 ? am : null,
+    settledAt: null, placedAt: x.conclusionDateUtc || null,
+  };
+}
+
 const uuid = () => (globalThis.crypto?.randomUUID?.() || 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
   const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16);
 }));
@@ -119,8 +139,15 @@ export function makeBetMGM(name, label, cfg, bridge) {
       if (!hit) return { odds: null, line: row.line, suspended: true };
       const odds = bmAmerican(hit.option.price);
       const visible = (s) => !s || /^visible$/i.test(String(s));
-      const line = (() => { const n = Number(hit.market.attr ?? (hit.market.parameters || []).find((p) => p.key === 'DecimalValue')?.value);
-        return Number.isFinite(n) && row.line != null ? (Math.abs(n) === Math.abs(row.line) ? row.line : n) : row.line; })();
+      // BetMGM's main spread/total markets are "rolling lines": the same market and option can
+      // move to a new line. So read the line now (from the option's name, "Over 45",
+      // "Minnesota Vikings +7.5", else the market's) and let the engine skip a line that moved.
+      const line = (() => {
+        if (row.line == null) return row.line;
+        const inName = String(hit.option.name?.value || '').match(/[+-]?\d+(?:\.\d+)?(?!.*\d)/);
+        const n = Number(inName ? inName[0] : hit.market.attr ?? (hit.market.parameters || []).find((p) => /^Decimal(Value|Handicap)$/.test(p.key))?.value);
+        return Number.isFinite(n) ? (Math.abs(n) === Math.abs(row.line) ? row.line : n) : row.line;
+      })();
       return { odds, line, suspended: !visible(hit.option.status) || !visible(hit.market.status) || !hit.option.price,
         pick: hit, maxStake: null };
     },
@@ -157,8 +184,21 @@ export function makeBetMGM(name, label, cfg, bridge) {
         betContextualDetails: [], betContextualDetailsV2: { requestId, slips: [] },
       };
       const res = await send('place', `${origin}/en/sports/api/placebet/place`, 'POST', JSON.stringify(body), { 'x-xsrf-token': XSRF }, 45000);
-      const j = res.json || {};
+      let j = res.json || {};
       if (authFail(res)) throw new Error(loginMsg);
+      // Live bets: BetMGM answers {"status":"Pending","pendingStatus":{"delay":<ms>}} and the
+      // site then asks querystatus?requestId= for the outcome (about 3s for a live NFL bet).
+      for (let i = 0; i < 20 && /^pending$/i.test(String(j.status)); i++) {
+        const wait = Math.min(15000, Math.max(500, Number(j.pendingStatus?.delay) || 1500));
+        await new Promise((r) => setTimeout(r, wait));
+        const q = await send('status', `${origin}/en/sports/api/placebet/querystatus?requestId=${requestId}`, 'GET', null, {}, 20000);
+        if (authFail(q)) throw new Error(loginMsg);
+        if (q.json) j = q.json;
+      }
+      if (/^pending$/i.test(String(j.status))) {
+        // Never got an answer: it may still go through, so record it (never bet twice) and say so.
+        return { betId: `betmgm:pending-${requestId}`, confirmedOdds: null, detail: `BetMGM still pending after waiting: ${JSON.stringify(j)}` };
+      }
       const slip = (j.betslips || [])[0];
       const ok = slip?.succeeded;
       if (/^success/i.test(String(j.status)) && ok?.betNumber) {
@@ -166,16 +206,31 @@ export function makeBetMGM(name, label, cfg, bridge) {
         return { betId: `betmgm:${ok.betNumber}`, confirmedOdds: Number.isFinite(am) && am !== 0 ? am : null,
           detail: `BetMGM place response: ${JSON.stringify(j)}` };
       }
-      // Still being reviewed (live bets can wait a few seconds): record it so it's never bet twice.
-      if (slip && /pending|delay|wait|accepted/i.test(String(slip.status)) && (slip.betNumber || slip.pending?.betNumber)) {
-        return { betId: `betmgm:${slip.betNumber || slip.pending.betNumber} (${slip.status})`, confirmedOdds: null, detail: `BetMGM place response: ${JSON.stringify(j)}` };
-      }
       const why = bmWhy(j) || `HTTP ${res.status}`;
       const err = new Error(`rejected: ${why}`);
       err.detail = `BetMGM place response: ${JSON.stringify(j || res.text)}`;
       if (/odds|price/i.test(why) && /chang|moved|differ|new/i.test(why)) err.priceMoved = true;
       else if (/suspend|closed|unavailable|not.?(found|available|offered)|visible/i.test(why)) err.gone = true;
       throw err;
+    },
+
+    // Settled bets placed since `from` (ms), from the same list as My Bets > Settled (newest
+    // first, read a page at a time). Read-only, so it works while the extension is disarmed.
+    async settled(from) {
+      const out = [];
+      const per = b.settledPageSize || 50;
+      for (let page = 1; page <= 20; page++) {
+        const res = await send('history', `${origin}/en/sports/api/mybets/betslips`, 'POST',
+          JSON.stringify({ index: page, maxItems: per, typeFilter: 'Settled', eventIds: [], useGroupedView: true, paging: { count: per, lastBetByBettingPlatformInstanceIds: {} } }),
+          { 'x-xsrf-token': XSRF }, 30000);
+        if (authFail(res)) throw new Error(loginMsg);
+        const list = res.json?.betslips;
+        if (res.status >= 400 || !Array.isArray(list)) throw new Error(`settled bets HTTP ${res.status}: ${String(JSON.stringify(res.json) || res.text || '').slice(0, 200)}`);
+        for (const x of list) { const r = settledSlip(x); if (r) out.push(r); }
+        const oldest = Math.min(...list.map((x) => Date.parse(x.conclusionDateUtc)).filter(Number.isFinite));
+        if (list.length < per || (Number.isFinite(oldest) && oldest < from)) break;
+      }
+      return out;
     },
 
     // Once a minute (session.js): the balance (read-only, the site reads it all the time) tells us

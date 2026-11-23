@@ -78,7 +78,7 @@ const PAGE = String.raw`<!doctype html>
   color-scheme: light;
   --bg: #f6f6f4; --surface: #fcfcfb; --border: #e4e3de; --grid: #ecebe7;
   --text: #0b0b0b; --text-2: #52514e; --text-3: #7a7974;
-  --hardrock: #2a78d6; --betrivers: #eb6834; --fanduel: #0f9488; --other: #6250d6; --all: #0b0b0b;
+  --hardrock: #2a78d6; --betrivers: #eb6834; --fanduel: #0f9488; --betmgm: #a8811c; --other: #6250d6; --all: #0b0b0b;
   --good: #0a7d3b; --bad: #c4322f; --chip: #efeee9;
 }
 @media (prefers-color-scheme: dark) {
@@ -86,7 +86,7 @@ const PAGE = String.raw`<!doctype html>
     color-scheme: dark;
     --bg: #121211; --surface: #1a1a19; --border: #2d2d2b; --grid: #262624;
     --text: #f0efec; --text-2: #c3c2b7; --text-3: #8f8e86;
-    --hardrock: #3987e5; --betrivers: #d95926; --fanduel: #2bb7a9; --other: #9085e9; --all: #f0efec;
+    --hardrock: #3987e5; --betrivers: #d95926; --fanduel: #2bb7a9; --betmgm: #d1a63a; --other: #9085e9; --all: #f0efec;
     --good: #3fbf6f; --bad: #e66767; --chip: #252523;
   }
 }
@@ -94,7 +94,7 @@ const PAGE = String.raw`<!doctype html>
   color-scheme: dark;
   --bg: #121211; --surface: #1a1a19; --border: #2d2d2b; --grid: #262624;
   --text: #f0efec; --text-2: #c3c2b7; --text-3: #8f8e86;
-  --hardrock: #3987e5; --betrivers: #d95926; --fanduel: #2bb7a9; --other: #9085e9; --all: #f0efec;
+  --hardrock: #3987e5; --betrivers: #d95926; --fanduel: #2bb7a9; --betmgm: #d1a63a; --other: #9085e9; --all: #f0efec;
   --good: #3fbf6f; --bad: #e66767; --chip: #252523;
 }
 * { box-sizing: border-box; }
@@ -234,7 +234,7 @@ const srcOf = (b) => b.source === 'arb' ? 'arb' : 'ev';
 state.day = null; state.month = null;
 
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
-const colorOf = (b) => b === 'all' ? 'var(--all)' : b === 'hardrock' ? 'var(--hardrock)' : b === 'betrivers' ? 'var(--betrivers)' : b === 'fanduel' ? 'var(--fanduel)' : 'var(--other)';
+const colorOf = (b) => b === 'all' ? 'var(--all)' : b === 'hardrock' ? 'var(--hardrock)' : b === 'betrivers' ? 'var(--betrivers)' : b === 'fanduel' ? 'var(--fanduel)' : b === 'betmgm' ? 'var(--betmgm)' : 'var(--other)';
 const label = (b) => b === 'all' ? 'All books' : (DATA.books[b] || b);
 const money = (x, sign) => x == null ? '—' : (sign && x > 0 ? '+' : x < 0 ? '−' : '') + '$' + Math.abs(x).toFixed(2);
 const pct = (x) => x == null ? '—' : (x > 0 ? '+' : x < 0 ? '−' : '') + Math.abs(x).toFixed(1) + '%';
@@ -244,7 +244,7 @@ const dayKey = (t) => { const d = new Date(t); return d.getFullYear() + '-' + St
 const dayLabel = (k) => new Date(k + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 const when = (t) => new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
-function booksPresent() { return [...new Set(DATA.bets.map((b) => b.book))].sort((a, b) => ['hardrock', 'betrivers', 'fanduel'].indexOf(a) - ['hardrock', 'betrivers', 'fanduel'].indexOf(b) || a.localeCompare(b)); }
+function booksPresent() { return [...new Set(DATA.bets.map((b) => b.book))].sort((a, b) => ['hardrock', 'betrivers', 'fanduel', 'betmgm'].indexOf(a) - ['hardrock', 'betrivers', 'fanduel', 'betmgm'].indexOf(b) || a.localeCompare(b)); }
 // A picked day wins over the time range.
 function filtered(book = state.book, { day = state.day, range = !day, src = state.src } = {}) {
   const cut = !range || state.range === 'all' ? 0 : Date.now() - Number(state.range) * 864e5;
@@ -633,7 +633,7 @@ if (LIVE) setInterval(async () => {
   const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const num = (o) => { const n = Number(String(o).replace('+', '')); return Number.isFinite(n) ? n : null; };
   const dec = (o) => (o > 0 ? 1 + o / 100 : 1 + 100 / -o);
-  const BOOKS = { hardrock: 'Hard Rock', betrivers: 'BetRivers', fanduel: 'FanDuel' };
+  const BOOKS = { hardrock: 'Hard Rock', betrivers: 'BetRivers', fanduel: 'FanDuel', betmgm: 'BetMGM' };
   const fmt = (o) => (o == null ? '?' : (o > 0 ? '+' : '') + o);
   function html(b) {
     const rows = String(b.otherBooks || '').split('; ').filter(Boolean).map((part) => {

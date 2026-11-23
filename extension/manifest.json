@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "EV Placer Bridge",
-  "version": "0.7.9",
+  "version": "0.8.0",
   "description": "Runs bet re-check/place requests from the local EV placer inside your logged-in sportsbook tab.",
   "permissions": ["scripting", "tabs", "storage", "alarms", "webRequest", "notifications", "debugger"],
   "host_permissions": [
     "https://*.betrivers.ca/*", "https://*.betrivers.com/*",
     "https://*.fanduel.com/*", "https://*.fanduel.ca/*",
     "https://*.hardrock.bet/*", "https://*.hardrocksportsbook.com/*",
+    "https://*.betmgm.com/*",
     "https://*.gambitodds.com/*",
     "https://*.kambicdn.org/*", "https://*.kambicdn.com/*"
   ],

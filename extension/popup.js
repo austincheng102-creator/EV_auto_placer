@@ -27,6 +27,7 @@ async function render() {
   const last = s.fanduelGeoLast && !s.fanduelGeoLast.ok ? ` (last renewal didn't work: ${s.fanduelGeoLast.why})` : '';
   $('fdgeo').textContent = (gl == null ? 'not seen yet (renewing automatically)' : gl > 0 ? `good for ${gl} min (renewed automatically)` : 'ran out (renewing automatically)') + last;
   $('fdgeo').className = gl > 0 ? 'on' : 'off';
+  $('bm').textContent = s.betmgmLogin ? 'seen' : 'not yet (refresh the BetMGM tab)'; $('bm').className = s.betmgmLogin ? 'on' : 'off';
   $('armed').textContent = armed ? 'ARMED' : 'disarmed (re-checks only)'; $('armed').className = armed ? 'on' : 'off';
   $('toggle').textContent = armed ? 'Disarm' : 'Arm (allow real bets)';
 }

@@ -4,11 +4,13 @@
 //     selection, selection_line, points, player_name, comparableBets[], opposingBets[] } } ] } ] }
 import { americanToDecimal, decimalToAmerican } from '../ev.js';
 import { fairKey } from '../betlog.js';
+import { betmgmRef } from '../books/betmgm.js';
 
 // Gambit sportsbook ids -> our book names.
 // Hard Rock: Gambit lists it as 850, 851, 1008 and 1016. 851 is Colorado (its bets were accepted
 // in CO; 850/1008 came back UNAVAILABLE), so that's the default.
-export const DEFAULT_BOOK_IDS = { betrivers: 1004, fanduel: 100, hardrock: 851 };
+// BetMGM: Gambit has 400 (BetMGM) and 1001 (BetMGM MI); 400 is the default.
+export const DEFAULT_BOOK_IDS = { betrivers: 1004, fanduel: 100, hardrock: 851, betmgm: 400 };
 // Books whose Gambit id we don't know yet: found from their bet links' web address
 // (gambit.bookIds in config.json overrides this).
 // Gambit's Hard Rock links may be app redirect links (AppsFlyer, ...deep_link_value=betslip/<id>),
@@ -73,6 +75,12 @@ function hardrockRef(link) {
   return m ? { bookRef: m[1] } : {};
 }
 
+/** BetMGM link: fixture, market and option ids (bookRef = option id, so rows can be told apart). */
+function betmgmRefs(link) {
+  const r = betmgmRef(link);
+  return r.optionId ? { ...r, bookRef: r.optionId } : {};
+}
+
 /**
  * Fair win probability from Gambit's de-vig methods. "worst" (default) takes the lowest,
  * so a bet only counts as +EV if every method agrees; or name one: Power, Multiplicative,
@@ -110,7 +118,7 @@ export function evsToRows(json, g = {}, fairOut = null, { shadow = [] } = {}) {
       if (p == null || p >= 1) continue;
       const own = (b.comparableBets || []).find((c) => c.sportsbook_id === b.sportsbook_id);
       const link = own?.desktop_link || own?.mobile_link || '';
-      const refs = book === 'betrivers' ? kambiRef(link) : book === 'fanduel' ? fanduelRef(link) : book === 'hardrock' ? hardrockRef(link) : {};
+      const refs = book === 'betrivers' ? kambiRef(link) : book === 'fanduel' ? fanduelRef(link) : book === 'hardrock' ? hardrockRef(link) : book === 'betmgm' ? betmgmRefs(link) : {};
       const novig = (b.comparableBets || []).find((c) => c.sportsbook_id === NOVIG_ID);
       const novigOpp = (b.opposingBets || []).find((c) => c.sportsbook_id === NOVIG_ID);
       const isTotal = /total|PLAYER_PROP/i.test(op.marketName);
@@ -149,7 +157,7 @@ export function evsToRows(json, g = {}, fairOut = null, { shadow = [] } = {}) {
         const sb = shadowIds.get(c.sportsbook_id);
         if (!sb || sb === book || !Number.isFinite(Number(c.odds))) continue;
         const l = c.desktop_link || c.mobile_link || '';
-        const r = sb === 'betrivers' ? kambiRef(l) : sb === 'hardrock' ? hardrockRef(l) : {};
+        const r = sb === 'betrivers' ? kambiRef(l) : sb === 'hardrock' ? hardrockRef(l) : sb === 'betmgm' ? betmgmRefs(l) : {};
         if (!r.bookRef) continue;
         const odds = Number(c.odds);
         shadows.push({ ...base, id: `${sb}:${r.bookRef}`, book: sb, gambitBookId: c.sportsbook_id, shadow: true,
@@ -167,7 +175,7 @@ export function evsToRows(json, g = {}, fairOut = null, { shadow = [] } = {}) {
 export function rowParts(ev, op, b, book) {
   const own = (b.comparableBets || []).find((c) => c.sportsbook_id === b.sportsbook_id);
   const link = b.desktop_link || b.mobile_link || own?.desktop_link || own?.mobile_link || '';
-  const refs = book === 'betrivers' ? kambiRef(link) : book === 'fanduel' ? fanduelRef(link) : book === 'hardrock' ? hardrockRef(link) : {};
+  const refs = book === 'betrivers' ? kambiRef(link) : book === 'fanduel' ? fanduelRef(link) : book === 'hardrock' ? hardrockRef(link) : book === 'betmgm' ? betmgmRefs(link) : {};
   const isTotal = /total|PLAYER_PROP/i.test(op.marketName);
   const side = cap(b.selection_line || (isTotal ? b.selection : ''));
   const selection = b.player_name ? `${b.player_name} ${side}`.trim() : isTotal ? side : b.selection;

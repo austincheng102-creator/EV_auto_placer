@@ -37,12 +37,12 @@ ev-placer --book hardrock   bet Hard Rock this run (or betrivers)
 ev-placer --help     all options (--min-ev 12, --books betrivers,hardrock, --config other.json)
 ```
 
-## Picking the book (BetRivers, Hard Rock Bet or FanDuel)
+## Picking the book (BetRivers, Hard Rock Bet, FanDuel or BetMGM)
 One app runs either book; the Gambit feed, Novig check, EV math and limits are shared.
 - Double-click **Start BetRivers** or **Start Hard Rock** to bet that book for the day.
   **Start EV Placer** uses `"books"` from `config.json`.
 - Set `"books": "ask"` in `config.json` to be asked which book each time it starts.
-- From a terminal: `ev-placer --book hardrock`, or `--books betrivers,hardrock,fanduel` for several at once.
+- From a terminal: `ev-placer --book hardrock`, or `--books betrivers,hardrock,fanduel,betmgm` for several at once.
   In `config.json`: `"books": ["betrivers", "hardrock", "fanduel"]`.
 - `state.json` and the daily stake limit are shared across books.
 
@@ -88,6 +88,19 @@ One app runs either book; the Gambit feed, Novig check, EV math and limits are s
   (GeoComply) is running. After the extension updates, **reload the FanDuel tab once**.
   The popup shows "FanDuel login: seen (good for N min)".
 - Daily stake limit, groups and once-per-book rules cover FanDuel like the other books.
+
+**BetMGM (Colorado, www.co.betmgm.com)** is wired from recordings of real $0.10 pre-game and live bets:
+- Gambit id 400 (`"gambit": {"bookIds": {"betmgm": ...}}` changes it). The bet is found from the
+  fixture, market and option ids in Gambit's BetMGM link.
+- **Price re-check**: BetMGM's own current price and line for that option (no login needed, no
+  bet made). BetMGM's main spreads/totals are rolling lines, so a line that moved is skipped.
+- **Bet**: sent at exactly that price with "accept odds changes" off. Live bets wait out BetMGM's
+  delay (about 3s) for the answer.
+- **Player props are on** for BetMGM, under the same prop rules as the other books.
+- The login is your BetMGM tab's own; the extension copies its anti-forgery token (x-xsrf-token)
+  from the tab's requests. BetMGM's location check runs in the page (GeoComply). After the
+  extension updates, **reload the BetMGM tab once**. The popup shows "BetMGM login: seen".
+- Results come from My Bets > Settled; Show bets colors BetMGM gold.
 
 ## Longest odds: +250
 Bets with odds above +250 are skipped, both when scanning and at the live or new price. Change it

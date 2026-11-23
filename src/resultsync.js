@@ -4,6 +4,7 @@
 import { makeHardRock } from './books/hardrock.js';
 import { makeBetRivers } from './books/betrivers.js';
 import { makeFanDuel } from './books/fanduel.js';
+import { makeBetMGM } from './books/betmgm.js';
 import { makeResults, betKey } from './results.js';
 import { BOOK_LABELS } from './books/index.js';
 
@@ -35,6 +36,7 @@ export function makeResultSync({ cfg, bridge, root, dryRun = false, log, bets, b
     { book: 'hardrock', idRe: /^hardrock:(\d+)/, chunkDays: rc.hardrockWindowDays ?? 2, api: books.hardrock?.settled ? books.hardrock : makeHardRock('hardrock', 'Hard Rock Bet', cfg, bridge) },
     { book: 'betrivers', idRe: /^coupon:(\d+)/, api: books.betrivers?.settled ? books.betrivers : makeBetRivers('betrivers', 'BetRivers', cfg, bridge) },
     { book: 'fanduel', idRe: /^fanduel:(us-[a-z]+:[0-9a-z]+)/, api: books.fanduel?.settled ? books.fanduel : makeFanDuel('fanduel', 'FanDuel', cfg, bridge) },
+    { book: 'betmgm', idRe: /^betmgm:([0-9A-Z]{6,})(?: |$)/, api: books.betmgm?.settled ? books.betmgm : makeBetMGM('betmgm', 'BetMGM', cfg, bridge) },
   ];
   const warned = new Set();
   const lastTry = {}, lastOk = {}, toldOld = {};
