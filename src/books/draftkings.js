@@ -1,0 +1,160 @@
+// DraftKings Sportsbook (Colorado, sportsbook.draftkings.com). Requests below match what the site
+// itself sent for a $0.10 live straight bet (Austin's capture, 2026-11-23), logged in by the
+// tab's cookies:
+//  - price check: POST gaming-us-<st>.draftkings.com/api/wager/v1/calculateBets {selections:[{id}]}
+//                 -> current odds and a token for exactly that price (no bet is made), plus
+//                 GET sportsbook-nash.../selectioninfo for the selection's line and suspension.
+//  - place:       POST .../placeBets with that token and autoAcceptMode "None", so DraftKings
+//                 refuses the bet if the price moved. Live bets come back "LiveDelay" (3s) with a
+//                 waitingBetId; the outcome comes from .../waitingBets (an event stream that ends
+//                 once DraftKings decides), read with a short-lived login token (generateEnterpriseJWT).
+// Selection ids ("0ML87369883_1") are the same everywhere, so Gambit's link (?outcomes=<id>) is used.
+// DraftKings runs bot detection in its page; bets placed by the app carry no clicks.
+
+import { decimalToAmerican } from '../ev.js';
+
+/** DraftKings selection id from Gambit's link: .../event/<slug>/<eventId>?outcomes=<id>[,<id>] */
+export function draftkingsRef(link) {
+  const s = decodeURIComponent(decodeURIComponent(String(link || '')));
+  const m = /[?&]outcomes=([0-9A-Za-z_]+)/.exec(s);
+  return m ? { bookRef: m[1], eventRef: /\/event\/[^/]+\/(\d+)/.exec(s)?.[1] } : {};
+}
+
+/** American odds from DraftKings ("−330" with a unicode minus, "+120") or its true decimal odds. */
+export function dkAmerican(display, trueOdds) {
+  const a = Number(String(display ?? '').replace(/[−–]/g, '-').replace(/[^\d+-]/g, ''));
+  if (Number.isFinite(a) && Math.abs(a) >= 100) return a;
+  const d = Number(trueOdds);
+  return Number.isFinite(d) && d > 1 ? decimalToAmerican(d) : null;
+}
+
+/** What DraftKings' waitingBets event stream says: the last JSON event's status, bet id, odds. */
+export function waitingOutcome(text) {
+  let last = null;
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const m = /^data:\s*(.*)$/.exec(line);
+    if (!m) continue;
+    try { const j = JSON.parse(m[1]); if (j && typeof j === 'object') last = j; } catch {}
+  }
+  if (!last) { try { last = JSON.parse(text); } catch {} }
+  if (!last) return null;
+  const bet = (last.bets || [])[0] || last.bet || last;
+  return {
+    status: String(bet.status || last.status || ''),
+    betId: bet.betId || bet.id || last.betId || last.receiptId || bet.receiptId || null,
+    odds: dkAmerican(bet.displayOdds, bet.trueOdds),
+    raw: last,
+  };
+}
+
+const uuid = () => (globalThis.crypto?.randomUUID?.() || 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+  const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16);
+}));
+const OK = /^(placed|accepted|success|succeeded|open|confirmed)$/i;
+const BAD = /reject|declin|fail|cancel|error|expired/i;
+
+export function makeDraftKings(name, label, cfg, bridge) {
+  const k = cfg.draftkings || {};
+  const st = String(cfg.region || 'CO').toLowerCase();
+  const wager = `https://gaming-us-${st}.draftkings.com/api/wager/v1`;
+  const site = `dkus${st}`;
+  const info = `https://sportsbook-nash.draftkings.com/api/sdinfo/${site}/v1/selectioninfo`;
+  const gateway = k.gateway || `https://gateway.northamerica-northeast2.prod.dkapis.com/${site}/betting/v2`;
+  const slipHeaders = { accept: '*/*', 'content-type': 'application/json', clienttype: 'Website', 'x-client-name': 'web',
+    'x-client-feature': 'betslip', 'x-client-page': 'home', 'x-client-widget-name': 'betslip' };
+  const loginMsg = 'DraftKings didn\'t accept the login: refresh the DraftKings tab and stay logged in';
+  const send = (kind, url, method, body, extra = {}, ms = 20000) => bridge.send(name, {
+    kind, url, method, headers: { ...extra }, body: body == null ? undefined : JSON.stringify(body), credentials: 'include' }, ms);
+  const authFail = (r) => r.status === 401 || r.status === 403;
+  const why = (j) => [j?.errorCode, j?.errorMessage, j?.message, j?.status, ...(j?.errors || []).map((e) => e?.message || e?.code || e?.errorCode)]
+    .filter((x) => x && !OK.test(String(x))).join(', ');
+  const lineOf = (sel, row) => {
+    if (row.line == null) return row.line;
+    const p = Number(sel?.points ?? NaN);
+    const inName = String(sel?.betSlipLine || sel?.label || '').match(/[+-]?\d+(?:\.\d+)?(?!.*\d)/);
+    const n = Number.isFinite(p) ? p : Number(inName?.[0]);
+    return Number.isFinite(n) ? (Math.abs(n) === Math.abs(row.line) ? row.line : n) : row.line;
+  };
+
+  async function loginJwt() {
+    const r = await send('status', `${wager}/generateEnterpriseJWT`, 'GET', null, { accept: '*/*' }, 15000);
+    if (authFail(r) || (r.status < 400 && !r.json?.token)) throw new Error(loginMsg);
+    if (r.status >= 400) throw new Error(`DraftKings login token HTTP ${r.status}`);
+    return r.json.token;
+  }
+
+  return {
+    name, label,
+
+    async recheck(row) {
+      const id = row.bookRef || draftkingsRef(row.link).bookRef;
+      if (!id) throw new Error(`no DraftKings selection id in Gambit's link (${String(row.link || 'no link').slice(0, 160)})`);
+      // The odds/token check and the selection's details go out together: both are reads.
+      const [calc, si] = await Promise.all([
+        send('recheck', `${wager}/calculateBets`, 'POST', { selections: [{ id }], selectionsForYourBet: [], oddsStyle: 'american' },
+          { ...slipHeaders, 'x-request-client-timestamp': String(Date.now()) }),
+        send('recheck', `${info}?siteName=${site}&selectionIds=${encodeURIComponent(id)}`, 'GET', null, { accept: '*/*', 'x-pe-cn': 'web', 'x-pe-ep': 'SB', 'x-pe-loc': `US-${st.toUpperCase()}` }),
+      ]);
+      if (authFail(calc)) throw new Error(loginMsg);
+      if (calc.status >= 400 || !calc.json) throw new Error(`price check HTTP ${calc.status}: ${why(calc.json) || String(calc.text || '').slice(0, 200)}`);
+      const bet = (calc.json.bets || []).find((b) => b.type === 'Single');
+      const sel = (si.json?.selections || []).find((s) => s.id === id);
+      const mk = (si.json?.markets || []).find((m) => m.id === sel?.marketId);
+      if (!bet?.token) return { odds: null, line: row.line, suspended: true, why: why(calc.json) };
+      const max = Number(bet.maxStake);
+      return { odds: dkAmerican(bet.displayOdds, bet.trueOdds), line: sel ? lineOf(sel, row) : row.line,
+        suspended: !!mk?.isSuspended || sel?.isSuspended === true, maxStake: Number.isFinite(max) && max > 0 ? max : null,
+        dk: { id, token: bet.token, trueOdds: bet.trueOdds, displayOdds: bet.displayOdds } };
+    },
+
+    async place(row, stake, quote) {
+      const q = quote.dk;
+      if (!q?.token) throw new Error('no DraftKings price token from the price check');
+      const ret = Math.floor(stake * Number(q.trueOdds) * 100) / 100;
+      const body = {
+        bets: [{ type: 'Single', selectionsMapped: [{ id: q.id }], stake, trueOdds: q.trueOdds, displayOdds: q.displayOdds, numberOfBets: 1,
+          isSP: false, potentialReturns: ret, token: q.token }],
+        selections: [{ id: q.id, trueOdds: q.trueOdds, displayOdds: q.displayOdds }],
+        selectionsForYourBet: [], selectionsForProgressiveParlay: [], selectionsForForecast: [], selectionsForTricast: [], selectionsForCombinator: [],
+        locale: 'en', oddsStyle: 'american', autoAcceptMode: 'None',
+      };
+      const res = await send('place', `${wager}/placeBets`, 'POST', body, { ...slipHeaders, calculationid: uuid(), 'x-request-client-timestamp': String(Date.now()) }, 30000);
+      if (authFail(res)) throw new Error(loginMsg);
+      const j = res.json || {};
+      const detail = `DraftKings placeBets response: ${JSON.stringify(j || res.text).slice(0, 3000)}`;
+      const b0 = (j.bets || [])[0] || {};
+      let status = String(b0.status || j.status || '');
+      let betId = b0.betId || b0.id || j.betId || j.receiptId || null;
+      let odds = dkAmerican(b0.displayOdds, b0.trueOdds);
+      // Live: wait out DraftKings' delay for its decision.
+      if (/LiveDelay|Pending|Waiting/i.test(status) && j.waitingBetId) {
+        try {
+          const jwt = await loginJwt();
+          const w = await send('status', `${gateway}/waitingBets?jwt=${encodeURIComponent(jwt)}`, 'GET', null,
+            { accept: 'text/event-stream', 'cache-control': 'no-cache' }, ((Number(b0.delayPeriod) || 3) + 20) * 1000);
+          const o = waitingOutcome(w.text ?? JSON.stringify(w.json));
+          if (o?.status) { status = o.status; betId = o.betId || betId; odds = o.odds ?? odds; }
+        } catch {}
+        if (/LiveDelay|Pending|Waiting/i.test(status)) {
+          // No decision seen: it may still go through, so record it (never bet twice) and say so.
+          return { betId: `draftkings:waiting-${j.waitingBetId}`, confirmedOdds: null, detail: `${detail} (no decision seen after the live delay)` };
+        }
+      }
+      if (res.status < 400 && (OK.test(status) || (betId && !BAD.test(status)))) {
+        return { betId: `draftkings:${betId || j.waitingBetId || uuid()}`, confirmedOdds: odds, detail };
+      }
+      const reason = why(j) || status || `HTTP ${res.status}`;
+      const err = new Error(`rejected: ${reason}`);
+      err.detail = detail;
+      if (/odds|price/i.test(reason)) err.priceMoved = true;
+      else if (/suspend|closed|unavailable|not.?available/i.test(reason)) err.gone = true;
+      throw err;
+    },
+
+    // Once a minute (session.js): the short login token the site asks for before betting.
+    async sessionCheck() {
+      try { await loginJwt(); return { ok: true }; }
+      catch (e) { if (/login/i.test(e.message)) return { ok: false, why: e.message }; throw e; }
+    },
+  };
+}

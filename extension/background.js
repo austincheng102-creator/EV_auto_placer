@@ -7,6 +7,8 @@ const BOOK_HOSTS = {
   fanduel: [/sportsbook\.fanduel\.(com|ca)$/],
   hardrock: [/(^|\.)hardrock\.bet$/, /(^|\.)hardrocksportsbook\.com$/],
   betmgm: [/(^|\.)betmgm\.com$/],
+  draftkings: [/^sportsbook\.draftkings\.com$/],
+  thescore: [/^sportsbook\.thescore\.bet$/],
   gambit: [/(^|\.)gambitodds\.com$/],
 };
 

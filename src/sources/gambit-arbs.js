@@ -85,10 +85,12 @@ function opportunities(ev) {
  * Fair win probability from the reference books for one selection. prices: Gambit id -> {odds, oppOdds}.
  * The biggest set of reference books all within maxSpreadPts of each other wins; it needs minRefs books.
  */
-export function refFair(a, prices) {
+// A reference book is never used to price its own leg (a DraftKings bet isn't checked against DraftKings).
+export function refFair(a, prices, ownId = null) {
   const probs = {};
   for (const [n, idv] of Object.entries(a.refBooks)) {
     for (const id of [].concat(idv)) {
+      if (ownId != null && Number(id) === Number(ownId)) continue;
       const pr = prices[id];
       const p = pr && bookFairProb(pr.odds, pr.oppOdds);
       if (p != null) { probs[n] = p; break; }
@@ -157,7 +159,7 @@ export function arbsToRows(json, g, a, fairOut = null) {
           const k = isMine ? 'odds' : 'oppOdds';
           if ((prices[x.b.sportsbook_id] ||= {})[k] == null) prices[x.b.sportsbook_id][k] = Number(x.b.odds);
         }
-        const rf = refFair(a, prices);
+        const rf = refFair(a, prices, book ? leg.sportsbook_id : null);
         const parts = rowParts(ev, { marketName }, leg, book);
         if (fairOut && rf.ok) {
           const k = fairKey({ event: ev.event_name, marketKey: marketName, selection: parts.selection, line: parts.line });
