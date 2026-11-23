@@ -155,6 +155,7 @@ export function makeBetMGM(name, label, cfg, bridge) {
 
   return {
     name, label,
+    freePriceCheck: true,   // the price check reads the option, no bet: a failed check is checked again on later scans
 
     // Colorado prices for EV: every scan (and the 1s fast check), BetMGM CO's own price for each
     // BetMGM row within directMarginPts (5) of min EV, read in batches of 10, replaces Gambit's
