@@ -661,7 +661,7 @@ async function mgmClickRenew(tabId, label, since, waitFresh) {
   // Austin, 2026-11-23: the click made BetMGM download the GeoComply installer, i.e. the GeoComply
   // app wasn't answering. Then a click can't renew anything (and only triggers another download).
   const up = (await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: mgmGeoAppUp }).catch(() => []))[0]?.result;
-  if (up === false) return { ok: false, why: 'the GeoComply location app isn\'t running on this PC (BetMGM can\'t reach it): start "GeoComply PlayerLocationCheck" (or reinstall it from the file BetMGM downloaded) and keep it running. No odds were clicked' };
+  if (up === false) return { ok: false, why: 'the BetMGM page can\'t reach the GeoComply location app on this PC. Either it isn\'t running (start "PlayerLocationCheck"), or Chrome blocks the site from it: click the icon left of the address in the BetMGM tab, Site settings, and set "Local network access" (or "Apps on device") to Allow. No odds were clicked' };
   const target = { tabId };
   let attached = false, added = false, removed = false, text = '', fronted = false, after = '';
   dbgBusy.add(tabId);
