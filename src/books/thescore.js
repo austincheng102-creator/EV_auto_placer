@@ -109,11 +109,13 @@ export function makeTheScore(name, label, cfg, bridge) {
     const url = get
       ? `${api}/${Q[op]}?operationName=${op}&variables=${encodeURIComponent(JSON.stringify(variables))}&extensions=${encodeURIComponent(JSON.stringify(ext(op)))}`
       : `${api}/${Q[op]}`;
-    const res = await bridge.send(name, { kind, url, method: get ? 'GET' : 'POST', headers, credentials: 'include',
+    const res = await bridge.send(name, { kind, url, method: get ? 'GET' : 'POST', headers: { ...headers }, credentials: 'include', useTheScoreAuth: true,
       ...(get ? {} : { body: JSON.stringify({ operationName: op, variables, extensions: ext(op) }) }) }, ms);
     const j = res.json || {};
     const gerr = (j.errors || []).map((e) => e?.message || e?.extensions?.code).filter(Boolean).join(', ');
-    if (res.status === 401 || res.status === 403 || /unauth|not.?logged|login|authenticat/i.test(gerr)) throw new Error(loginMsg);
+    if (res.status === 401 || res.status === 403 || /unauth|not.?logged|login|authenticat/i.test(gerr)) {
+      throw new Error(`${loginMsg} (${op}: HTTP ${res.status}${gerr ? `, ${gerr.slice(0, 160)}` : ''}${res.error ? `, ${res.error}` : ''})`);
+    }
     if (/PersistedQueryNotFound/i.test(gerr)) throw new Error(`theScore changed its site (query ${op} not found): needs an app update`);
     if (res.status >= 400 || !j.data) throw new Error(`theScore ${op} HTTP ${res.status}: ${gerr || String(JSON.stringify(j) || res.text || '').slice(0, 200)}`);
     return j.data;

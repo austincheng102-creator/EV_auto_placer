@@ -28,6 +28,7 @@ async function render() {
   $('fdgeo').textContent = (gl == null ? 'not seen yet (renewing automatically)' : gl > 0 ? `good for ${gl} min (renewed automatically)` : 'ran out (renewing automatically)') + last;
   $('fdgeo').className = gl > 0 ? 'on' : 'off';
   $('bm').textContent = s.betmgmLogin ? 'seen' : 'not yet (refresh the BetMGM tab)'; $('bm').className = s.betmgmLogin ? 'on' : 'off';
+  { const h = s.thescoreHeaders || []; $('ts').textContent = h.length ? h.join(', ') : 'none seen yet (cookies only; refresh the theScore tab)'; $('ts').className = h.length ? 'on' : 'off'; }
   $('armed').textContent = armed ? 'ARMED' : 'disarmed (re-checks only)'; $('armed').className = armed ? 'on' : 'off';
   $('toggle').textContent = armed ? 'Disarm' : 'Arm (allow real bets)';
 }
