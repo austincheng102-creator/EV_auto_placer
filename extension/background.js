@@ -886,7 +886,11 @@ async function gambitLoginForm(open) {
     || btns.find((b) => /^\s*(log\s?in|sign\s?in)\s*$/i.test(b.textContent || ''));
   p.scrollIntoView({ block: 'center' });
   const at = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; };
-  const captcha = !!document.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="turnstile"], .cf-turnstile');
+  // Only a robot check you'd have to answer counts: a visible challenge or checkbox. Invisible
+  // reCAPTCHA (its badge only, size=invisible; BetMGM has it on every page) doesn't.
+  const big = (el) => { const r = el.getBoundingClientRect(); return vis(el) && r.width > 60 && r.height > 40; };
+  const captcha = [...document.querySelectorAll('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="turnstile"], .cf-turnstile')]
+    .some((el) => big(el) && !/size=invisible/.test(el.getAttribute('src') || ''));
   return { state: 'form', user: at(user), pass: at(p), submit: at(submit), userLen: (user?.value || '').length, passLen: p.value.length, captcha };
 }
 
@@ -1161,9 +1165,19 @@ async function autoLoginBetMGM() {
   const note = (text, level = 'warn') => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book: 'betmgm', level, text })); };
   const done = (ok, why) => { mgmLogin.last = { at: Date.now(), ok, why }; mgmLogin.fails = ok ? 0 : mgmLogin.fails + 1; note(ok ? `BetMGM: ${why}` : `BetMGM auto login failed: ${why}. Trying again in ${mgmLogin.fails >= 3 ? 10 : 2} min`, ok ? 'good' : 'warn'); };
   const target = { tabId: t.id };
-  let attached = false;
+  let attached = false, back = null;
   dbgBusy.add(t.id);
   try {
+    // Chrome only opens its saved-password list in a tab that's in front, in a focused window
+    // (Austin, 2026-11-23: the login box opened but nothing got filled). Bring it to the front for
+    // the login, then go back to the tab you had open.
+    const tb = await chrome.tabs.get(t.id).catch(() => null);
+    const win = tb && await chrome.windows.get(tb.windowId).catch(() => null);
+    const [cur] = tb ? await chrome.tabs.query({ active: true, windowId: tb.windowId }) : [];
+    back = { tabId: cur && cur.id !== t.id ? cur.id : null, windowId: tb?.windowId, minimized: win?.state === 'minimized' };
+    await chrome.tabs.update(t.id, { active: true }).catch(() => {});
+    if (tb) await chrome.windows.update(tb.windowId, { focused: true, ...(back.minimized ? { state: 'normal' } : {}) }).catch(() => {});
+    await sleep(800);
     note('BetMGM is logged out: logging back in with Chrome\'s saved password', 'info');
     f = await inPage(t.id, true);
     if (f.state !== 'form' || !f.pass) return done(false, f.state === 'no-form' ? 'clicked Log In but no login box showed up' : `couldn't find the login box (${f.state})`);
@@ -1172,15 +1186,19 @@ async function autoLoginBetMGM() {
     attached = true;
     await dbgCmd(target, 'Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
     await realClick(target, f.pass);
-    await sleep(600);
+    await sleep(1200);
     let g = await inPage(t.id, true);
-    if (g.state === 'form' && !g.passLen) {
-      // Chrome didn't fill it on its own: pick the saved login from Chrome's list under the password box.
-      await realKey(target, 'ArrowDown', 'ArrowDown', 40);
-      await sleep(300);
+    const pick = async (downs) => {
+      for (let i = 0; i < downs; i++) { await realKey(target, 'ArrowDown', 'ArrowDown', 40); await sleep(500); }
       await realKey(target, 'Enter', 'Enter', 13, '\r');
-      await sleep(800);
-      g = await inPage(t.id, true);
+      await sleep(1000);
+      return inPage(t.id, true);
+    };
+    if (g.state === 'form' && !g.passLen) {
+      // Chrome didn't fill it on its own: pick the saved login from Chrome's list under the password
+      // box (Down, Enter). If the list wasn't open yet, the first Down only opens it: Down twice.
+      g = await pick(1);
+      if (g.state === 'form' && !g.passLen && g.pass) { await realClick(target, g.pass); await sleep(1200); g = await pick(2); }
       if (g.state === 'form' && !g.passLen && g.user) {
         await realClick(target, g.user);
         await sleep(800);
@@ -1206,6 +1224,8 @@ async function autoLoginBetMGM() {
     done(false, String(e?.message || e).includes('Another debugger') ? 'Chrome DevTools is open on the BetMGM tab: close it' : String(e?.message || e));
   } finally {
     if (attached) chrome.debugger.detach(target, () => void chrome.runtime.lastError);
+    if (back?.tabId) await chrome.tabs.update(back.tabId, { active: true }).catch(() => {});
+    if (back?.minimized) await chrome.windows.update(back.windowId, { state: 'minimized' }).catch(() => {});
     dbgBusy.delete(t.id);
     mgmLogin.busy = false;
   }
