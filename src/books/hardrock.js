@@ -102,6 +102,10 @@ export function makeHardRock(name, label, cfg, bridge) {
 
   return {
     name, label,
+    // The price check makes no bet (live feed price + a cached stake check), so a bet whose check
+    // failed (fresh jump, EV too low, price moved) is checked again on the next scans for
+    // recheckWatchMinutes, like BetRivers and FanDuel, instead of being ignored for 5 minutes.
+    freePriceCheck: true,
 
     // Puts Hard Rock's real price (from the live feed) in place of Gambit's copy, for rows
     // within directMarginPts of minEvPct on Gambit's numbers. Selections the feed doesn't have

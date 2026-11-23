@@ -760,7 +760,8 @@ function startBet(row, scanAt, t = {}) {
       const now = Date.now();
       const w = watch.get(row.id);
       if (ok) watch.delete(row.id);
-      else if (book.freePriceCheck && WATCH_MS > 0 && ctx.quote && (!ctx.sent || ctx.priceMoved) && (!w || now - w.since < WATCH_MS)) {
+      // A fresh-jump skip only waits for the jump to be freshJump.sec old, so it's watched on every book.
+      else if ((book.freePriceCheck || ctx.outcome === 'fresh jump') && WATCH_MS > 0 && ctx.quote && (!ctx.sent || ctx.priceMoved) && (!w || now - w.since < WATCH_MS)) {
         if (!w) watch.set(row.id, { since: now, sig: ctx.sig });
         cooldown.delete(row.id);   // check it again next scan
       } else {
