@@ -148,8 +148,19 @@ export function makeTheScore(name, label, cfg, bridge) {
       const dr = quote.draft;
       if (!dr) throw new Error('no theScore bet slip entry from the price check');
       const cents = Math.round(stake * 100);
-      await gql('place', 'BetslipSetDraftBetAmount', { isSubscription: false, amount: cents, oddsFormat: 'AMERICAN', draftBetId: dr.betId,
+      const set = await gql('place', 'BetslipSetDraftBetAmount', { isSubscription: false, amount: cents, oddsFormat: 'AMERICAN', draftBetId: dr.betId,
         amountField: 'BET', includeOddsTrend: true, includeSurcharge: false });
+      // The slip answers with the selection's current price. Live prices can move between the price
+      // check and this call (Austin's capture: -310 at the check, -420 here), so a different price is
+      // treated as a price move: nothing is placed, and the app checks every rule again at the new price.
+      const now = findDraft(set?.betslipSetDraftBetAmount, dr.selId);
+      const nowOdds = now ? tsAmerican(now.leg.marketSelection?.odds) : null;
+      if (nowOdds != null && nowOdds !== quote.odds) {
+        const e = new Error(`rejected: price is now ${nowOdds}`);
+        e.priceMoved = true; e.newOdds = nowOdds;
+        e.newQuote = { draft: { ...dr, betId: now.bet.id, legId: now.leg.id, odds: now.leg.marketSelection.odds } };
+        throw e;
+      }
       const odds = tsAmerican(dr.odds) === quote.odds ? dr.odds : tsFraction(quote.odds);
       const win = Math.round(cents * (Number(odds.numeratorLong) / Number(odds.denominatorLong) - 1));
       const d = await gql('place', 'BetslipPlaceBets', { isSubscription: false, bets: [{
