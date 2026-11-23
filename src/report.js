@@ -653,11 +653,14 @@ if (LIVE) setInterval(async () => {
         const o = num(r.ours);
         // Green: that book paid more on our side than we got.
         const better = mine != null && o != null && dec(o) > dec(mine) + 1e-9;
-        // Liquidity: $ on our side / other side. Under $500 on either side = too thin to count as sharp (grey).
+        // Liquidity: $ on our side / other side. Crossed out = not counted as sharp: thinner side under $500,
+        // or the two sides add up to more than 103% (a spread over 3 cents).
         let lq = '';
         if (hasLiq) {
-          const thin = r.liq && (!(Number(r.liq[0]) >= 500) || !(Number(r.liq[1]) >= 500));
-          lq = '<td class="n' + (thin ? ' thin' : '') + '"' + (thin ? ' title="Under $500: not used as a sharp price"' : '') + '>' + (r.liq ? esc('$' + r.liq[0] + ' / $' + r.liq[1]) : '') + '</td>';
+          const imp = (x) => { const n = num(x); return n == null ? null : 1 / dec(n); };
+          const pq = imp(r.ours) != null && imp(r.other) != null ? imp(r.ours) + imp(r.other) : null;
+          const thin = r.liq && (!(Math.min(Number(r.liq[0]), Number(r.liq[1])) >= 500) || pq == null || pq > 1.03 + 1e-9);
+          lq = '<td class="n' + (thin ? ' thin' : '') + '"' + (thin ? ' title="Not used as a sharp price: under $500 on the thinner side, or spread over 3 cents"' : '') + '>' + (r.liq ? esc('$' + r.liq[0] + ' / $' + r.liq[1]) : '') + '</td>';
         }
         h += '<tr><td>' + esc(r.name) + '</td><td class="n' + (better ? ' better' : '') + '">' + esc(r.ours) + '</td><td class="n">' + esc(r.other) + '</td>' + lq + '</tr>';
       }

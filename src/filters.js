@@ -3,9 +3,11 @@
 //  - EV cap: nothing above 25% EV (maxEvPct), it's usually a stale or wrong price
 //  - sharp books must agree: their no-vig win probabilities within 3 points of each other
 //    (Pinnacle, plus liquid Kalshi/Polymarket; FanDuel left out since 2026-11-19, sharp.spreadBooks)
-//  - Kalshi and Polymarket are sharp books again (2026-11-23, sharp.predictionMarkets), but a price of theirs
-//    only counts when Gambit shows $500+ liquidity on both sides. Thin ones are ignored everywhere: sharp rules,
-//    live timing, and fair odds / EV. Liquid ones lower the fair price when they're less optimistic than Pinnacle.
+//  - Prediction markets (Kalshi, Polymarket, Novig) are sharp books (2026-11-23, sharp.predictionMarkets), but a
+//    price only counts when its two sides add up to 103% or less and the thinner side has $500+ (Gambit's
+//    liquidity). Its fair is the lower of the mid and the size-weighted mid. If Kalshi and Polymarket both count,
+//    they must be within 2 points or neither counts. Ones that don't count are ignored everywhere: sharp rules,
+//    live timing, and fair odds / EV. Ones that count lower the fair price when they're less optimistic than Pinnacle.
 //  - live mainlines need Pinnacle or a liquid Kalshi/Polymarket listed; props (live and pre-game) need FanDuel
 //  - soft-book check (softCheck): our price must be above 0% EV against the no-vig price of at least
 //    2 of DraftKings, Caesars and FanDuel (the book we're betting doesn't count for itself)
@@ -51,15 +53,21 @@ export function applyFilterDefaults(cfg) {
   // Books never used as sharp, even if a list above names them (Austin, 2026-11-22: no Kalshi; 2026-11-23:
   // Kalshi back via predictionMarkets below).
   if (s.excludeBooks === undefined) s.excludeBooks = [];
-  // Prediction markets (Austin, 2026-11-23): Kalshi and Polymarket count as sharp books for mainlines, but
-  // each price only when Gambit shows at least minLiquidity $ on both sides. Thinner = ignored by every
-  // sharp rule and by the fair price. inFair: liquid ones also go into the fair price (lowest wins).
+  // Prediction markets (Austin, 2026-11-23): Kalshi, Polymarket and Novig count as sharp books for mainlines.
+  // A price is valid when its two sides' implied % add up to 100 + maxHoldPct (3) or less, i.e. a 3 cent
+  // spread, and the thinner side has at least minLiquidity $ (500). Its fair for our side is the lower of
+  // the mid and the size-weighted mid (not the 4 no-vig methods). agreeBooks (Kalshi, Polymarket): when both
+  // are valid they must be within agreePts (2) points of each other, or neither counts. Not valid = ignored
+  // by every sharp rule and by the fair price. inFair: valid ones also go into the fair price (lowest wins).
   // They're added to spreadBooks and liveMainlineNeeds and taken off excludeBooks, so older configs
   // that still say "excludeBooks": ["kalshi"] or list only Pinnacle get them too. enabled: false = off.
   const pm = (s.predictionMarkets ||= {});
   if (pm.enabled === undefined) pm.enabled = true;
-  if (pm.books === undefined) pm.books = ['kalshi', 'polymarket'];
+  if (pm.books === undefined) pm.books = ['kalshi', 'polymarket', 'novig'];
   if (pm.minLiquidity === undefined) pm.minLiquidity = 500;
+  if (pm.maxHoldPct === undefined) pm.maxHoldPct = 3;
+  if (pm.agreeBooks === undefined) pm.agreeBooks = ['kalshi', 'polymarket'];
+  if (pm.agreePts === undefined) pm.agreePts = 2;
   if (pm.inFair === undefined) pm.inFair = true;
   if (pm.enabled) {
     s.excludeBooks = (s.excludeBooks || []).filter((n) => !pm.books.includes(n));
@@ -194,29 +202,78 @@ const pmIds = (cfg) => {
 };
 
 /**
- * A book's price for a row as the sharp rules may use it: a prediction-market price with less than
- * sharp.predictionMarkets.minLiquidity $ on either side (or no liquidity shown) is treated as not there.
+ * One prediction-market price checked against Austin's rules. p = our side's implied, q = the other side's.
+ * Returns { ok, why, prob }: prob = lower of mid (p + 1 - q) / 2 and the size-weighted mid
+ * ((1 - q) * ourLiq + p * oppLiq) / (ourLiq + oppLiq).
+ */
+export function pmPrice(pm, pr) {
+  if (!pr || pr.odds == null || pr.oppOdds == null) return { ok: false, why: 'one side missing' };
+  const p = impliedProb(pr.odds), q = impliedProb(pr.oppOdds);
+  if (p + q > 1 + (pm.maxHoldPct ?? 3) / 100 + 1e-9) return { ok: false, why: `spread ${((p + q - 1) * 100).toFixed(1)}c` };
+  if (p + q < 0.97) return { ok: false, why: 'sides cross (stale)' };
+  const a = Number(pr.liq), b = Number(pr.oppLiq);
+  if (!(Math.min(a, b) >= (pm.minLiquidity ?? 0))) return { ok: false, why: `thinner side $${Number.isFinite(Math.min(a, b)) ? Math.round(Math.min(a, b)) : '?'}` };
+  const mid = (p + 1 - q) / 2;
+  const sw = a + b > 0 ? ((1 - q) * a + p * b) / (a + b) : mid;
+  return { ok: true, prob: Math.min(mid, sw), mid, sw };
+}
+
+const pmCache = new WeakMap();
+/**
+ * Prediction markets on a row: { probs: {kalshi: 0.51}, used: {kalshi: 194}, bad: [{name, id, why}] }.
+ * Each book's first valid id counts (Polymarket has two). Then the agreement rule: if every agreeBooks
+ * book is valid and they're more than agreePts apart, none of them counts.
+ */
+export function pmState(cfg, row) {
+  const pm = cfg.sharp?.predictionMarkets;
+  const out = { probs: {}, used: {}, bad: [] };
+  if (!pm?.enabled || !row.prices) return out;
+  const hit = pmCache.get(row);
+  if (hit && hit.prices === row.prices) return hit.out;
+  for (const n of pm.books) for (const id of ids(cfg, n)) {
+    const pr = row.prices[id];
+    if (!pr || pr.odds == null) continue;
+    const c = pmPrice(pm, pr);
+    if (!c.ok) { out.bad.push({ name: n, id, why: c.why }); continue; }
+    if (out.probs[n] == null) { out.probs[n] = c.prob; out.used[n] = id; }
+  }
+  const ag = (pm.agreeBooks || []).filter((n) => out.probs[n] != null);
+  if (ag.length >= 2 && ag.length === (pm.agreeBooks || []).length) {
+    const v = ag.map((n) => out.probs[n]), gap = (Math.max(...v) - Math.min(...v)) * 100;
+    if (pm.agreePts != null && gap > pm.agreePts) {
+      for (const n of ag) { out.bad.push({ name: n, id: out.used[n], why: `${ag.join('/')} ${gap.toFixed(1)} pts apart` }); delete out.probs[n]; delete out.used[n]; }
+    }
+  }
+  pmCache.set(row, { prices: row.prices, out });
+  return out;
+}
+
+/**
+ * A book's price for a row as the sharp rules may use it: a prediction-market price that isn't the
+ * one pmState counts for that book is treated as not there.
  */
 export function sharpPrice(cfg, row, id) {
   const pr = row.prices?.[id];
   if (!pr) return null;
   if (pmIds(cfg).has(Number(id))) {
-    const min = cfg.sharp.predictionMarkets.minLiquidity ?? 0;
-    if (!(pr.liq >= min) || !(pr.oppLiq >= min)) return null;
+    const used = Object.values(pmState(cfg, row).used);
+    if (!used.includes(Number(id))) return null;
   }
   return pr;
 }
 
-/** Prediction-market prices on a row that are too thin to count: [{name, id, liq, oppLiq}]. */
-export function thinMarkets(cfg, row) {
-  const out = [];
-  const pm = cfg.sharp?.predictionMarkets;
-  if (!pm?.enabled) return out;
-  for (const n of pm.books) for (const id of ids(cfg, n)) {
+/** Prediction-market prices on a row that don't count, with why: [{name, id, why}]. */
+export const thinMarkets = (cfg, row) => pmState(cfg, row).bad;
+
+/** No-vig win probability a sharp book gives our side: the pmState fair for prediction markets. */
+function sharpProb(cfg, row, name, fallback) {
+  if (cfg.sharp?.predictionMarkets?.enabled && cfg.sharp.predictionMarkets.books.includes(name)) return pmState(cfg, row).probs[name] ?? null;
+  for (const id of ids(cfg, name)) {
     const pr = row.prices?.[id];
-    if (pr && pr.odds != null && !sharpPrice(cfg, row, id)) out.push({ name: n, id, liq: pr.liq, oppLiq: pr.oppLiq });
+    const p = pr && fallback(pr.odds, pr.oppOdds);
+    if (p != null) return p;
   }
-  return out;
+  return null;
 }
 
 /** Sharp books whose price Gambit lists for this selection, by name (thin prediction markets don't count). */
@@ -237,7 +294,7 @@ export function worstNoVig(odds, oppOdds) {
 
 /**
  * Fair win probability from the sharp books only, for +EV-table rows (not Arb-table rows):
- * the lowest of Pinnacle and each liquid Kalshi/Polymarket price (FanDuel too on props).
+ * the lowest of Pinnacle and each valid prediction market (pmState; FanDuel too on props).
  * Rows whose fair came from Pinnacle (PS3838) keep Gambit's Pinnacle number and are only lowered.
  * Rows with Gambit's "market" fair are recomputed from the sharp books, since Gambit's blend can hold
  * thin prediction-market prices we can't take out; with no sharp book priced, prob is null (skip).
@@ -249,11 +306,8 @@ export function sharpFair(cfg, row) {
   const names = ['pinnacle', ...pm.books, ...(row.isProp ? ['fanduel'] : [])];
   const probs = {};
   for (const n of names) {
-    for (const id of ids(cfg, n)) {
-      const pr = sharpPrice(cfg, row, id);
-      const p = pr && worstNoVig(pr.odds, pr.oppOdds);
-      if (p != null) { probs[n] = p; break; }
-    }
+    const p = sharpProb(cfg, row, n, worstNoVig);
+    if (p != null) probs[n] = p;
   }
   const fromPinnacle = row.fairSource === 'PS3838';
   if (fromPinnacle && Number.isFinite(row.fairProb)) probs.pinnacle = row.fairProb;
@@ -286,11 +340,8 @@ export function sharpNames(cfg, row) {
 export function sharpSpread(cfg, row) {
   const probs = {};
   for (const n of sharpNames(cfg, row)) {
-    for (const id of ids(cfg, n)) {
-      const pr = sharpPrice(cfg, row, id);
-      const p = pr && bookFairProb(pr.odds, pr.oppOdds);
-      if (p != null) { probs[n] = p; break; }
-    }
+    const p = sharpProb(cfg, row, n, bookFairProb);
+    if (p != null) probs[n] = p;
   }
   const vals = Object.values(probs);
   if (vals.length < 2) return { ok: true, n: vals.length, spread: null, probs };
