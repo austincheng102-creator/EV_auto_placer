@@ -607,6 +607,7 @@ const clearPageGeo = (pattern) => {
   }
   return out;
 };
+const dbgBusy = new Set();   // tab ids the extension is clicking in (one job per tab at a time)
 // Runs in the BetMGM page. mode 'find': picks one odds button (not on the bet slip, not already
 // picked), marks it, scrolls it into view and says where it is. mode 'state': where the marked one is
 // now and whether it's picked.
@@ -642,8 +643,12 @@ const mgmPickIn = async (tabId, mode) => (await chrome.scripting.executeScript({
 // by the app, never from this slip. Returns { ok, why, fresh }.
 async function mgmClickRenew(tabId, label, since, waitFresh) {
   if (!chrome.debugger) return { ok: false, why: 'the extension is missing the "debugger" permission: reload it in chrome://extensions' };
+  if (dbgBusy.has(tabId)) return { ok: false, why: `the ${label} tab is busy logging in` };
+  const lg = await inPage(tabId, false).catch(() => ({}));
+  if (lg.state === 'logged-out' || lg.state === 'form') return { ok: false, why: `${label} is logged out (the extension logs back in first)` };
   const target = { tabId };
   let attached = false, added = false, removed = false, text = '';
+  dbgBusy.add(tabId);
   try {
     let p = await mgmPickIn(tabId, 'find');
     if (!p.found) return { ok: false, why: `no odds buttons visible in the ${label} tab (open the ${label} home page or any game there)` };
@@ -671,6 +676,7 @@ async function mgmClickRenew(tabId, label, since, waitFresh) {
     return { ok: false, why: m.includes('Another debugger') ? `Chrome DevTools is open on the ${label} tab: close it` : `clicking odds failed: ${m}` };
   } finally {
     if (attached) chrome.debugger.detach(target, () => void chrome.runtime.lastError);
+    dbgBusy.delete(tabId);
   }
 }
 
@@ -850,7 +856,7 @@ const jwtExp = (tok) => {
 // debugger (chrome.debugger), which Chrome treats as real mouse/keyboard input. While it runs
 // (a few seconds) Chrome shows a bar "EV Placer Bridge started debugging this browser"; it goes
 // away by itself. Off with config.json "session": {"gambitAutoLogin": false}.
-let settings = { gambitAutoLogin: true, fanduelGeoRenew: true, betriversGeoRenew: true, betmgmGeoRenew: true, betmgmGeoClick: true, thescoreGeoRenew: true, draftkingsPlaySpan: true };
+let settings = { gambitAutoLogin: true, fanduelGeoRenew: true, betriversGeoRenew: true, betmgmGeoRenew: true, betmgmGeoClick: true, betmgmAutoLogin: true, thescoreGeoRenew: true, draftkingsPlaySpan: true };
 chrome.storage.local.get('settings').then((v) => { if (v?.settings) settings = { ...settings, ...v.settings }; }).catch(() => {});
 let lastLogin = null;          // { at, ok, why } for the popup
 let loginBusy = false;
@@ -876,7 +882,8 @@ async function gambitLoginForm(open) {
   const scope = p.form || p.closest('form, [role=dialog]') || document;
   const user = scope.querySelector('input[name=username], input[type=email], input[autocomplete=username], input[type=text]');
   const btns = [...scope.querySelectorAll('button')].filter(vis);
-  const submit = btns.find((b) => b.type === 'submit' && /log\s?in|sign\s?in/i.test(b.textContent || '')) || btns.find((b) => b.type === 'submit');
+  const submit = btns.find((b) => b.type === 'submit' && /log\s?in|sign\s?in/i.test(b.textContent || '')) || btns.find((b) => b.type === 'submit')
+    || btns.find((b) => /^\s*(log\s?in|sign\s?in)\s*$/i.test(b.textContent || ''));
   p.scrollIntoView({ block: 'center' });
   const at = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; };
   const captcha = !!document.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="turnstile"], .cf-turnstile');
@@ -1136,12 +1143,81 @@ async function keepDkSpan() {
     text: p.status === 200 ? `DraftKings play session renewed (had ${Math.round(g.left / 60)} min left)` : `DraftKings play session NOT renewed (HTTP ${p.status}${p.error ? `, ${p.error}` : ''}); it had ${Math.round(g.left / 60)} min left` }));
 }
 
+// BetMGM logs you out after a while (Austin, 2026-11-23: logged out while away; the page shows its
+// login box with the email remembered). Logs back in like the Gambit auto login: real clicks through
+// Chrome's debugger so Chrome fills its saved password, then "Log in". The extension never reads,
+// keeps or sends your password. Off with config.json "session": {"betmgmAutoLogin": false}.
+const mgmLogin = { busy: false, triedAt: 0, fails: 0, last: null };
+async function autoLoginBetMGM() {
+  if (settings.betmgmAutoLogin === false || mgmLogin.busy) return;
+  const t = (await bookTabs()).find((x) => x.book === 'betmgm' && /(^|\.)betmgm\.com$/.test(new URL(x.url).hostname));
+  if (!t || t.discarded || dbgBusy.has(t.id) || geoKeepers.betmgm.job || placing.betmgm > 0) return;
+  let f = await inPage(t.id, false).catch(() => ({ state: 'no-page' }));
+  if (f.state === 'logged-in' || f.state === 'no-page') return;
+  const gap = mgmLogin.fails >= 3 ? 10 * 60e3 : 2 * 60e3;
+  if (Date.now() - mgmLogin.triedAt < gap) return;
+  if (!chrome.debugger) return;
+  mgmLogin.busy = true; mgmLogin.triedAt = Date.now();
+  const note = (text, level = 'warn') => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book: 'betmgm', level, text })); };
+  const done = (ok, why) => { mgmLogin.last = { at: Date.now(), ok, why }; mgmLogin.fails = ok ? 0 : mgmLogin.fails + 1; note(ok ? `BetMGM: ${why}` : `BetMGM auto login failed: ${why}. Trying again in ${mgmLogin.fails >= 3 ? 10 : 2} min`, ok ? 'good' : 'warn'); };
+  const target = { tabId: t.id };
+  let attached = false;
+  dbgBusy.add(t.id);
+  try {
+    note('BetMGM is logged out: logging back in with Chrome\'s saved password', 'info');
+    f = await inPage(t.id, true);
+    if (f.state !== 'form' || !f.pass) return done(false, f.state === 'no-form' ? 'clicked Log In but no login box showed up' : `couldn't find the login box (${f.state})`);
+    if (f.captcha) return done(false, 'BetMGM is showing an "are you a robot" check: log in by hand');
+    await new Promise((res, rej) => chrome.debugger.attach(target, '1.3', () => (chrome.runtime.lastError ? rej(new Error(chrome.runtime.lastError.message)) : res())));
+    attached = true;
+    await dbgCmd(target, 'Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
+    await realClick(target, f.pass);
+    await sleep(600);
+    let g = await inPage(t.id, true);
+    if (g.state === 'form' && !g.passLen) {
+      // Chrome didn't fill it on its own: pick the saved login from Chrome's list under the password box.
+      await realKey(target, 'ArrowDown', 'ArrowDown', 40);
+      await sleep(300);
+      await realKey(target, 'Enter', 'Enter', 13, '\r');
+      await sleep(800);
+      g = await inPage(t.id, true);
+      if (g.state === 'form' && !g.passLen && g.user) {
+        await realClick(target, g.user);
+        await sleep(800);
+        await realKey(target, 'ArrowDown', 'ArrowDown', 40);
+        await sleep(300);
+        await realKey(target, 'Enter', 'Enter', 13, '\r');
+        await sleep(800);
+        g = await inPage(t.id, true);
+      }
+    }
+    if (g.state === 'logged-in') return done(true, 'logged back in with Chrome\'s saved password');
+    if (g.state !== 'form') return done(false, `the login box closed unexpectedly (${g.state})`);
+    if (!g.passLen) return done(false, 'Chrome didn\'t fill in the saved password. Save your BetMGM password in Chrome (chrome://password-manager) by logging in once and choosing Save');
+    if (!g.submit) return done(false, 'couldn\'t find the Log in button');
+    await realClick(target, g.submit);
+    for (let i = 0; i < 20; i++) {
+      await sleep(1000);
+      const h = await inPage(t.id, false).catch(() => ({}));
+      if (h.state === 'logged-in') return done(true, 'logged back in with Chrome\'s saved password');
+    }
+    done(false, 'pressed Log in but BetMGM still shows the login box (wrong saved password, or BetMGM wants a code)');
+  } catch (e) {
+    done(false, String(e?.message || e).includes('Another debugger') ? 'Chrome DevTools is open on the BetMGM tab: close it' : String(e?.message || e));
+  } finally {
+    if (attached) chrome.debugger.detach(target, () => void chrome.runtime.lastError);
+    dbgBusy.delete(t.id);
+    mgmLogin.busy = false;
+  }
+}
+
 async function watchLogins() {
   await keepTabsLoaded();
   await keepDkSpan().catch(() => {});
   await nudgeTabs();
   await keepFdGeo().catch(() => {});
   await keepBrGeo().catch(() => {});
+  await autoLoginBetMGM().catch(() => {});
   for (const k of Object.values(geoKeepers)) await k.keep().catch(() => {});
   const now = Date.now() / 1000;
   // A token that ran out over 10 minutes ago means reloading didn't bring the login back: you're
