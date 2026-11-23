@@ -139,7 +139,9 @@ export function makeDraftKings(name, label, cfg, bridge) {
         if (fresh.odds !== quote.odds) { const e = new Error(`rejected: price is now ${fresh.odds}`); e.priceMoved = true; e.newOdds = fresh.odds; e.newQuote = { dk: fresh.dk }; throw e; }
         q = fresh.dk;
       }
-      const ret = Math.floor(stake * Number(q.trueOdds) * 100) / 100;
+      // Rounded down to the cent, as DraftKings does. The tiny extra keeps float error from taking a
+      // cent off (1 x 2.3 = 2.2999999...: DraftKings refused 2.29 with PotentialReturnsCalculation).
+      const ret = Math.floor(stake * Number(q.trueOdds) * 100 + 1e-6) / 100;
       const body = {
         bets: [{ type: 'Single', selectionsMapped: [{ id: q.id }], stake, trueOdds: q.trueOdds, displayOdds: q.displayOdds, numberOfBets: 1,
           isSP: false, potentialReturns: ret, token: q.token }],
@@ -179,7 +181,14 @@ export function makeDraftKings(name, label, cfg, bridge) {
       if (res.status < 400 && (OK.test(status) || (betId && !BAD.test(status)))) {
         return { betId: `draftkings:${betId || j.waitingBetId || uuid()}`, confirmedOdds: odds, detail };
       }
-      const reason = why(j) || status || `HTTP ${res.status}`;
+      // DraftKings puts the reason in different places (top level, per bet, per error); if none of
+      // the usual fields has it, show the start of its answer so the log always says why.
+      const deep = (o) => [o?.errorCode, o?.errorMessage, o?.message, o?.description, o?.title, o?.detail, o?.reason, o?.code, o?.type]
+        .filter((x) => typeof x === 'string' || typeof x === 'number').map(String).filter((x) => x && !OK.test(x));
+      const parts = [...new Set([why(j), why(b0), ...deep(j), ...deep(b0), ...(j.errors || []).flatMap(deep), ...(b0.errors || []).flatMap(deep),
+        ...(j.response?.bets || []).flatMap((x) => x?.declineReasons || []).map((d) => [d?.name, d?.reason].filter(Boolean).join(': '))].filter(Boolean))];
+      const raw = String(res.text || JSON.stringify(res.json ?? '') || '').replace(/\s+/g, ' ').slice(0, 300);
+      const reason = (parts.join(', ') || status || '') + (res.status >= 400 ? ` (HTTP ${res.status}${parts.length ? '' : raw ? `: ${raw}` : ''})` : '');
       const err = new Error(`rejected: ${reason}`);
       err.detail = detail;
       // NewOffer: DraftKings counter-offers another price (open for delayPeriod seconds). It's never
@@ -190,7 +199,7 @@ export function makeDraftKings(name, label, cfg, bridge) {
         const now = dkAmerican(b0.displayOdds, b0.trueOdds);
         if (now != null) err.newOdds = now;
       } else if (/odds|price/i.test(reason)) err.priceMoved = true;
-      else if (/suspend|closed|unavailable|not.?available/i.test(reason)) err.gone = true;
+      else if (/suspend|closed|unavailable|not.?available|RepeatedBets|already placed/i.test(reason)) err.gone = true;
       throw err;
     },
 

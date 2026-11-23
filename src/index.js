@@ -320,7 +320,7 @@ const fmtNovig = (nv) => `${fmtAmerican(nv.odds)}${nv.oppOdds != null ? `/${fmtA
 function stakeFor(quote) {
   let s = cfg.stake.amount;
   if (cfg.stake.capAtMaxStake && quote.maxStake) s = Math.min(s, quote.maxStake);
-  return Math.floor(s * 100) / 100;
+  return Math.floor(s * 100 + 1e-6) / 100;
 }
 
 const loudLog = { ...log, quiet: false, flush() {} };
@@ -437,7 +437,7 @@ async function placeAt(row, book, quote, ctx, retries = 0) {
   const room = groupRoom(cfg, groupTotals(state.placed), row);
   if (room == null && groupCoolingDown(cfg, groupTotals(state.placed), row)) { ctx.outcome = 'group cooldown'; lg.warn(`group cooldown: bet on (${row.event}, ${row.market}) on ${BOOK_LABELS[row.book]} less than ${cfg.group.cooldownSec}s ago — skipped`); return false; }
   if (room == null) { ctx.outcome = 'group full'; lg.warn(`group full: ${groupMaxBets(cfg, row) ?? 'any'}${row.isLive === false ? ' pre-game' : ''} bets / $${cfg.group.maxStake ?? 'any'} already on (${row.event}, ${row.market}, ${row.selection}) — skipped`); return false; }
-  const stake = Math.floor(Math.min(stakeFor(quote), room) * 100) / 100;
+  const stake = Math.floor(Math.min(stakeFor(quote), room) * 100 + 1e-6) / 100;
   if (stake <= 0) { ctx.outcome = 'stake 0'; lg.warn('stake is 0 — skipped'); return false; }
   if (cfg.dailyStakeLimit && state.staked + pendingStake + stake > cfg.dailyStakeLimit) {
     ctx.outcome = 'daily limit';
