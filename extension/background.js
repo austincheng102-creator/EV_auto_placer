@@ -699,7 +699,7 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch }) {
   return k;
 }
 const geoKeepers = {
-  betmgm: makeGeoKeeper({ book: 'betmgm', label: 'BetMGM', key: 'evPlacerMgmGeo', host: /(^|\.)betmgm\.com$/, setting: 'betmgmGeoRenew', clearMatch: 'geo|gds|locat',
+  betmgm: makeGeoKeeper({ book: 'betmgm', label: 'BetMGM', key: 'evPlacerMgmGeo', host: /(^|\.)betmgm\.com$/, setting: 'betmgmGeoRenew', clearMatch: '^(lastFetchLocationCommand|lastLocationInfoStatus)$',
     help: 'Is the GeoComply location app running on this PC, and are you logged in to BetMGM?' }),
   thescore: makeGeoKeeper({ book: 'thescore', label: 'theScore', key: 'evPlacerTsGeo', host: /^sportsbook\.thescore\.bet$/, setting: 'thescoreGeoRenew', clearMatch: '__GEOCOMPLY__$',
     help: 'Is the GeoComply location app running on this PC, does Chrome allow theScore to use your location, and are you logged in to theScore?' }),
