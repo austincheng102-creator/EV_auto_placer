@@ -12,8 +12,9 @@
 // sports.mi.betmgm.com); there is no Colorado feed. Market and option ids are the same in every
 // state (checked against Austin's CO recordings), so the link's ids are used and every price is
 // read from BetMGM CO.
-// Only BetMGM's newer markets ("6:..." fixtures) can be placed: the older ones (plain-number
-// fixtures, about half of Gambit's NBA/NCAAB/NHL game lines) have no bet recording yet.
+// Both kinds of BetMGM markets: newer ("6:..." fixtures, tv2Picks, betModel Option on the price id)
+// and older (plain-number fixtures, tv1Picks with gameId/resultId, betModel Result on the result
+// id; Austin's capture 2026-11-23). "betmgm": {"olderMarkets": false} skips the older ones.
 //  - location: BetMGM's own location check (GeoComply) runs in the page and is kept on BetMGM's
 //            side, so the bet request carries nothing for it.
 
@@ -50,9 +51,20 @@ export function findOption(j, ref) {
       const o = (m.options || []).find((x) => String(x.id) === String(ref.optionId));
       if (o) return { fixture: fx, market: m, option: o };
     }
+    // Older markets (plain-number fixtures, "v1"): fixture.games[].results[], the price on the result
+    // itself (Austin's capture 2026-11-23, Middle Tenn State at So Illinois, fixture 20129999).
+    // Shaped like a newer option so the rest of the code reads it the same way.
+    for (const g of fx.games || []) {
+      if (String(g.id) !== String(ref.marketId)) continue;
+      const r = (g.results || []).find((x) => String(x.id) === String(ref.optionId));
+      if (r) return { fixture: fx, market: { ...g, status: g.visibility }, v1: true,
+        option: { ...r, status: r.visibility, price: { id: r.id, americanOdds: r.americanOdds, odds: r.odds } } };
+    }
   }
   return null;
 }
+/** Older BetMGM market (plain-number fixture id, no "6:"). */
+export const isV1 = (ref) => /^\d+$/.test(String(ref?.fixtureId || ''));
 
 // The bet's details, the way the site sends them: sport, region, league, game, market, option,
 // each {id, value, sign} as BetMGM gave them with the price.
@@ -129,10 +141,13 @@ export function makeBetMGM(name, label, cfg, bridge) {
 
   // Why a row can't be bet on BetMGM, or null.
   const cantBet = (ref, row) => !ref.fixtureId ? `no BetMGM ids in Gambit's link (${String(row.link || 'no link').slice(0, 160)})`
-    : !/^\d+:\d+$/.test(ref.fixtureId) ? `older BetMGM market (fixture ${ref.fixtureId}), not supported yet` : null;
+    : isV1(ref) ? (b.olderMarkets === false ? `older BetMGM market (fixture ${ref.fixtureId}), off in config (betmgm.olderMarkets)` : null)
+    : !/^\d+:\d+$/.test(ref.fixtureId) ? `unknown BetMGM fixture id ${ref.fixtureId}` : null;
   const pickOf = (ref) => ({ fixtureId: ref.fixtureId, optionMarketId: Number(ref.marketId), isClassicBetBuilder: false, optionId: Number(ref.optionId) });
+  // Older markets are asked for as tv1Picks: game id = market, result id = option (as the site does).
+  const pick1Of = (ref) => ({ fixtureId: String(ref.fixtureId), gameId: Number(ref.marketId), resultId: Number(ref.optionId), useLiveFallback: false });
   async function readPicks(refs, kind = 'recheck') {
-    const res = await send(kind, picksUrl, 'POST', JSON.stringify({ tv1Picks: [], tv2Picks: refs.map(pickOf) }));
+    const res = await send(kind, picksUrl, 'POST', JSON.stringify({ tv1Picks: refs.filter(isV1).map(pick1Of), tv2Picks: refs.filter((r) => !isV1(r)).map(pickOf) }));
     if (authFail(res)) throw new Error(loginMsg);
     if (res.status >= 400 || !res.json) throw new Error(`price check HTTP ${res.status}: ${String(JSON.stringify(res.json) || res.text || '').slice(0, 200)}`);
     return res.json;
@@ -219,11 +234,12 @@ export function makeBetMGM(name, label, cfg, bridge) {
           betSlips: [{
             betSlipType: 'Single', index: 1, stake: { amount: stake, currency: 'USD' }, stakeTaxation: null,
             bets: [{
-              index: 1, isBanker: false, betModel: 'Option',
+              // Older markets are bet as betModel "Result" on the result id (Austin's capture).
+              index: 1, isBanker: false, betModel: hit.v1 ? 'Result' : 'Option',
               odds: { oddsFormat: 'American', american: quote.odds }, oddsFormat: 'American',
               additionalInformation: { informationItems: [
                 ...(fx.startDate ? [{ key: 'fixtureStartTime', value: fx.startDate, valueType: 'DateTime' }] : []),
-                ...(fx.fixtureType ? [{ key: 'fixtureType', value: fx.fixtureType, valueType: 'Enum' }] : []),
+                ...(fx.fixtureType && !hit.v1 ? [{ key: 'fixtureType', value: fx.fixtureType, valueType: 'Enum' }] : []),
               ] },
               picks: [{ id: String(hit.option.price.id) }],
               betDetails: betDetails(hit),
