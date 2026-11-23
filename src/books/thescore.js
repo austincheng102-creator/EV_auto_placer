@@ -2,7 +2,8 @@
 // the site itself sent for a $0.10 live straight bet (Austin's capture, 2026-11-23). Everything
 // is GraphQL "persisted queries" on sportsbook.us-co.thescore.bet, logged in by the tab's cookies:
 //  - price check: BetslipAddMarketSelection (puts the selection on your theScore bet slip, as a
-//    click on the odds does) -> the selection's current odds and status, and the draft bet/leg ids.
+//    click on the odds does) -> the draft bet/leg ids (its odds just echo the ones sent), then
+//    BetslipSetDraftBetAmount with $1 (no bet) -> the selection's current odds and status.
 //  - place:       BetslipSetDraftBetAmount (the stake), then BetslipPlaceBets with the odds we
 //                 checked. Price changes are never accepted for you (the site asks first).
 //                 Live bets: theScore holds the request ~9s before it answers.
@@ -168,8 +169,20 @@ export function makeTheScore(name, label, cfg, bridge) {
       } catch (e) { active.delete(sel); throw e; }
       const slip = d.betslipAddMarketSelection;
       tidy(slip);
-      const hit = findDraft(slip, sel);
+      let hit = findDraft(slip, sel);
       if (!hit) return { odds: null, line: row.line, suspended: true, why: errorsOf(slip).join(', ') };
+      // BetslipAddMarketSelection answers with the odds we sent it (Gambit's price), not theScore's
+      // current one: in Austin's captures it always matched what was sent (-310 sent, -310 back, then
+      // -420 at the stake step 7s later), and his log showed "re-check OK +170" then "price moved to
+      // +125" at the stake step the same second. So the check also sets a $1 stake on the slip
+      // (BetslipSetDraftBetAmount, no bet made), whose answer has the current price, and uses that.
+      // place() sets the real stake and compares the price once more.
+      try {
+        const set = await gql('recheck', 'BetslipSetDraftBetAmount', { isSubscription: false, amount: 100, oddsFormat: 'AMERICAN', draftBetId: hit.bet.id,
+          amountField: 'BET', includeOddsTrend: true, includeSurcharge: false });
+        const cur = findDraft(set?.betslipSetDraftBetAmount, sel);
+        if (cur) hit = cur;
+      } catch (e) { active.delete(sel); throw e; }
       const ms = hit.leg.marketSelection || {};
       return { odds: tsAmerican(ms.odds), line: lineOf(hit.leg, row), suspended: !/^OPEN$/i.test(String(ms.status || 'OPEN')) || hit.leg.errors?.length > 0,
         maxStake: null, draft: { betId: hit.bet.id, legId: hit.leg.id, selId: sel, odds: ms.odds, delayMs: hit.bet.placeBetDelayMilliseconds } };
