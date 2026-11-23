@@ -8,7 +8,10 @@
 //                 Live bets: theScore holds the request ~9s before it answers.
 //  - results:     BetHistorySection "settled" (My Bets > Settled).
 // Selection ids are the same everywhere, so Gambit's link (market_selection_id[0]=<id>) is used.
-// The price check leaves the selection on your theScore bet slip if no bet follows.
+// The price check puts the pick on your theScore bet slip, so the app takes it off again when no bet
+// follows, and takes off any other pick it finds there that isn't one of its own checks in progress
+// (Austin, 2026-11-23: leftover picks piled up and the slip switched to its parlay tab). Each bet is
+// always sent as its own straight bet, whatever else is on the slip.
 
 import { decimalToAmerican, americanToDecimal } from '../ev.js';
 
@@ -20,6 +23,7 @@ export const TS_QUERIES = {
   BetslipPlaceBets: 'ed2205e45e0de7f40f6a0dd2971bca2f75020a7556d6abc1847a2ce4be054011',
   BetHistorySection: 'e78fa271d080f9d7d2cd5c8df3a002b1bd8af9870d956f9a8a1da9597176875f',
   SpentInSession: 'd4de4e54fa944b2363993c64d3a1c2eb248ffc66c6042a0724c06fae96ffdd2e',
+  BetslipRemoveMarketSelection: '448fff337fa83adb0b3c279ec93b13fc1255efda2428749aa182ea24044c3832',
 };
 
 /** theScore selection id from Gambit's link: ...?market_selection_id[0]=<uuid>&odds_numerator[0]=.. */
@@ -128,6 +132,24 @@ export function makeTheScore(name, label, cfg, bridge) {
     return Number.isFinite(n) ? (Math.abs(n) === Math.abs(row.line) ? row.line : n) : row.line;
   };
 
+  // Picks the app has on the slip for a check or bet still in progress (selection id -> when added).
+  const active = new Map();
+  const kept = new Set();   // placed with keepBetslipSelections (other checks were on the slip)
+  let tidying = Promise.resolve();
+  const opts = { oddsFormat: 'AMERICAN', includeOddsTrend: false, includeSurcharge: false, isSubscription: false };
+  // Takes picks off the slip one at a time, after the bet work (never holds up a check or a bet).
+  const removeSel = (slipId) => {
+    tidying = tidying.then(() => gql('tidy', 'BetslipRemoveMarketSelection', { ...opts, selectionId: slipId }, { ms: 15000 })).catch(() => {});
+    return tidying;
+  };
+  const slipIdOf = (m) => m?.id || (m?.rawId ? `BetslipMarketSelection:${m.rawId}` : null);
+  // Everything on the slip that isn't one of our checks in progress (picks left from earlier checks,
+  // or from before an app restart). Also forgets picks stuck in `active` for over 3 minutes.
+  const tidy = (slip) => {
+    for (const [id, at] of active) if (Date.now() - at > 180e3) active.delete(id);
+    for (const m of slip?.marketSelections || []) if (m?.rawId && !active.has(m.rawId)) { const id = slipIdOf(m); if (id) removeSel(id); }
+  };
+
   return {
     name, label,
 
@@ -135,10 +157,15 @@ export function makeTheScore(name, label, cfg, bridge) {
     async recheck(row) {
       const sel = row.bookRef || thescoreRef(row.link).bookRef;
       if (!sel) throw new Error(`no theScore selection id in Gambit's link (${String(row.link || 'no link').slice(0, 160)})`);
-      const d = await gql('recheck', 'BetslipAddMarketSelection', { isSubscription: false,
-        input: { selectionId: `MarketSelection:${sel}`, odds: row.tsOdds || tsFraction(row.odds), selectionOrigin: null },
-        oddsFormat: 'AMERICAN', includeOddsTrend: true, includeSurcharge: false });
+      active.set(sel, Date.now());
+      let d;
+      try {
+        d = await gql('recheck', 'BetslipAddMarketSelection', { isSubscription: false,
+          input: { selectionId: `MarketSelection:${sel}`, odds: row.tsOdds || tsFraction(row.odds), selectionOrigin: null },
+          oddsFormat: 'AMERICAN', includeOddsTrend: true, includeSurcharge: false });
+      } catch (e) { active.delete(sel); throw e; }
       const slip = d.betslipAddMarketSelection;
+      tidy(slip);
       const hit = findDraft(slip, sel);
       if (!hit) return { odds: null, line: row.line, suspended: true, why: errorsOf(slip).join(', ') };
       const ms = hit.leg.marketSelection || {};
@@ -164,12 +191,14 @@ export function makeTheScore(name, label, cfg, bridge) {
         throw e;
       }
       const odds = tsAmerican(dr.odds) === quote.odds ? dr.odds : tsFraction(quote.odds);
+      const keep = active.size > 1;
+      if (keep) kept.add(dr.selId);
       const win = Math.round(cents * (Number(odds.numeratorLong) / Number(odds.denominatorLong) - 1));
       const d = await gql('place', 'BetslipPlaceBets', { isSubscription: false, bets: [{
         amountSourceType: 'CASH', betAmount: cents, betAmountLong: String(cents), boostedWinAmountLong: '0', draftBetId: dr.betId,
         draftLegs: [{ draftLegId: dr.legId, marketSelectionId: `BetslipMarketSelection:${dr.selId}`, odds: { denominatorLong: odds.denominatorLong, numeratorLong: odds.numeratorLong }, probabilityEncrypted: null }],
         freeBetId: null, profitBoostId: null, sameGameParlayLegs: [], teaserPoints: null, type: 'STRAIGHT', winAmount: win, winAmountLong: String(win),
-      }], oddsFormat: 'AMERICAN', keepBetslipSelections: false, includeOddsTrend: true, includeSurcharge: false }, { ms: 45000 });
+      }], oddsFormat: 'AMERICAN', keepBetslipSelections: keep, includeOddsTrend: true, includeSurcharge: false }, { ms: 45000 });
       const r = d.betslipPlaceBets || {};
       const placed = (r.placedBets || []).find((p) => (p.legs || []).some((l) => l.marketSelectionId === dr.selId)) || (r.placedBets || [])[0];
       if (placed?.id) return { betId: `thescore:${String(placed.id).replace(/^PlacedBet:/, '')}`, confirmedOdds: null, detail: `theScore place response: ${JSON.stringify(r).slice(0, 3000)}` };
@@ -188,6 +217,15 @@ export function makeTheScore(name, label, cfg, bridge) {
       if (/odds|price/i.test(why)) err.priceMoved = true;
       else if (/suspend|closed|unavailable|not.?(available|open)/i.test(why)) err.gone = true;
       throw err;
+    },
+
+    // The app is done with this check (placed or not): take the pick off the slip. After a bet the
+    // site already cleared it unless other checks were on the slip (then it was kept for them).
+    async done(row, quote, placed) {
+      const sel = quote?.draft?.selId || row.bookRef || thescoreRef(row.link).bookRef;
+      if (!sel || !active.has(sel)) return;
+      active.delete(sel);
+      if (!placed || kept.delete(sel)) await removeSel(`BetslipMarketSelection:${sel}`);
     },
 
     // Settled bets (My Bets > Settled, theScore's default last 7 days), newest first, 25 a page.

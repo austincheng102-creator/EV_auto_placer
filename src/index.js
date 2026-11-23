@@ -730,6 +730,7 @@ function startBet(row, scanAt, t = {}) {
     .catch((e) => { ctx.outcome = 'error'; log.err(`${book.label}: ${e.message}`); return false; })
     .then((ok) => {
       inflight.delete(k);
+      book.done?.(row, ctx.quote, ok)?.catch?.(() => {});   // e.g. theScore: take the pick off its bet slip
       if (row.isProp) propFunnel?.outcome(row, ctx.outcome);
       if (ctx.attempts.length) logTiming(row, book, ctx);
       const now = Date.now();
