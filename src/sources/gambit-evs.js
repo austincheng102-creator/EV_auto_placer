@@ -9,7 +9,9 @@ import { betmgmRef } from '../books/betmgm.js';
 // Gambit sportsbook ids -> our book names.
 // Hard Rock: Gambit lists it as 850, 851, 1008 and 1016. 851 is Colorado (its bets were accepted
 // in CO; 850/1008 came back UNAVAILABLE), so that's the default.
-// BetMGM: Gambit has 400 (BetMGM) and 1001 (BetMGM MI); 400 is the default.
+// BetMGM: Gambit's 1001 is Michigan (sports.mi.betmgm.com) and 400 is Ontario (betmgm.ca), with
+// no Colorado feed. Gambit's own "BetMGM" choice is 400. Ids are the same in every state, and
+// prices are read from BetMGM CO before EV is judged.
 export const DEFAULT_BOOK_IDS = { betrivers: 1004, fanduel: 100, hardrock: 851, betmgm: 400 };
 // Books whose Gambit id we don't know yet: found from their bet links' web address
 // (gambit.bookIds in config.json overrides this).

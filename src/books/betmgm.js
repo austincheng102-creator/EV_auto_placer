@@ -8,10 +8,16 @@
 //            oddsAcceptanceMode "No", so BetMGM refuses the bet if the price changed.
 //  - auth:   the site's cookies (the request runs inside your BetMGM tab) plus an x-xsrf-token
 //            header the page sends with every request; the extension copies it from the tab.
+// Gambit's BetMGM links are Ontario (400, sports.on.betmgm.ca) and Michigan (1001,
+// sports.mi.betmgm.com); there is no Colorado feed. Market and option ids are the same in every
+// state (checked against Austin's CO recordings), so the link's ids are used and every price is
+// read from BetMGM CO.
+// Only BetMGM's newer markets ("6:..." fixtures) can be placed: the older ones (plain-number
+// fixtures, about half of Gambit's NBA/NCAAB/NHL game lines) have no bet recording yet.
 //  - location: BetMGM's own location check (GeoComply) runs in the page and is kept on BetMGM's
 //            side, so the bet request carries nothing for it.
 
-import { decimalToAmerican } from '../ev.js';
+import { decimalToAmerican, americanToDecimal } from '../ev.js';
 
 const XSRF = '{{bmXsrf}}';
 
@@ -121,33 +127,78 @@ export function makeBetMGM(name, label, cfg, bridge) {
   const authFail = (res) => res.status === 401 || res.status === 403;
   const refOf = (row) => (row.fixtureId && row.marketId && row.optionId ? row : betmgmRef(row.link));
 
-  async function readPick(row) {
-    const ref = refOf(row);
-    if (!ref.fixtureId) throw new Error(`no BetMGM ids in Gambit's link (${String(row.link || 'no link').slice(0, 160)})`);
-    const res = await send('recheck', picksUrl, 'POST', JSON.stringify({ tv1Picks: [], tv2Picks: [{ fixtureId: ref.fixtureId, optionMarketId: Number(ref.marketId), isClassicBetBuilder: false, optionId: Number(ref.optionId) }] }));
+  // Why a row can't be bet on BetMGM, or null.
+  const cantBet = (ref, row) => !ref.fixtureId ? `no BetMGM ids in Gambit's link (${String(row.link || 'no link').slice(0, 160)})`
+    : !/^\d+:\d+$/.test(ref.fixtureId) ? `older BetMGM market (fixture ${ref.fixtureId}), not supported yet` : null;
+  const pickOf = (ref) => ({ fixtureId: ref.fixtureId, optionMarketId: Number(ref.marketId), isClassicBetBuilder: false, optionId: Number(ref.optionId) });
+  async function readPicks(refs, kind = 'recheck') {
+    const res = await send(kind, picksUrl, 'POST', JSON.stringify({ tv1Picks: [], tv2Picks: refs.map(pickOf) }));
     if (authFail(res)) throw new Error(loginMsg);
     if (res.status >= 400 || !res.json) throw new Error(`price check HTTP ${res.status}: ${String(JSON.stringify(res.json) || res.text || '').slice(0, 200)}`);
-    return { ref, hit: findOption(res.json, ref) };
+    return res.json;
   }
+  async function readPick(row) {
+    const ref = refOf(row);
+    const no = cantBet(ref, row);
+    if (no) throw new Error(no);
+    return { ref, hit: findOption(await readPicks([ref]), ref) };
+  }
+  // The line BetMGM shows now: from the option's name ("Over 45", "Minnesota Vikings +7.5"), else
+  // the market's. Gambit's line if it's the same number.
+  const lineNow = (hit, row) => {
+    if (row.line == null) return row.line;
+    const inName = String(hit.option.name?.value || '').match(/[+-]?\d+(?:\.\d+)?(?!.*\d)/);
+    const n = Number(inName ? inName[0] : hit.market.attr ?? (hit.market.parameters || []).find((p) => /^Decimal(Value|Handicap)$/.test(p.key))?.value);
+    return Number.isFinite(n) ? (Math.abs(n) === Math.abs(row.line) ? row.line : n) : row.line;
+  };
+  const visible = (s) => !s || /^visible$/i.test(String(s));
 
   return {
     name, label,
+
+    // Colorado prices for EV: every scan (and the 1s fast check), BetMGM CO's own price for each
+    // BetMGM row within directMarginPts (5) of min EV, read in batches of 10, replaces Gambit's
+    // Michigan price. A row whose line moved or that's suspended is dropped. "betmgm":
+    // {"coPrices": false} goes back to Gambit's price (the check before a bet is always CO's).
+    async livePrices(rows, minEvPct) {
+      const st = { read: 0, moved: 0, gone: 0, unmatched: 0, why: '' };
+      if (b.coPrices === false) return st;
+      const margin = b.directMarginPts ?? 5, max = b.directMax ?? 60;
+      const want = rows.filter((r) => r.book === name && Number.isFinite(r.ev) && r.ev >= minEvPct - margin)
+        .sort((x, y) => y.ev - x.ev).slice(0, max);
+      const ok = [];
+      for (const r of want) {
+        const no = cantBet(refOf(r), r);
+        if (no) { st.unmatched++; if (!st.why) st.why = `${r.event} ${r.market || r.marketKey}: ${no}`; r.ev = -Infinity; r.direct = 'gone'; continue; }
+        ok.push(r);
+      }
+      for (let i = 0; i < ok.length; i += 10) {
+        const part = ok.slice(i, i + 10);
+        let j;
+        try { j = await readPicks(part.map(refOf), 'prices'); } catch (e) { if (!st.why) st.why = e.message; continue; }
+        for (const r of part) {
+          const hit = findOption(j, refOf(r));
+          if (!hit) { st.unmatched++; continue; }   // keeps Gambit's price; the bet's own check decides
+          const odds = bmAmerican(hit.option.price);
+          r.gambitOdds = r.odds; r.gambitEv = r.ev;
+          if (odds == null || !visible(hit.option.status) || !visible(hit.market.status) || lineNow(hit, r) !== r.line) { r.direct = 'gone'; r.ev = -Infinity; st.gone++; continue; }
+          st.read++;
+          if (odds !== r.odds) st.moved++;
+          r.direct = true; r.odds = odds;
+          r.ev = (r.fairProb * americanToDecimal(odds) - 1) * 100;
+        }
+      }
+      return st;
+    },
 
     // The price check: BetMGM's current price for this option (no bet is made).
     async recheck(row) {
       const { hit } = await readPick(row);
       if (!hit) return { odds: null, line: row.line, suspended: true };
       const odds = bmAmerican(hit.option.price);
-      const visible = (s) => !s || /^visible$/i.test(String(s));
       // BetMGM's main spread/total markets are "rolling lines": the same market and option can
-      // move to a new line. So read the line now (from the option's name, "Over 45",
-      // "Minnesota Vikings +7.5", else the market's) and let the engine skip a line that moved.
-      const line = (() => {
-        if (row.line == null) return row.line;
-        const inName = String(hit.option.name?.value || '').match(/[+-]?\d+(?:\.\d+)?(?!.*\d)/);
-        const n = Number(inName ? inName[0] : hit.market.attr ?? (hit.market.parameters || []).find((p) => /^Decimal(Value|Handicap)$/.test(p.key))?.value);
-        return Number.isFinite(n) ? (Math.abs(n) === Math.abs(row.line) ? row.line : n) : row.line;
-      })();
+      // move to a new line, so the engine skips one whose line moved.
+      const line = lineNow(hit, row);
       return { odds, line, suspended: !visible(hit.option.status) || !visible(hit.market.status) || !hit.option.price,
         pick: hit, maxStake: null };
     },

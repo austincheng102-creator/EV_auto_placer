@@ -90,8 +90,13 @@ One app runs either book; the Gambit feed, Novig check, EV math and limits are s
 - Daily stake limit, groups and once-per-book rules cover FanDuel like the other books.
 
 **BetMGM (Colorado, www.co.betmgm.com)** is wired from recordings of real $0.10 pre-game and live bets:
-- Gambit id 400 (`"gambit": {"bookIds": {"betmgm": ...}}` changes it). The bet is found from the
-  fixture, market and option ids in Gambit's BetMGM link.
+- Gambit has no Colorado BetMGM: 400 ("BetMGM" on Gambit) links to Ontario and 1001 to Michigan.
+  The app uses 400 (`"gambit": {"bookIds": {"betmgm": 1001}}` switches). Market and option ids are
+  the same in every state, so the bet is found from the ids in Gambit's link.
+- **Colorado prices for EV**: every scan the app reads BetMGM CO's own price for each BetMGM row
+  within 5 points of min EV and recomputes EV from it. `"betmgm": {"coPrices": false}` turns it off.
+- Only BetMGM's newer markets can be bet for now (all NFL, NBA props, some NBA/NCAAB/NHL lines).
+  Rows on its older markets (links with a plain-number game id) are skipped with a note.
 - **Price re-check**: BetMGM's own current price and line for that option (no login needed, no
   bet made). BetMGM's main spreads/totals are rolling lines, so a line that moved is skipped.
 - **Bet**: sent at exactly that price with "accept odds changes" off. Live bets wait out BetMGM's
