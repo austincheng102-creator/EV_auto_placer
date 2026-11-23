@@ -1073,6 +1073,24 @@ async function sendTabs() {
 
 // Runs in the page (MAIN world). Must be self-contained.
 async function pageFetch(req) {
+  // A WebSocket request (DraftKings' My Bets): open it from the page, send each message, and answer
+  // with the first message whose JSON "id" is req.ws.replyId (or an error / timeout), then close.
+  if (req.ws) {
+    return await new Promise((resolve) => {
+      let done = false, sock;
+      const end = (o) => { if (done) return; done = true; try { sock?.close(); } catch {} resolve(o); };
+      const timer = setTimeout(() => end({ status: 0, error: 'websocket: no answer in time' }), req.timeoutMs || 20000);
+      try { sock = new WebSocket(req.url); } catch (e) { clearTimeout(timer); return end({ status: 0, error: `websocket: ${e?.message || e}` }); }
+      sock.onopen = () => { for (const m of req.ws.send || []) sock.send(m); };
+      sock.onmessage = (ev) => {
+        const text = String(ev.data || '');
+        let j = null; try { j = JSON.parse(text); } catch {}
+        if (j && j.id === req.ws.replyId) { clearTimeout(timer); end({ status: j.error ? 400 : 200, text, json: j }); }
+      };
+      sock.onerror = () => { clearTimeout(timer); end({ status: 0, error: 'websocket: connection failed (logged out?)' }); };
+      sock.onclose = (ev) => { clearTimeout(timer); end({ status: 0, error: `websocket closed (${ev.code}${ev.reason ? `, ${ev.reason}` : ''})` }); };
+    });
+  }
   try {
   const headers = { ...(req.headers || {}) };
   // Optional: copy auth headers the site keeps in localStorage/sessionStorage.

@@ -8,6 +8,8 @@
 //                 refuses the bet if the price moved. Live bets come back "LiveDelay" (3s) with a
 //                 waitingBetId; the outcome comes from .../waitingBets (an event stream that ends
 //                 once DraftKings decides), read with a short-lived login token (generateEnterpriseJWT).
+//  - results:     My Bets > Settled, which the site reads over a WebSocket (gateway .../shelby/api/v1/
+//                 websocket?jwt=..., JSON-RPC "BetsRequest" filter Settled, 25 a page, newest first).
 // Selection ids ("0ML87369883_1") are the same everywhere, so Gambit's link (?outcomes=<id>) is used.
 // DraftKings runs bot detection in its page; bets placed by the app carry no clicks.
 
@@ -57,6 +59,19 @@ const uuid = () => (globalThis.crypto?.randomUUID?.() || 'xxxxxxxx-xxxx-4xxx-yxx
   const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16);
 }));
 const OK = /^(placed|accepted|success|succeeded|open|confirmed)$/i;
+/** One settled DraftKings bet (My Bets "BetsRequest" reply) as a result for results.json. */
+export function dkSettled(b) {
+  if (!b?.betId || (b.numberOfSelections ?? 1) !== 1 || !/^settled$/i.test(String(b.status || ''))) return null;
+  const st = String(b.settlementStatus || '');
+  const result = /cash/i.test(st) ? 'cashout' : /half/i.test(st) ? (/won|win/i.test(st) ? 'half-won' : 'half-lost')
+    : /won|win/i.test(st) ? 'won' : /lost|lose/i.test(st) ? 'lost' : /push|tie|draw/i.test(st) ? 'push'
+    : /void|cancel|refund/i.test(st) ? 'void' : null;
+  if (!result) return null;
+  const n = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v) * 100) / 100 : null);
+  return { betId: String(b.betId), result, status: st, payout: result === 'lost' ? 0 : n(b.returns), stake: n(b.stake),
+    odds: dkAmerican(b.displayOdds), settledAt: b.settlementDate || null, placedAt: b.placementDate || null };
+}
+
 const BAD = /reject|declin|fail|cancel|error|expired/i;
 
 export function makeDraftKings(name, label, cfg, bridge) {
@@ -175,6 +190,28 @@ export function makeDraftKings(name, label, cfg, bridge) {
       } else if (/odds|price/i.test(reason)) err.priceMoved = true;
       else if (/suspend|closed|unavailable|not.?available/i.test(reason)) err.gone = true;
       throw err;
+    },
+
+    // Settled bets placed since `from` (ms), newest first, read 25 at a time like the My Bets page.
+    async settled(from = 0) {
+      const ws = `${(k.gateway || 'https://gateway.northamerica-northeast2.prod.dkapis.com').replace(/^https/, 'wss').replace(/\/[^/]*\/betting\/v2$/, '')}/${site}/shelby/api/v1/websocket?format=json`;
+      const out = [];
+      for (let page = 0; page < 20; page++) {
+        const jwt = await loginJwt();
+        const init = uuid(), id = uuid();
+        const msgs = [
+          JSON.stringify({ jsonrpc: '2.0', method: 'InitializeBetsPageRequest', id: init, params: { betsRequest: { filter: { status: 'All' }, pagination: { count: 25, skip: 0 }, ScoreboardType: 'EventScore' }, cashOut: { information: true, pullOperations: true }, locale: 'en' } }),
+          JSON.stringify({ jsonrpc: '2.0', method: 'BetsRequest', id, params: { filter: { status: 'Settled' }, orderCriteria: { orderBy: 'placementDate', direction: 'DESC' }, pagination: { count: 25, skip: page * 25 }, locale: 'en', ScoreboardType: 'EventScore' } }),
+        ];
+        const r = await send('history', `${ws}&jwt=${encodeURIComponent(jwt)}`, 'GET', null, {}, 25000, { ws: { send: msgs, replyId: id }, timeoutMs: 20000 });
+        if (r.error && !r.json) throw new Error(`DraftKings My Bets: ${r.error}`);
+        if (r.json?.error) throw new Error(`DraftKings My Bets: ${JSON.stringify(r.json.error).slice(0, 200)}`);
+        const bets = r.json?.result?.bets || [];
+        for (const b of bets) { const x = dkSettled(b); if (x) out.push(x); }
+        const oldest = Math.min(...bets.map((b) => Date.parse(b.placementDate)).filter(Number.isFinite));
+        if (bets.length < 25 || !(oldest > from)) break;
+      }
+      return out;
     },
 
     // Once a minute (session.js): the short login token the site asks for before betting.
