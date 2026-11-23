@@ -106,6 +106,11 @@ export function makeDraftKings(name, label, cfg, bridge) {
 
   return {
     name, label,
+    // The price check (calculateBets + selection info) makes no bet, so a failed check is checked
+    // again on later scans. DraftKings watches for bots, so a watched bet is re-checked at most
+    // every 5s ("draftkings": {"recheckWatchSec": 5}).
+    freePriceCheck: true,
+    recheckWatchSec: 5,
 
     async recheck(row) {
       const id = row.bookRef || draftkingsRef(row.link).bookRef;

@@ -233,8 +233,8 @@ const COOLDOWN_MS = 5 * 60 * 1000;
 const inflight = new Map(); // book|groupKey -> row
 let pendingStake = 0;
 const maxInFlight = Math.max(1, Number(cfg.maxInFlight ?? 3));
-// After a failed price check, a book whose price check is free (BetRivers: a public read, no bet
-// is made) re-checks that bet on every scan for a few minutes, as long as Gambit still lists it
+// After a failed price check, a book whose price check is free (every book: the check makes no
+// bet) re-checks that bet on every scan for a few minutes, as long as Gambit still lists it
 // and it passes every rule, instead of ignoring it for 5 minutes. "recheckWatchMinutes": 0 = off.
 const WATCH_MS = Number(cfg.recheckWatchMinutes ?? 5) * 60e3;
 const watch = new Map(); // row.id -> { since, sig }
@@ -760,9 +760,12 @@ function startBet(row, scanAt, t = {}) {
       const now = Date.now();
       const w = watch.get(row.id);
       if (ok) watch.delete(row.id);
-      else if (book.freePriceCheck && WATCH_MS > 0 && ctx.quote && (!ctx.sent || ctx.priceMoved) && (!w || now - w.since < WATCH_MS)) {
+      // A fresh-jump skip only waits for the jump to be freshJump.sec old, so it's watched on every book.
+      else if ((book.freePriceCheck || ctx.outcome === 'fresh jump') && WATCH_MS > 0 && ctx.quote && (!ctx.sent || ctx.priceMoved) && (!w || now - w.since < WATCH_MS)) {
         if (!w) watch.set(row.id, { since: now, sig: ctx.sig });
-        cooldown.delete(row.id);   // check it again next scan
+        // Check it again next scan, or after the book's recheckWatchSec (DraftKings: 5s).
+        const gap = Number(cfg[row.book]?.recheckWatchSec ?? book.recheckWatchSec ?? 0);
+        if (gap > 0) cooldown.set(row.id, now + gap * 1000); else cooldown.delete(row.id);
       } else {
         if (w && !ctx.sent && now - w.since >= WATCH_MS) log.info(`stopped re-checking ${desc(row)} (${row.event}) after ${Math.round(WATCH_MS / 60e3)} min, last ${books[row.book].label} price ${fmtAmerican(ctx.quote?.odds)}`);
         watch.delete(row.id);
