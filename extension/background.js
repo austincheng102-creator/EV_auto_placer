@@ -579,7 +579,16 @@ async function keepBrGeo() {
 // Off with config.json "session": {"betmgmGeoRenew": false} / {"thescoreGeoRenew": false}.
 const GEO_RENEW_BEFORE_MS = 90e3;
 const readPageGeo = (key) => { try { return sessionStorage.getItem(key); } catch { return null; } };
-function makeGeoKeeper({ book, label, key, host, setting, help }) {
+// Removes the page's own saved location check (storage keys ending in `suffix`), so the reload runs a
+// new one instead of reusing the saved one. Returns the keys removed.
+const clearPageGeo = (suffix) => {
+  const out = [];
+  for (const st of [localStorage, sessionStorage]) {
+    try { for (const k of Object.keys(st)) if (k.endsWith(suffix)) { st.removeItem(k); out.push(k); } } catch {}
+  }
+  return out;
+};
+function makeGeoKeeper({ book, label, key, host, setting, help, clearSuffix }) {
   const k = { book, label, setting, g: {}, job: null, triedAt: 0, fails: 0, busyAt: 0, refusedAt: 0, last: null };
   store.get(`geo_${book}`).then((v) => { if (v?.[`geo_${book}`] && !k.g.updateAt) k.g = v[`geo_${book}`]; });
   const note = (text, level = 'warn') => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book, level, text })); };
@@ -625,6 +634,9 @@ function makeGeoKeeper({ book, label, key, host, setting, help }) {
       }
       reloadedAt[book] = Date.now();
       lastReload = { book, why: `renew the location check: ${name}`, at: Date.now() };
+      // theScore saves its location check in the browser and, on a reload, reuses it while it's still
+      // valid instead of running a new one (so a reload alone didn't renew it). Remove the saved copy first.
+      if (clearSuffix) await chrome.scripting.executeScript({ target: { tabId: t.id }, world: 'MAIN', func: clearPageGeo, args: [clearSuffix] }).catch(() => {});
       await chrome.tabs.reload(t.id).catch(() => {});
       let g = {};
       try {
@@ -669,7 +681,7 @@ function makeGeoKeeper({ book, label, key, host, setting, help }) {
 const geoKeepers = {
   betmgm: makeGeoKeeper({ book: 'betmgm', label: 'BetMGM', key: 'evPlacerMgmGeo', host: /(^|\.)betmgm\.com$/, setting: 'betmgmGeoRenew',
     help: 'Is the GeoComply location app running on this PC, and are you logged in to BetMGM?' }),
-  thescore: makeGeoKeeper({ book: 'thescore', label: 'theScore', key: 'evPlacerTsGeo', host: /^sportsbook\.thescore\.bet$/, setting: 'thescoreGeoRenew',
+  thescore: makeGeoKeeper({ book: 'thescore', label: 'theScore', key: 'evPlacerTsGeo', host: /^sportsbook\.thescore\.bet$/, setting: 'thescoreGeoRenew', clearSuffix: '__GEOCOMPLY__',
     help: 'Is the GeoComply location app running on this PC, does Chrome allow theScore to use your location, and are you logged in to theScore?' }),
 };
 
