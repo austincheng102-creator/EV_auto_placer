@@ -1151,19 +1151,33 @@ async function keepDkSpan() {
 // login box with the email remembered). Logs back in like the Gambit auto login: real clicks through
 // Chrome's debugger so Chrome fills its saved password, then "Log in". The extension never reads,
 // keeps or sends your password. Off with config.json "session": {"betmgmAutoLogin": false}.
-const mgmLogin = { busy: false, triedAt: 0, fails: 0, last: null };
+// Retries every 5 seconds (Austin, 2026-11-23: 2 minutes was too long), slowing to once a minute
+// after 20 tries in a row. But after it actually pressed Log in and BetMGM still refused, it waits
+// 2 minutes (10 after 3 in a row): fast wrong-password tries can lock the account.
+const mgmLogin = { busy: false, triedAt: 0, fails: 0, subFails: 0, submitted: false, last: null, timer: null, saidAt: 0, said: '' };
+const mgmLoginGap = () => (mgmLogin.subFails ? (mgmLogin.subFails >= 3 ? 10 * 60e3 : 2 * 60e3) : mgmLogin.fails >= 20 ? 60e3 : 5e3);
 async function autoLoginBetMGM() {
   if (settings.betmgmAutoLogin === false || mgmLogin.busy) return;
   const t = (await bookTabs()).find((x) => x.book === 'betmgm' && /(^|\.)betmgm\.com$/.test(new URL(x.url).hostname));
   if (!t || t.discarded || dbgBusy.has(t.id) || geoKeepers.betmgm.job || placing.betmgm > 0) return;
   let f = await inPage(t.id, false).catch(() => ({ state: 'no-page' }));
   if (f.state === 'logged-in' || f.state === 'no-page') return;
-  const gap = mgmLogin.fails >= 3 ? 10 * 60e3 : 2 * 60e3;
-  if (Date.now() - mgmLogin.triedAt < gap) return;
+  if (Date.now() - mgmLogin.triedAt < mgmLoginGap() - 500) return;
   if (!chrome.debugger) return;
   mgmLogin.busy = true; mgmLogin.triedAt = Date.now();
   const note = (text, level = 'warn') => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book: 'betmgm', level, text })); };
-  const done = (ok, why) => { mgmLogin.last = { at: Date.now(), ok, why }; mgmLogin.fails = ok ? 0 : mgmLogin.fails + 1; note(ok ? `BetMGM: ${why}` : `BetMGM auto login failed: ${why}. Trying again in ${mgmLogin.fails >= 3 ? 10 : 2} min`, ok ? 'good' : 'warn'); };
+  const done = (ok, why) => {
+    mgmLogin.last = { at: Date.now(), ok, why };
+    mgmLogin.fails = ok ? 0 : mgmLogin.fails + 1;
+    mgmLogin.subFails = ok ? 0 : mgmLogin.submitted ? mgmLogin.subFails + 1 : mgmLogin.subFails;
+    if (ok) { mgmLogin.said = ''; return note(`BetMGM: ${why}`, 'good'); }
+    // The same failure every 5 seconds: say it once a minute.
+    if (why === mgmLogin.said && Date.now() - mgmLogin.saidAt < 60e3) return;
+    mgmLogin.said = why; mgmLogin.saidAt = Date.now();
+    const gap = mgmLoginGap();
+    note(`BetMGM auto login failed: ${why}. Trying again every ${gap >= 60e3 ? `${gap / 60e3} min` : `${gap / 1000}s`}`);
+  };
+  mgmLogin.submitted = false;
   const target = { tabId: t.id };
   let attached = false, back = null;
   dbgBusy.add(t.id);
@@ -1178,7 +1192,7 @@ async function autoLoginBetMGM() {
     await chrome.tabs.update(t.id, { active: true }).catch(() => {});
     if (tb) await chrome.windows.update(tb.windowId, { focused: true, ...(back.minimized ? { state: 'normal' } : {}) }).catch(() => {});
     await sleep(800);
-    note('BetMGM is logged out: logging back in with Chrome\'s saved password', 'info');
+    if (!mgmLogin.fails) note('BetMGM is logged out: logging back in with Chrome\'s saved password', 'info');
     f = await inPage(t.id, true);
     if (f.state !== 'form' || !f.pass) return done(false, f.state === 'no-form' ? 'clicked Log In but no login box showed up' : `couldn't find the login box (${f.state})`);
     if (f.captcha) return done(false, 'BetMGM is showing an "are you a robot" check: log in by hand');
@@ -1213,6 +1227,7 @@ async function autoLoginBetMGM() {
     if (g.state !== 'form') return done(false, `the login box closed unexpectedly (${g.state})`);
     if (!g.passLen) return done(false, 'Chrome didn\'t fill in the saved password. Save your BetMGM password in Chrome (chrome://password-manager) by logging in once and choosing Save');
     if (!g.submit) return done(false, 'couldn\'t find the Log in button');
+    mgmLogin.submitted = true;
     await realClick(target, g.submit);
     for (let i = 0; i < 20; i++) {
       await sleep(1000);
@@ -1228,6 +1243,11 @@ async function autoLoginBetMGM() {
     if (back?.minimized) await chrome.windows.update(back.windowId, { state: 'minimized' }).catch(() => {});
     dbgBusy.delete(t.id);
     mgmLogin.busy = false;
+    // Still logged out: try again after the gap (the 30-second check would be too slow).
+    if (mgmLogin.last && !mgmLogin.last.ok && Date.now() - mgmLogin.last.at < 5e3) {
+      clearTimeout(mgmLogin.timer);
+      mgmLogin.timer = setTimeout(() => autoLoginBetMGM().catch(() => {}), mgmLoginGap());
+    }
   }
 }
 
