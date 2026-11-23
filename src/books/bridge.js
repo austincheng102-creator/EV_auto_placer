@@ -36,7 +36,8 @@ export function startBridge(port, { reloadExtension = false, quiet = false, hell
       let m; try { m = JSON.parse(buf); } catch { return; }
       if (m.type === 'tabs') { tabs = m.tabs; return; }
       if (m.type === 'reloaded') { log.warn(`Chrome extension reloaded the ${m.book} tab: ${m.why}`); return; }
-      if (m.type === 'note') { (log[m.level] || log.warn)(m.text); return; }
+      // Also in debug.log, so the extension's renewals (location checks, logins) can be traced later.
+      if (m.type === 'note') { (log[m.level] || log.warn)(m.text); log.debug?.(`extension note${m.book ? ` (${m.book})` : ''}: ${m.text}`); return; }
       if (m.type === 'hello') { if (!quiet) log.info(`Chrome extension version ${m.version}`); return; }
       if (m.type === 'login') {
         if (m.note) log.warn(m.note);

@@ -826,7 +826,7 @@ async function mgmClickRenew(tabId, label, since, waitFresh) {
 }
 
 function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch, passive = false, passiveHelp = '', clickRenew = null, renewBeforeMs = GEO_RENEW_BEFORE_MS, needSeen = false, holdLapsed = false, showVisible = true }) {
-  const k = { book, label, setting, passive, g: {}, job: null, triedAt: 0, fails: 0, busyAt: 0, refusedAt: 0, last: null, toldAt: 0 };
+  const k = { book, label, setting, passive, clicks: !!clickRenew, reloading: false, g: {}, job: null, triedAt: 0, fails: 0, busyAt: 0, refusedAt: 0, last: null, toldAt: 0 };
   store.get(`geo_${book}`).then((v) => { if (v?.[`geo_${book}`] && !k.g.updateAt) k.g = v[`geo_${book}`]; });
   const note = (text, level = 'warn') => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book, level, text })); };
   const tab = async () => (await bookTabs()).find((t) => t.book === book && host.test(new URL(t.url).hostname));
@@ -901,16 +901,24 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch, pass
       // valid instead of running a new one (so a reload alone didn't renew it). Remove the saved copy first.
       let cleared = null;
       if (clearMatch) cleared = (await chrome.scripting.executeScript({ target: { tabId: t.id }, world: 'MAIN', func: clearPageGeo, args: [clearMatch] }).catch(() => []))[0]?.result || [];
+      // Bets are held only while the tab itself is reloading (a request from a tab that's reloading
+      // fails). The old check stays good until it runs out (this runs 90s before, DraftKings 15s), so
+      // once the page has loaded, bets go out again while the new check comes (Austin, 2026-11-23:
+      // two theScore bets held "location check is being renewed" for the whole renewal).
+      k.reloading = true;
+      for (let i = 0; i < 20 && placing[book] > 0; i++) await sleep(500);   // a bet that got in just before
       await chrome.tabs.reload(t.id).catch(() => {});
       let g = {};
       try {
         while (Date.now() - since < 45e3) {
-          await sleep(2000);
+          await sleep(k.reloading ? 500 : 2000);
+          if (k.reloading) { const tb = await chrome.tabs.get(t.id).catch(() => null); if (!tb || (tb.status === 'complete' && Date.now() - since > 1500)) k.reloading = false; else continue; }
           if (showVisible) await brVisible(t.id);   // in case the page script didn't load with the page
           g = await k.now(t.id);
           if (fresh(g, since)) break;
         }
       } finally {
+        k.reloading = false;
         if (back?.tabId) await chrome.tabs.update(back.tabId, { active: true }).catch(() => {});
         if (back?.minimized) await chrome.windows.update(back.windowId, { state: 'minimized' }).catch(() => {});
       }
@@ -1579,20 +1587,31 @@ async function extFetch(req) {
 // cross-site headers, like a 403/429 from a bot filter, or a cut connection) says what really happened.
 const netSeen = new Map();   // url without query -> { at, status?, error? }
 const netKey = (u) => String(u || '').split('?')[0];
+const netHdr = new Map();   // request id -> status code the server answered (a blocked answer still has one)
 const netNote = (d, o) => {
   if (d.tabId < 0 || d.type === 'main_frame') return;
-  netSeen.set(netKey(d.url), { at: Date.now(), ...o });
+  const status = o.status ?? netHdr.get(d.requestId);
+  netHdr.delete(d.requestId);
+  netSeen.set(netKey(d.url), { at: Date.now(), ...o, ...(status ? { status } : {}) });
   if (netSeen.size > 300) netSeen.delete(netSeen.keys().next().value);
 };
 {
   const urls = (chrome.runtime.getManifest().host_permissions || []).filter((u) => !/gambitodds/.test(u));
-  chrome.webRequest.onCompleted.addListener((d) => { if (d.method !== 'OPTIONS' || d.statusCode >= 400) netNote(d, { status: d.statusCode, method: d.method }); }, { urls });
+  chrome.webRequest.onHeadersReceived.addListener((d) => {
+    if (d.tabId < 0) return;
+    netHdr.set(d.requestId, d.statusCode);
+    if (netHdr.size > 500) netHdr.delete(netHdr.keys().next().value);
+  }, { urls });
+  chrome.webRequest.onCompleted.addListener((d) => { if (d.method !== 'OPTIONS' || d.statusCode >= 400) netNote(d, { status: d.statusCode, method: d.method }); else netHdr.delete(d.requestId); }, { urls });
   chrome.webRequest.onErrorOccurred.addListener((d) => netNote(d, { error: d.error, method: d.method }), { urls });
 }
+// e.g. "(Chrome: net::ERR_FAILED after an HTTP 403 answer)": net::ERR_FAILED alone, with no answer,
+// is a request that never got one (cut off, or blocked before it was sent).
 const netWhy = (url) => {
   const n = netSeen.get(netKey(url));
   if (!n || Date.now() - n.at > 30e3) return '';
-  return n.error ? ` (Chrome: ${n.error}${n.method === 'OPTIONS' ? ' on the pre-check' : ''})` : ` (Chrome saw HTTP ${n.status}${n.method === 'OPTIONS' ? ' on the pre-check' : ''})`;
+  const pre = n.method === 'OPTIONS' ? ' on the pre-check' : '';
+  return n.error ? ` (Chrome: ${n.error}${pre}${n.status ? ` after an HTTP ${n.status} answer` : ', no answer from the server'})` : ` (Chrome saw HTTP ${n.status}${pre})`;
 };
 
 async function runInTab(tabId, request) {
@@ -1696,7 +1715,9 @@ async function handle(msg) {
         return reply({ error: `${k.label}'s location check ${Date.now() > g.nextAt ? 'has run out' : 'runs out in a few seconds'} and no new one has come yet; nothing was sent. Renewing it (reloading the ${k.label} tab); the bet is checked again next scan`, notSent: true, geoRenewing: true });
       }
     }
-    if (geoKeepers[msg.book]?.job && msg.request.kind === 'place') { msg.held = true; return reply({ error: `${geoKeepers[msg.book].label} location check is being renewed, nothing was sent; the bet is checked again next scan`, notSent: true, geoRenewing: true }); }
+    // Held while that book's tab is reloading for the renewal (BetMGM: while its odds are being
+    // clicked); otherwise the current check is still good and the bet goes out.
+    if (geoKeepers[msg.book]?.job && (geoKeepers[msg.book].reloading || geoKeepers[msg.book].clicks) && msg.request.kind === 'place') { msg.held = true; return reply({ error: `${geoKeepers[msg.book].label} location check is being renewed, nothing was sent; the bet is checked again next scan`, notSent: true, geoRenewing: true }); }
     if (msg.request.useBetMGMAuth) {
       for (const [h, v] of Object.entries(msg.request.headers || {})) {
         if (v !== '{{bmXsrf}}') continue;
