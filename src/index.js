@@ -444,6 +444,11 @@ async function placeAt(row, book, quote, ctx, retries = 0) {
     lg.warn(`daily stake limit $${cfg.dailyStakeLimit} reached — skipped`); return false;
   }
   lg.flush();   // about to bet: show everything, even for a quiet repeat check
+  // Bets run side by side, so each line about this bet from here on names it (Austin, 2026-11-23:
+  // after "re-check OK" he couldn't tell which later line was this bet's answer). Not said again for
+  // a bet held for a location renewal in the last minute (it's tried every scan until that's done).
+  const of = ` [${desc(row)} ${fmtAmerican(quote.odds)}]`;
+  if (Date.now() - (geoSaid.get(row.id) || 0) > 60e3) lg.bet(`${book.label}: sending $${stake} @ ${fmtAmerican(quote.odds)}, waiting for its answer${of}`);
   ctx.sent = true; ctx.changed = true;
   pendingStake += stake;
   const attempt = { sentAt: Date.now(), odds: quote.odds };
@@ -458,7 +463,7 @@ async function placeAt(row, book, quote, ctx, retries = 0) {
     // Paper trail: what we checked vs what the book says it accepted, plus Gambit's fair odds.
     // Dry runs: the simulated book "confirms" the price we sent.
     betLog.record({ row, quote, stake, betId, confirmedOdds: dryRun ? quote.odds : confirmedOdds, ev, novig: novigCheck, sharp: sharpSpread(cfg, row) });
-    lg.ok(`${BOOK_LABELS[row.book]} PLACED $${stake} @ ${fmtAmerican(quote.odds)} (${fmtPct(ev)} EV) bet_id=${betId}${dryRun ? ' [DRY RUN]' : ''}`);
+    lg.ok(`${BOOK_LABELS[row.book]} PLACED $${stake} @ ${fmtAmerican(quote.odds)} (${fmtPct(ev)} EV) bet_id=${betId}${dryRun ? ' [DRY RUN]' : ''}${of}`);
     if (!dryRun) {
       if (confirmedOdds == null) lg.bet(`${book.label} didn't report the accepted price; check bet ${betId} in your bet history (raw reply in debug.log)`);
       else if (confirmedOdds === quote.odds) lg.bet(`${book.label} confirmed ${fmtAmerican(confirmedOdds)}, same as checked. Logged to bets.csv`);
@@ -476,13 +481,13 @@ async function placeAt(row, book, quote, ctx, retries = 0) {
       // (default 2): a live price can move again during the book's delay on the retry.
       const maxRetries = Number.isFinite(Number(cfg.priceMoveRetries)) ? Math.max(0, Number(cfg.priceMoveRetries)) : 2;
       if (hasNew && retries < maxRetries) {
-        lg.warn(`${book.label}: price moved ${fmtAmerican(quote.odds)} → ${fmtAmerican(e.newOdds)}, checking again${retries ? ` (retry ${retries + 1} of ${maxRetries})` : ''}`);
+        lg.warn(`${book.label}: price moved ${fmtAmerican(quote.odds)} → ${fmtAmerican(e.newOdds)}, checking again${retries ? ` (retry ${retries + 1} of ${maxRetries})` : ''}${of}`);
         return placeAt(row, book, { ...quote, ...(e.newQuote || {}), odds: e.newOdds }, ctx, retries + 1);
       }
-      lg.warn(`${book.label}: price moved${hasNew ? ` to ${fmtAmerican(e.newOdds)}` : ''} — skipped, nothing placed`);
+      lg.warn(`${book.label}: price moved${hasNew ? ` to ${fmtAmerican(e.newOdds)}` : ''} — skipped, nothing placed${of}`);
       return false;
     }
-    if (e.gone) { ctx.outcome = 'no longer offered'; lg.warn(`${book.label}: bet no longer offered — skipped, nothing placed`); return false; }
+    if (e.gone) { ctx.outcome = 'no longer offered'; lg.warn(`${book.label}: bet no longer offered — skipped, nothing placed${of}`); return false; }
     // Nothing reached the book / nothing was placed (FanDuel's location check had run out, or
     // BetRivers refused it with ACCOUNT_BLOCKED because its location check had). Once it's renewed, the
     // bet is checked again from the start on the next scan: price, every rule, then placed.
@@ -490,11 +495,11 @@ async function placeAt(row, book, quote, ctx, retries = 0) {
       ctx.sent = false; ctx.outcome = e.geoRenewing ? 'location renewing' : 'location renewed';
       // Said once a minute per bet: it's checked again every scan until the renewal is done.
       const said = geoSaid.get(row.id) || 0;
-      if (Date.now() - said > 60e3) { geoSaid.set(row.id, Date.now()); lg.warn(`${book.label}: ${e.message}`); }
+      if (Date.now() - said > 60e3) { geoSaid.set(row.id, Date.now()); lg.warn(`${book.label}: ${e.message}${of}`); }
       return false;
     }
     ctx.outcome = 'place failed';
-    lg.err(`${book.label}: place failed: ${e.message}`);
+    lg.err(`${book.label}: place failed: ${e.message}${of}`);
     session.bookError(row.book, e.message);
     return false;
   } finally { pendingStake -= stake; }
