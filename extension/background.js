@@ -639,6 +639,13 @@ function mgmOddsPick(mode) {
   if (!inView(el)) el.scrollIntoView({ block: 'center' });
   return { found: true, picked: false, text: (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 60), ...at(el) };
 }
+// Runs in the BetMGM page: is the GeoComply app answering on this PC (the page asks it the same way)?
+async function mgmGeoAppUp() {
+  for (const port of [53280]) {
+    try { const r = await fetch(`http://127.0.0.1:${port}/check?t=${Date.now()}`, { method: 'HEAD', cache: 'no-store' }); if (r) return true; } catch {}
+  }
+  return false;
+}
 const mgmPickIn = async (tabId, mode) => (await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: mgmOddsPick, args: [mode] }).catch(() => []))[0]?.result || { found: false };
 
 // BetMGM runs its location check when a pick is added to the bet slip (Austin's HAR, 2026-11-23:
@@ -651,6 +658,10 @@ async function mgmClickRenew(tabId, label, since, waitFresh) {
   if (dbgBusy.has(tabId)) return { ok: false, why: `the ${label} tab is busy logging in` };
   const lg = await inPage(tabId, false).catch(() => ({}));
   if (lg.state === 'logged-out' || lg.state === 'form') return { ok: false, why: `${label} is logged out (the extension logs back in first)` };
+  // Austin, 2026-11-23: the click made BetMGM download the GeoComply installer, i.e. the GeoComply
+  // app wasn't answering. Then a click can't renew anything (and only triggers another download).
+  const up = (await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: mgmGeoAppUp }).catch(() => []))[0]?.result;
+  if (up === false) return { ok: false, why: 'the GeoComply location app isn\'t running on this PC (BetMGM can\'t reach it): start "GeoComply PlayerLocationCheck" (or reinstall it from the file BetMGM downloaded) and keep it running. No odds were clicked' };
   const target = { tabId };
   let attached = false, added = false, removed = false, text = '', fronted = false, after = '';
   dbgBusy.add(tabId);
