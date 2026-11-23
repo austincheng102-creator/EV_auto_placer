@@ -736,7 +736,7 @@ const jwtExp = (tok) => {
 // debugger (chrome.debugger), which Chrome treats as real mouse/keyboard input. While it runs
 // (a few seconds) Chrome shows a bar "EV Placer Bridge started debugging this browser"; it goes
 // away by itself. Off with config.json "session": {"gambitAutoLogin": false}.
-let settings = { gambitAutoLogin: true, fanduelGeoRenew: true, betriversGeoRenew: true, betmgmGeoRenew: true, thescoreGeoRenew: true };
+let settings = { gambitAutoLogin: true, fanduelGeoRenew: true, betriversGeoRenew: true, betmgmGeoRenew: true, thescoreGeoRenew: true, draftkingsPlaySpan: true };
 chrome.storage.local.get('settings').then((v) => { if (v?.settings) settings = { ...settings, ...v.settings }; }).catch(() => {});
 let lastLogin = null;          // { at, ok, why } for the popup
 let loginBusy = false;
@@ -981,8 +981,50 @@ async function nudgeTabs() {
 }
 
 // Every 30 seconds: is each site still renewing its own login? If not, its page has stalled.
+// ---- DraftKings: keep its play session alive ----
+// DraftKings' login comes with a "play span" (api.draftkings.com/sites/US-CO-SB/playspans/v1/
+// playspans/<key>) that lasts 30 minutes and is renewed by a PUT. The page reads it every minute but
+// renews it only now and then (in Austin's 45-minute capture, 2026-11-23, once it was down to 7
+// minutes left), and when it runs out DraftKings logs you out to its home page. So when it has under
+// 10 minutes left, the extension sends the same renewal the page sends, from the DraftKings tab.
+// Off with config.json "session": {"draftkingsPlaySpan": false}.
+let dkSpan = { url: null, left: null, at: 0, renewedAt: 0, last: null };
+store.get('dkSpan').then((v) => { if (v?.dkSpan?.url && !dkSpan.url) dkSpan = { ...dkSpan, url: v.dkSpan.url }; });
+chrome.webRequest.onBeforeRequest.addListener((d) => {
+  if (d.tabId < 0 || d.method !== 'GET') return;
+  const url = d.url.replace(/\?.*$/, '');
+  if (url !== dkSpan.url) { dkSpan.url = url; store.set({ dkSpan: { url } }); }
+}, { urls: ['https://api.draftkings.com/sites/*/playspans/v1/playspans/*'] });
+const dkSpanCall = async (url, put) => {
+  try {
+    const key = url.split('/').pop();
+    const r = await fetch(`${url}?format=json`, put
+      ? { method: 'PUT', credentials: 'include', headers: { 'content-type': 'text/plain;charset=UTF-8' }, body: JSON.stringify({ playSpanClientKey: key }) }
+      : { method: 'GET', credentials: 'include', headers: { 'content-type': 'application/json' } });
+    const j = await r.json().catch(() => null);
+    return { status: r.status, left: j?.playSpan?.timeUntilExpirationSeconds ?? null };
+  } catch (e) { return { status: 0, error: String(e?.message || e) }; }
+};
+async function keepDkSpan() {
+  if (settings.draftkingsPlaySpan === false || !dkSpan.url || Date.now() - dkSpan.at < 120e3) return;
+  const t = (await bookTabs()).find((x) => x.book === 'draftkings' && !x.discarded);
+  if (!t) return;
+  dkSpan.at = Date.now();
+  const run = async (put) => (await chrome.scripting.executeScript({ target: { tabId: t.id }, world: 'MAIN', func: dkSpanCall, args: [dkSpan.url, put] }).catch(() => []))[0]?.result || {};
+  const g = await run(false);
+  if (g.status !== 200 || g.left == null) return;   // logged out, or a different answer: leave it to the login alert
+  dkSpan.left = g.left;
+  if (g.left > 600) return;
+  const p = await run(true);
+  dkSpan.last = { at: Date.now(), ok: p.status === 200, left: p.left, before: g.left };
+  if (p.status === 200) dkSpan.renewedAt = Date.now(), dkSpan.left = p.left;
+  if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book: 'draftkings', level: p.status === 200 ? 'info' : 'warn',
+    text: p.status === 200 ? `DraftKings play session renewed (had ${Math.round(g.left / 60)} min left)` : `DraftKings play session NOT renewed (HTTP ${p.status}${p.error ? `, ${p.error}` : ''}); it had ${Math.round(g.left / 60)} min left` }));
+}
+
 async function watchLogins() {
   await keepTabsLoaded();
+  await keepDkSpan().catch(() => {});
   await nudgeTabs();
   await keepFdGeo().catch(() => {});
   await keepBrGeo().catch(() => {});
@@ -1255,7 +1297,7 @@ chrome.tabs.onRemoved.addListener(sendTabs);
 chrome.runtime.onMessage.addListener((m, _s, respond) => {
   if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth, betriversLogin: !!kambiAuth, betriversRenewedAt: kambiRenewedAt, hardrockLogin: !!hrAuth.session, hardrockGeo: hrAuth.geoAt || 0,
     fanduelExp: jwtExp(fdAuth.auth), fanduelGeoExp: fdGeoExp(fdAuth.geo), fanduelGeoLast: fdGeoLast, betriversGeoExp: brGeo.status === 'ALLOWED' ? brGeo.expires || 0 : 0, betriversGeoSeen: !!(brGeo.at || brGeo.flagAt), betriversGeoLast: brGeoLast, betmgmGeoNext: geoKeepers.betmgm.g.nextAt || 0, betmgmGeoLast: geoKeepers.betmgm.last, thescoreGeoNext: geoKeepers.thescore.g.nextAt || 0, thescoreGeoLast: geoKeepers.thescore.last,
-    gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, betmgmLogin: !!bmAuth.xsrf, betmgmHeaders: Object.keys(bmAuth.headers || {}), thescoreHeaders: Object.keys(tsAuth.headers), alert: alertText, lastReload, lastLogin, autoLogin: settings.gambitAutoLogin })); return true; }
+    gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, dkSpanLeft: dkSpan.left, dkSpanAt: dkSpan.at, dkSpanRenewedAt: dkSpan.renewedAt, betmgmLogin: !!bmAuth.xsrf, betmgmHeaders: Object.keys(bmAuth.headers || {}), thescoreHeaders: Object.keys(tsAuth.headers), alert: alertText, lastReload, lastLogin, autoLogin: settings.gambitAutoLogin })); return true; }
 });
 // Keep the service worker alive while the engine runs.
 chrome.alarms?.create('keepalive', { periodInMinutes: 0.5 });
