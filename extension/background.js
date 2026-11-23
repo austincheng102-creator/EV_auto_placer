@@ -640,6 +640,50 @@ function mgmOddsPick(mode) {
   if (!inView(el)) el.scrollIntoView({ block: 'center' });
   return { found: true, picked: false, text: (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 60), ...at(el) };
 }
+// Runs in the BetMGM page: BetMGM's "Location And Privacy" popup ("...download the plugin and install
+// it... Then click continue", buttons Continue / Download), shown when the page didn't find the
+// GeoComply app even though it's running (Austin, 2026-11-23). Pressing Continue makes the page look
+// for it again, and the check goes through. Returns where Continue is, or { found: false }.
+function mgmGeoPopup() {
+  const vis = (el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+  const txt = (el) => (el.textContent || '').replace(/\s+/g, ' ').trim();
+  const boxes = [...document.querySelectorAll('[role="dialog"], mat-dialog-container, .cdk-overlay-pane, [class*="modal"], [class*="dialog"], [class*="popup"]')]
+    .filter((el) => vis(el) && /location and privacy|download the plugin|confirm your physical location/i.test(txt(el)));
+  for (const box of boxes) {
+    const btn = [...box.querySelectorAll('button, a, [role="button"]')].find((b) => vis(b) && /^continue$/i.test(txt(b)));
+    if (!btn) continue;
+    btn.scrollIntoView({ block: 'center' });
+    const r = btn.getBoundingClientRect();
+    return { found: true, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+  }
+  return { found: false };
+}
+const mgmPopupIn = async (tabId) => (await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: mgmGeoPopup }).catch(() => []))[0]?.result || { found: false };
+// Presses Continue on that popup if it's showing (up to 3 times, it can come back once). Returns how
+// many times it pressed.
+async function mgmPressContinue(target) {
+  let n = 0;
+  for (let i = 0; i < 3; i++) {
+    const c = await mgmPopupIn(target.tabId);
+    if (!c.found) break;
+    await realClick(target, c);
+    n++;
+    await sleep(1500);
+  }
+  return n;
+}
+// BetMGM starts downloading the GeoComply installer when its page doesn't find the app (Austin,
+// 2026-11-23: "its autodownloading the plugin again"). The app is already installed and running, so
+// those downloads are cancelled and taken off Chrome's download list. Only downloads that come from a
+// BetMGM page or GeoComply's servers and look like an installer; nothing else is touched.
+chrome.downloads?.onCreated.addListener((d) => {
+  const from = `${d.referrer || ''} ${d.url || ''} ${d.finalUrl || ''}`;
+  const name = `${d.filename || ''} ${d.url || ''} ${d.finalUrl || ''}`;
+  if (!/betmgm\.com|geocomply|plc-gc\.com/i.test(from)) return;
+  if (!/geocomply|playerlocationcheck|plc|\.(exe|msi|dmg|pkg)(\?|$|\s)/i.test(name)) return;
+  chrome.downloads.cancel(d.id, () => { void chrome.runtime.lastError; chrome.downloads.erase({ id: d.id }, () => void chrome.runtime.lastError); });
+  if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book: 'betmgm', level: 'info', text: `cancelled BetMGM's download of the GeoComply installer (${String(d.finalUrl || d.url || '').split('?')[0].slice(-80)}); the app is already installed` }));
+});
 // Runs in the BetMGM page: is the GeoComply app answering on this PC (the page asks it the same way)?
 async function mgmGeoAppUp() {
   for (const port of [53280]) {
@@ -674,6 +718,18 @@ async function mgmClickRenew(tabId, label, since, waitFresh) {
     attached = true;
     await dbgCmd(target, 'Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
     await sleep(300);
+    // The popup is already up (from an earlier click): press Continue, and take that earlier pick off
+    // the slip if it's still there.
+    if (await mgmPressContinue(target)) {
+      const ok = await waitFresh(20e3);
+      const old = await mgmPickIn(tabId, 'state');
+      if (old.found && old.picked) { await realClick(target, old); await sleep(800); }
+      if (ok) return { ok: true, why: `pressed Continue on BetMGM's "Location And Privacy" popup in the ${label} tab` };
+      p = await mgmPickIn(tabId, 'find');
+      if (!p.found) return { ok: false, why: `pressed Continue on BetMGM's "Location And Privacy" popup but no new check came, and no odds buttons are visible in the ${label} tab` };
+      text = p.text || '';
+      await sleep(300);
+    }
     p = await mgmPickIn(tabId, 'state');
     if (!p.found) return { ok: false, why: `the odds button in the ${label} tab went away before the click` };
     const diag = p.diag || '';
@@ -705,7 +761,11 @@ async function mgmClickRenew(tabId, label, since, waitFresh) {
         }
       }
     }
-    const fr = fresh0 || await waitFresh();
+    // BetMGM's "Location And Privacy" popup: press Continue so the page looks for GeoComply again.
+    let cont = await mgmPressContinue(target);
+    let fr = fresh0 || await waitFresh(cont ? 30e3 : 45e3);
+    if (!fr && (cont += await mgmPressContinue(target))) fr = await waitFresh(20e3);
+    cont += await mgmPressContinue(target);   // so it's not in the way of taking the pick off the slip
     // Take the pick off the slip again (up to 3 tries).
     for (let i = 0; i < 3; i++) {
       const q = await mgmPickIn(tabId, 'state');
@@ -714,7 +774,7 @@ async function mgmClickRenew(tabId, label, since, waitFresh) {
       await sleep(800);
     }
     const left = added && !removed ? ` The pick "${text}" may still be on the ${label} bet slip: remove it there.` : '';
-    return { ok: fr, why: `clicked "${text}" in the ${label} tab${fronted ? ' (again with the tab in front)' : ''}${added ? '' : ` (the button didn't show as picked; before the click: ${diag}; after: ${after || 'gone'})`}${left}` };
+    return { ok: fr, why: `clicked "${text}" in the ${label} tab${fronted ? ' (again with the tab in front)' : ''}${cont ? `, pressed Continue on BetMGM's "Location And Privacy" popup${cont > 1 ? ` ${cont} times` : ''}` : ''}${added ? '' : ` (the button didn't show as picked; before the click: ${diag}; after: ${after || 'gone'})`}${left}` };
   } catch (e) {
     const m = String(e?.message || e);
     return { ok: false, why: m.includes('Another debugger') ? `Chrome DevTools is open on the ${label} tab: close it` : `clicking odds failed: ${m}` };
@@ -765,7 +825,7 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch, pass
         let g = {};
         const r = await clickRenew(t.id, label, since, async (ms = 45e3) => {
           const end = Date.now() + ms;
-          while (Date.now() < end && Date.now() - since < 60e3) { await sleep(1500); g = await k.now(t.id); if (fresh(g, since)) return true; }
+          while (Date.now() < end && Date.now() - since < 120e3) { await sleep(1500); g = await k.now(t.id); if (fresh(g, since)) return true; }
           return false;
         });
         if (r.ok) {
@@ -776,7 +836,7 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch, pass
           return { ok: true, why: k.last.why };
         }
         k.fails++;
-        const msg = `${r.why}; no new location check in 45s. ${help}`;
+        const msg = `${r.why}; no new location check came. ${help}`;
         k.last = { at: Date.now(), ok: false, why: msg };
         note(`${label} location check NOT renewed: ${msg} Trying again in ${k.fails >= 3 ? 10 : 2} min`);
         return { ok: false, why: msg };
