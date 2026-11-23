@@ -33,6 +33,9 @@ async function render() {
     $('tsgeo').textContent = (n == null ? 'not seen yet (renewed automatically)' : n >= 0 ? `good for ${n} min (renewed automatically)` : 'ran out (renewing automatically)') + l; $('tsgeo').className = n != null && n >= 0 ? 'on' : 'off'; }
   $('bm').textContent = s.betmgmLogin ? `seen${(s.betmgmHeaders || []).length ? ` (${s.betmgmHeaders.join(', ')})` : ' (refresh the BetMGM tab once)'}` : 'not yet (refresh the BetMGM tab)'; $('bm').className = s.betmgmLogin ? 'on' : 'off';
   { const h = s.thescoreHeaders || []; $('ts').textContent = h.length ? h.join(', ') : 'none seen yet (cookies only; refresh the theScore tab)'; $('ts').className = h.length ? 'on' : 'off'; }
+  { const left = s.dkSpanLeft != null ? Math.max(0, Math.round((s.dkSpanLeft - (Date.now() - s.dkSpanAt) / 1000) / 60)) : null;
+    $('dkspan').textContent = left == null ? 'not seen yet (open the DraftKings tab)' : `${left} min left (renewed automatically)${s.dkSpanRenewedAt ? `, last renewed ${Math.round((Date.now() - s.dkSpanRenewedAt) / 60000)} min ago` : ''}`;
+    $('dkspan').className = left ? 'on' : 'off'; }
   $('armed').textContent = armed ? 'ARMED' : 'disarmed (re-checks only)'; $('armed').className = armed ? 'on' : 'off';
   $('toggle').textContent = armed ? 'Disarm' : 'Arm (allow real bets)';
 }
