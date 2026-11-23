@@ -6,6 +6,9 @@ const BOOK_HOSTS = {
   betrivers: [/\.betrivers\.(ca|com)$/],
   fanduel: [/sportsbook\.fanduel\.(com|ca)$/],
   hardrock: [/(^|\.)hardrock\.bet$/, /(^|\.)hardrocksportsbook\.com$/],
+  betmgm: [/(^|\.)betmgm\.com$/],
+  draftkings: [/^sportsbook\.draftkings\.com$/],
+  thescore: [/^sportsbook\.thescore\.bet$/],
   gambit: [/(^|\.)gambitodds\.com$/],
 };
 
@@ -169,6 +172,17 @@ chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
   if (geo && fdGeoExp(geo) > fdGeoExp(fdAuth.geo)) next.geo = geo;
   if (next.auth !== fdAuth.auth || next.geo !== fdAuth.geo) { fdAuth = next; store.set({ fdAuth }); }
 }, { urls: ['https://*.sportsbook.fanduel.com/*'] }, ['requestHeaders', 'extraHeaders']);
+
+// BetMGM: its bet requests carry an x-xsrf-token header (the page's anti-forgery token, tied to
+// your login cookies). We keep the newest one your BetMGM tab sent; the login itself is the
+// tab's cookies, which the in-tab request uses on its own.
+let bmAuth = { xsrf: null, at: 0 };
+store.get('bmAuth').then((v) => { if (v?.bmAuth && !bmAuth.xsrf) bmAuth = v.bmAuth; });
+chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
+  const x = (d.requestHeaders || []).find((h) => h.name.toLowerCase() === 'x-xsrf-token')?.value;
+  if (x && x !== bmAuth.xsrf) { bmAuth = { xsrf: x, at: Date.now() }; store.set({ bmAuth }); }
+  else if (x) bmAuth.at = Date.now();
+}, { urls: ['https://*.betmgm.com/*'] }, ['requestHeaders', 'extraHeaders']);
 
 // fd-geo.js / br-geo.js have to be in the FanDuel / BetRivers page from the start to see their
 // location checks.
@@ -877,6 +891,24 @@ async function pageFetch(req) {
     // cookies; the site itself calls them without, so the app asks for 'omit' there.
     credentials: req.credentials || 'include',
   });
+  // Event streams (DraftKings' waitingBets) stay open: read them as they come and stop once a
+  // line matches req.streamUntil, or at the time limit, returning what arrived either way.
+  if (req.streamUntil && res.body?.getReader) {
+    const until = new RegExp(req.streamUntil);
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let text = '', done = false;
+    try {
+      while (true) {
+        const r = await reader.read();
+        if (r.done) { done = true; break; }
+        text += dec.decode(r.value, { stream: true });
+        if (until.test(text)) break;
+      }
+    } catch {}
+    try { reader.cancel(); } catch {}
+    return { status: res.status, json: null, text: text.slice(-20000), streamEnded: done, matched: until.test(text) };
+  }
   const text = await res.text();
   let json = null; try { json = JSON.parse(text); } catch {}
   return { status: res.status, json, text: json ? undefined : text.slice(0, 2000) };
@@ -989,6 +1021,13 @@ async function handle(msg) {
         msg.request.headers['x-geo-packet'] = geo;
       }
     }
+    if (msg.request.useBetMGMAuth) {
+      for (const [h, v] of Object.entries(msg.request.headers || {})) {
+        if (v !== '{{bmXsrf}}') continue;
+        if (!bmAuth.xsrf) return reply({ error: 'BetMGM login not seen yet: refresh the BetMGM tab (stay logged in)', notSent: true });
+        msg.request.headers[h] = bmAuth.xsrf;
+      }
+    }
     if (msg.request.useGambitAuth) {
       if (!gambitAuth) return reply({ error: 'no Gambit login seen yet: refresh your Gambit tab' });
       msg.request.headers = { ...(msg.request.headers || {}), authorization: gambitAuth };
@@ -1049,7 +1088,7 @@ chrome.tabs.onRemoved.addListener(sendTabs);
 chrome.runtime.onMessage.addListener((m, _s, respond) => {
   if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth, betriversLogin: !!kambiAuth, betriversRenewedAt: kambiRenewedAt, hardrockLogin: !!hrAuth.session, hardrockGeo: hrAuth.geoAt || 0,
     fanduelExp: jwtExp(fdAuth.auth), fanduelGeoExp: fdGeoExp(fdAuth.geo), fanduelGeoLast: fdGeoLast, betriversGeoExp: brGeo.status === 'ALLOWED' ? brGeo.expires || 0 : 0, betriversGeoSeen: !!(brGeo.at || brGeo.flagAt), betriversGeoLast: brGeoLast,
-    gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, alert: alertText, lastReload, lastLogin, autoLogin: settings.gambitAutoLogin })); return true; }
+    gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, betmgmLogin: !!bmAuth.xsrf, alert: alertText, lastReload, lastLogin, autoLogin: settings.gambitAutoLogin })); return true; }
 });
 // Keep the service worker alive while the engine runs.
 chrome.alarms?.create('keepalive', { periodInMinutes: 0.5 });

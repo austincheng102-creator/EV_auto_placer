@@ -37,12 +37,12 @@ ev-placer --book hardrock   bet Hard Rock this run (or betrivers)
 ev-placer --help     all options (--min-ev 12, --books betrivers,hardrock, --config other.json)
 ```
 
-## Picking the book (BetRivers, Hard Rock Bet or FanDuel)
+## Picking the book (BetRivers, Hard Rock Bet, FanDuel, BetMGM, DraftKings or theScore)
 One app runs either book; the Gambit feed, Novig check, EV math and limits are shared.
 - Double-click **Start BetRivers** or **Start Hard Rock** to bet that book for the day.
   **Start EV Placer** uses `"books"` from `config.json`.
 - Set `"books": "ask"` in `config.json` to be asked which book each time it starts.
-- From a terminal: `ev-placer --book hardrock`, or `--books betrivers,hardrock,fanduel` for several at once.
+- From a terminal: `ev-placer --book hardrock`, or `--books betrivers,hardrock,fanduel,betmgm,draftkings,thescore` for several at once.
   In `config.json`: `"books": ["betrivers", "hardrock", "fanduel"]`.
 - `state.json` and the daily stake limit are shared across books.
 
@@ -88,6 +88,48 @@ One app runs either book; the Gambit feed, Novig check, EV math and limits are s
   (GeoComply) is running. After the extension updates, **reload the FanDuel tab once**.
   The popup shows "FanDuel login: seen (good for N min)".
 - Daily stake limit, groups and once-per-book rules cover FanDuel like the other books.
+
+**BetMGM (Colorado, www.co.betmgm.com)** is wired from recordings of real $0.10 pre-game and live bets:
+- Gambit has no Colorado BetMGM: 400 ("BetMGM" on Gambit) links to Ontario and 1001 to Michigan.
+  The app uses 400 (`"gambit": {"bookIds": {"betmgm": 1001}}` switches). Market and option ids are
+  the same in every state, so the bet is found from the ids in Gambit's link.
+- **Colorado prices for EV**: every scan the app reads BetMGM CO's own price for each BetMGM row
+  within 5 points of min EV and recomputes EV from it. `"betmgm": {"coPrices": false}` turns it off.
+- Only BetMGM's newer markets can be bet for now (all NFL, NBA props, some NBA/NCAAB/NHL lines).
+  Rows on its older markets (links with a plain-number game id) are skipped with a note.
+- **Price re-check**: BetMGM's own current price and line for that option (no login needed, no
+  bet made). BetMGM's main spreads/totals are rolling lines, so a line that moved is skipped.
+- **Bet**: sent at exactly that price with "accept odds changes" off. Live bets wait out BetMGM's
+  delay (about 3s) for the answer.
+- **Player props are on** for BetMGM, under the same prop rules as the other books.
+- The login is your BetMGM tab's own; the extension copies its anti-forgery token (x-xsrf-token)
+  from the tab's requests. BetMGM's location check runs in the page (GeoComply). After the
+  extension updates, **reload the BetMGM tab once**. The popup shows "BetMGM login: seen".
+- Results come from My Bets > Settled; Show bets colors BetMGM gold.
+
+**DraftKings (Colorado, sportsbook.draftkings.com)** is wired from a recording of a real $0.10 live bet:
+- Gambit id 200. Selection ids ("0ML87369883_1") are the same in every state, so the bet is found
+  from Gambit's link (`?outcomes=<id>`).
+- **Price re-check**: DraftKings CO's bet-slip price check (calculateBets: odds plus a token for
+  exactly that price, no bet made) and the selection's line and suspension (selectioninfo).
+- **Bet**: placeBets with that token and auto-accept off, so a moved price is refused. Live bets
+  wait out DraftKings' delay (3s) for its answer; a bet with no answer is recorded as waiting.
+- DraftKings is also a reference book (soft-book check, Pinnacle-vs-market, arb props): a
+  DraftKings bet is never checked against DraftKings itself.
+- **Bot detection**: DraftKings' page runs bot detection that watches mouse and keyboard use.
+  Bets the app sends carry no clicks, so DraftKings may notice the pattern. Nothing is done to
+  hide from it.
+- Results aren't read from DraftKings yet (its My Bets loads over a live connection): mark them
+  in Show bets.
+
+**theScore (Colorado, sportsbook.thescore.bet)** is wired from a recording of a real $0.10 live bet:
+- Gambit id 700. Selection ids are the same everywhere (`market_selection_id[0]=<id>` in the link).
+- **Price re-check**: adds the selection to your theScore bet slip, the way a click does, and reads
+  its current odds and status. A selection the app checks but doesn't bet stays on the slip.
+- **Bet**: sets the stake and places at exactly the checked odds (changes are never accepted).
+  Live bets take about 9s.
+- Results come from My Bets > Settled. If theScore updates its site and the app says a query
+  wasn't found, the app needs an update.
 
 ## Longest odds: +250
 Bets with odds above +250 are skipped, both when scanning and at the live or new price. Change it
