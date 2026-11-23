@@ -257,11 +257,28 @@ export function makeBetMGM(name, label, cfg, bridge) {
         return { betId: `betmgm:${ok.betNumber}`, confirmedOdds: Number.isFinite(am) && am !== 0 ? am : null,
           detail: `BetMGM place response: ${JSON.stringify(j)}` };
       }
-      const why = bmWhy(j) || `HTTP ${res.status}`;
+      // A refusal lists its reasons under betslips[].failed.errors[] (Austin's debug.log, 2026-11-23):
+      // type OddsChanged (with the current price) or SessionTokenInvalid (location check lapsed).
+      const errs = (j.betslips || []).flatMap((x) => x?.failed?.errors || []);
+      const types = errs.map((e) => e?.type || e?.detailedErrorCode).filter(Boolean);
+      const detail = `BetMGM place response: ${JSON.stringify(j || res.text)}`;
+      if (types.some((t) => /SessionToken|Geo|Location/i.test(t)) || errs.some((e) => /SESSION_TOKEN|GEO/i.test(String(e?.detailedErrorCode || '')))) {
+        // BetMGM's location check (run by its own page) had lapsed: nothing was placed. A reload of the
+        // BetMGM tab makes the page run it again; the bet is checked again from the start next scan.
+        bridge.tell?.({ type: 'reloadTab', book: name, why: 'BetMGM said its location check had lapsed (SessionTokenInvalid)' });
+        const e = new Error('refused with SessionTokenInvalid: BetMGM\'s location check had lapsed, nothing was placed; reloading the BetMGM tab so the site checks again (keep the BetMGM tab open, and GeoComply running if the site asks for it)');
+        e.detail = detail; e.notSent = true; e.geoRenewing = true;
+        throw e;
+      }
+      const why = [...new Set(types)].join(', ') || bmWhy(j) || `HTTP ${res.status}`;
       const err = new Error(`rejected: ${why}`);
-      err.detail = `BetMGM place response: ${JSON.stringify(j || res.text)}`;
-      if (/odds|price/i.test(why) && /chang|moved|differ|new/i.test(why)) err.priceMoved = true;
-      else if (/suspend|closed|unavailable|not.?(found|available|offered)|visible/i.test(why)) err.gone = true;
+      err.detail = detail;
+      const moved = errs.find((e) => /OddsChanged|PriceChanged/i.test(String(e?.type)));
+      if (moved || (/odds|price/i.test(why) && /chang|moved|differ|new/i.test(why))) {
+        err.priceMoved = true;
+        const now = Number(moved?.currentOddsInUserFormat?.american);
+        if (Number.isFinite(now) && now !== 0) err.newOdds = now;
+      } else if (/suspend|closed|unavailable|not.?(found|available|offered)|visible/i.test(why)) err.gone = true;
       throw err;
     },
 
