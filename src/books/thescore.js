@@ -177,15 +177,21 @@ export function makeTheScore(name, label, cfg, bridge) {
       // +125" at the stake step the same second. So the check also sets a $1 stake on the slip
       // (BetslipSetDraftBetAmount, no bet made), whose answer has the current price, and uses that.
       // place() sets the real stake and compares the price once more.
+      const echo = tsAmerican(hit.leg.marketSelection?.odds);
+      let stakeStep = 'no draft in the reply';
       try {
         const set = await gql('recheck', 'BetslipSetDraftBetAmount', { isSubscription: false, amount: 100, oddsFormat: 'AMERICAN', draftBetId: hit.bet.id,
           amountField: 'BET', includeOddsTrend: true, includeSurcharge: false });
         const cur = findDraft(set?.betslipSetDraftBetAmount, sel);
-        if (cur) hit = cur;
+        if (cur) { hit = cur; stakeStep = String(tsAmerican(cur.leg.marketSelection?.odds)); }
       } catch (e) { active.delete(sel); throw e; }
       const ms = hit.leg.marketSelection || {};
+      // For debug.log: what was sent, what each step answered, and which selection it was (so a price
+      // that looks wrong can be checked against theScore's site).
+      const names = JSON.stringify(ms, (k, v) => (/odds|id$/i.test(k) && k !== 'rawId' ? undefined : v)).slice(0, 400);
+      const debug = `theScore price check: sent ${row.odds} (Gambit), slip echoed ${echo}, stake step ${stakeStep}; selection ${sel} ${names}`;
       return { odds: tsAmerican(ms.odds), line: lineOf(hit.leg, row), suspended: !/^OPEN$/i.test(String(ms.status || 'OPEN')) || hit.leg.errors?.length > 0,
-        maxStake: null, draft: { betId: hit.bet.id, legId: hit.leg.id, selId: sel, odds: ms.odds, delayMs: hit.bet.placeBetDelayMilliseconds } };
+        maxStake: null, debug, draft: { betId: hit.bet.id, legId: hit.leg.id, selId: sel, odds: ms.odds, delayMs: hit.bet.placeBetDelayMilliseconds } };
     },
 
     async place(row, stake, quote) {
