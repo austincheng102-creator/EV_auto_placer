@@ -200,6 +200,13 @@ export function makeDraftKings(name, label, cfg, bridge) {
         if (now != null) err.newOdds = now;
       } else if (/odds|price/i.test(reason)) err.priceMoved = true;
       else if (/suspend|closed|unavailable|not.?available|RepeatedBets|already placed/i.test(reason)) err.gone = true;
+      // "Missing or false PlaySportsbook": DraftKings' location check (GeoComply) has lapsed, so the
+      // login isn't allowed to bet (Austin, 2026-11-23, same morning BetMGM couldn't reach the
+      // GeoComply app). A tab reload makes the page run a new check.
+      if (/PlaySportsbook/i.test(reason)) {
+        err.message = `rejected: DraftKings' location check has lapsed (${reason}); nothing was placed. Reloading the DraftKings tab so it runs a new one. If this keeps happening, check the GeoComply location app is running on this PC`;
+        bridge.tell?.({ type: 'reloadTab', book: name, why: 'DraftKings refused a bet: its location check had lapsed (PlaySportsbook)' });
+      }
       throw err;
     },
 

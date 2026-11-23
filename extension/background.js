@@ -620,7 +620,12 @@ function mgmOddsPick(mode) {
     const el = document.querySelector('[data-ev-placer-pick]');
     if (!el || !vis(el)) return { found: false };
     if (!inView(el)) el.scrollIntoView({ block: 'center' });
-    return { found: true, picked: picked(el), ...at(el) };
+    // What a click at its centre would land on, and what the button looks like (for the log when a
+    // click doesn't pick it).
+    const p = at(el), hit = document.elementFromPoint(p.x, p.y);
+    const desc = (e) => (e ? `${e.tagName.toLowerCase()}.${String(e.className || '').trim().split(/\s+/).slice(0, 4).join('.')}` : 'nothing');
+    const diag = `button ${desc(el)} > ${desc(el.firstElementChild)}; click lands on ${hit && el.contains(hit) ? 'it' : desc(hit)}; page ${document.visibilityState}${document.hasFocus() ? ', focused' : ''}`;
+    return { found: true, picked: picked(el), covered: !!hit && !el.contains(hit), diag, ...p };
   }
   document.querySelectorAll('[data-ev-placer-pick]').forEach((e) => e.removeAttribute('data-ev-placer-pick'));
   const odds = /^[+\-\u2212]\d{3,5}$/;
@@ -634,6 +639,13 @@ function mgmOddsPick(mode) {
   if (!inView(el)) el.scrollIntoView({ block: 'center' });
   return { found: true, picked: false, text: (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 60), ...at(el) };
 }
+// Runs in the BetMGM page: is the GeoComply app answering on this PC (the page asks it the same way)?
+async function mgmGeoAppUp() {
+  for (const port of [53280]) {
+    try { const r = await fetch(`http://127.0.0.1:${port}/check?t=${Date.now()}`, { method: 'HEAD', mode: 'no-cors', cache: 'no-store' }); if (r) return true; } catch {}
+  }
+  return false;
+}
 const mgmPickIn = async (tabId, mode) => (await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: mgmOddsPick, args: [mode] }).catch(() => []))[0]?.result || { found: false };
 
 // BetMGM runs its location check when a pick is added to the bet slip (Austin's HAR, 2026-11-23:
@@ -646,8 +658,12 @@ async function mgmClickRenew(tabId, label, since, waitFresh) {
   if (dbgBusy.has(tabId)) return { ok: false, why: `the ${label} tab is busy logging in` };
   const lg = await inPage(tabId, false).catch(() => ({}));
   if (lg.state === 'logged-out' || lg.state === 'form') return { ok: false, why: `${label} is logged out (the extension logs back in first)` };
+  // Austin, 2026-11-23: the click made BetMGM download the GeoComply installer, i.e. the GeoComply
+  // app wasn't answering. Then a click can't renew anything (and only triggers another download).
+  const up = (await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: mgmGeoAppUp }).catch(() => []))[0]?.result;
+  if (up === false) return { ok: false, why: 'the BetMGM page can\'t reach the GeoComply location app on this PC. Either it isn\'t running (start "PlayerLocationCheck"), or Chrome blocks the site from it: click the icon left of the address in the BetMGM tab, Site settings, and set "Local network access" (or "Apps on device") to Allow. No odds were clicked' };
   const target = { tabId };
-  let attached = false, added = false, removed = false, text = '';
+  let attached = false, added = false, removed = false, text = '', fronted = false, after = '';
   dbgBusy.add(tabId);
   try {
     let p = await mgmPickIn(tabId, 'find');
@@ -659,9 +675,36 @@ async function mgmClickRenew(tabId, label, since, waitFresh) {
     await sleep(300);
     p = await mgmPickIn(tabId, 'state');
     if (!p.found) return { ok: false, why: `the odds button in the ${label} tab went away before the click` };
+    const diag = p.diag || '';
     await realClick(target, p);
-    for (let i = 0; i < 10 && !added; i++) { await sleep(300); added = !!(await mgmPickIn(tabId, 'state')).picked; }
-    const fr = await waitFresh();
+    for (let i = 0; i < 10 && !added; i++) { await sleep(300); const st = await mgmPickIn(tabId, 'state'); added = !!st.picked; if (st.diag) after = st.diag; }
+    let fresh0 = false;
+    if (!added) {
+      // Austin, 2026-11-23: a click in the background tab didn't pick it. Unless the check came anyway,
+      // bring the tab to the front (then back to your tab) and click once more.
+      fresh0 = await waitFresh(4e3);
+      if (!fresh0) {
+        const tb = await chrome.tabs.get(tabId).catch(() => null);
+        const win = tb && await chrome.windows.get(tb.windowId).catch(() => null);
+        const [cur] = tb ? await chrome.tabs.query({ active: true, windowId: tb.windowId }) : [];
+        const back = { tabId: cur && cur.id !== tabId ? cur.id : null, windowId: tb?.windowId, minimized: win?.state === 'minimized' };
+        try {
+          await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+          if (tb) await chrome.windows.update(tb.windowId, { focused: true, ...(back.minimized ? { state: 'normal' } : {}) }).catch(() => {});
+          await sleep(800);
+          const q = await mgmPickIn(tabId, 'state');
+          if (q.found && !q.picked) {
+            await realClick(target, q);
+            for (let i = 0; i < 10 && !added; i++) { await sleep(300); const st = await mgmPickIn(tabId, 'state'); added = !!st.picked; if (st.diag) after = st.diag; }
+          }
+          fronted = true;
+        } finally {
+          if (back.tabId) await chrome.tabs.update(back.tabId, { active: true }).catch(() => {});
+          if (back.minimized) await chrome.windows.update(back.windowId, { state: 'minimized' }).catch(() => {});
+        }
+      }
+    }
+    const fr = fresh0 || await waitFresh();
     // Take the pick off the slip again (up to 3 tries).
     for (let i = 0; i < 3; i++) {
       const q = await mgmPickIn(tabId, 'state');
@@ -670,7 +713,7 @@ async function mgmClickRenew(tabId, label, since, waitFresh) {
       await sleep(800);
     }
     const left = added && !removed ? ` The pick "${text}" may still be on the ${label} bet slip: remove it there.` : '';
-    return { ok: fr, why: `clicked "${text}" in the ${label} tab${added ? '' : ' (the button didn\'t show as picked)'}${left}` };
+    return { ok: fr, why: `clicked "${text}" in the ${label} tab${fronted ? ' (again with the tab in front)' : ''}${added ? '' : ` (the button didn't show as picked; before the click: ${diag}; after: ${after || 'gone'})`}${left}` };
   } catch (e) {
     const m = String(e?.message || e);
     return { ok: false, why: m.includes('Another debugger') ? `Chrome DevTools is open on the ${label} tab: close it` : `clicking odds failed: ${m}` };
@@ -717,8 +760,9 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch, pass
         const since = Date.now();
         note(`renewing ${label}'s location check (${why}): clicking odds in the ${label} tab`, 'info');
         let g = {};
-        const r = await clickRenew(t.id, label, since, async () => {
-          while (Date.now() - since < 45e3) { await sleep(1500); g = await k.now(t.id); if (fresh(g, since)) return true; }
+        const r = await clickRenew(t.id, label, since, async (ms = 45e3) => {
+          const end = Date.now() + ms;
+          while (Date.now() < end && Date.now() - since < 60e3) { await sleep(1500); g = await k.now(t.id); if (fresh(g, since)) return true; }
           return false;
         });
         if (r.ok) {
