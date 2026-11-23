@@ -1587,20 +1587,31 @@ async function extFetch(req) {
 // cross-site headers, like a 403/429 from a bot filter, or a cut connection) says what really happened.
 const netSeen = new Map();   // url without query -> { at, status?, error? }
 const netKey = (u) => String(u || '').split('?')[0];
+const netHdr = new Map();   // request id -> status code the server answered (a blocked answer still has one)
 const netNote = (d, o) => {
   if (d.tabId < 0 || d.type === 'main_frame') return;
-  netSeen.set(netKey(d.url), { at: Date.now(), ...o });
+  const status = o.status ?? netHdr.get(d.requestId);
+  netHdr.delete(d.requestId);
+  netSeen.set(netKey(d.url), { at: Date.now(), ...o, ...(status ? { status } : {}) });
   if (netSeen.size > 300) netSeen.delete(netSeen.keys().next().value);
 };
 {
   const urls = (chrome.runtime.getManifest().host_permissions || []).filter((u) => !/gambitodds/.test(u));
-  chrome.webRequest.onCompleted.addListener((d) => { if (d.method !== 'OPTIONS' || d.statusCode >= 400) netNote(d, { status: d.statusCode, method: d.method }); }, { urls });
+  chrome.webRequest.onHeadersReceived.addListener((d) => {
+    if (d.tabId < 0) return;
+    netHdr.set(d.requestId, d.statusCode);
+    if (netHdr.size > 500) netHdr.delete(netHdr.keys().next().value);
+  }, { urls });
+  chrome.webRequest.onCompleted.addListener((d) => { if (d.method !== 'OPTIONS' || d.statusCode >= 400) netNote(d, { status: d.statusCode, method: d.method }); else netHdr.delete(d.requestId); }, { urls });
   chrome.webRequest.onErrorOccurred.addListener((d) => netNote(d, { error: d.error, method: d.method }), { urls });
 }
+// e.g. "(Chrome: net::ERR_FAILED after an HTTP 403 answer)": net::ERR_FAILED alone, with no answer,
+// is a request that never got one (cut off, or blocked before it was sent).
 const netWhy = (url) => {
   const n = netSeen.get(netKey(url));
   if (!n || Date.now() - n.at > 30e3) return '';
-  return n.error ? ` (Chrome: ${n.error}${n.method === 'OPTIONS' ? ' on the pre-check' : ''})` : ` (Chrome saw HTTP ${n.status}${n.method === 'OPTIONS' ? ' on the pre-check' : ''})`;
+  const pre = n.method === 'OPTIONS' ? ' on the pre-check' : '';
+  return n.error ? ` (Chrome: ${n.error}${pre}${n.status ? ` after an HTTP ${n.status} answer` : ', no answer from the server'})` : ` (Chrome saw HTTP ${n.status}${pre})`;
 };
 
 async function runInTab(tabId, request) {
