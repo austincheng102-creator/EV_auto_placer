@@ -29,6 +29,8 @@ async function render() {
   $('fdgeo').className = gl > 0 ? 'on' : 'off';
   { const n = s.betmgmGeoNext ? Math.round((s.betmgmGeoNext - Date.now()) / 60000) : null; const l = s.betmgmGeoLast ? ` (last renewal: ${s.betmgmGeoLast.ok ? 'worked' : 'failed'})` : '';
     $('bmgeo').textContent = (n == null ? 'not seen yet (renewed automatically)' : n >= 0 ? `next check due in ${n} min (renewed automatically)` : 'due now (renewing automatically)') + l; $('bmgeo').className = n != null && n >= 0 ? 'on' : 'off'; }
+  { const n = s.thescoreGeoNext ? Math.round((s.thescoreGeoNext - Date.now()) / 60000) : null; const l = s.thescoreGeoLast ? ` (last renewal: ${s.thescoreGeoLast.ok ? 'worked' : 'failed'})` : '';
+    $('tsgeo').textContent = (n == null ? 'not seen yet (renewed automatically)' : n >= 0 ? `good for ${n} min (renewed automatically)` : 'ran out (renewing automatically)') + l; $('tsgeo').className = n != null && n >= 0 ? 'on' : 'off'; }
   $('bm').textContent = s.betmgmLogin ? 'seen' : 'not yet (refresh the BetMGM tab)'; $('bm').className = s.betmgmLogin ? 'on' : 'off';
   { const h = s.thescoreHeaders || []; $('ts').textContent = h.length ? h.join(', ') : 'none seen yet (cookies only; refresh the theScore tab)'; $('ts').className = h.length ? 'on' : 'off'; }
   $('armed').textContent = armed ? 'ARMED' : 'disarmed (re-checks only)'; $('armed').className = armed ? 'on' : 'off';

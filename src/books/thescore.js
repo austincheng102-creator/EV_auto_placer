@@ -178,8 +178,8 @@ export function makeTheScore(name, label, cfg, bridge) {
       // check (GeoComply, run by its page) had lapsed and nothing was placed. A reload of the theScore
       // tab makes the page run it again; the bet is checked again from the start next scan.
       if (/verify your location|location/i.test(why)) {
-        bridge.tell?.({ type: 'reloadTab', book: name, why: 'theScore asked to verify the location again' });
-        const e = new Error(`refused: theScore's location check had lapsed ("${why.slice(0, 80)}"), nothing was placed; reloading the theScore tab so the site checks again, the bet is checked again next scan`);
+        bridge.tell?.({ type: 'geoRenew', book: name, why: 'a bet was refused: theScore asked to verify the location' });
+        const e = new Error(`refused: theScore's location check had lapsed ("${why.slice(0, 80)}"), nothing was placed; renewing it now (the extension reloads the theScore tab), the bet is checked again next scan`);
         e.detail = `theScore place response: ${JSON.stringify(r).slice(0, 3000)}`; e.notSent = true; e.geoRenewing = true;
         throw e;
       }
