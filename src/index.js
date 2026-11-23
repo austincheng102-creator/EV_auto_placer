@@ -208,7 +208,8 @@ const useMock = opt('--source', 'gambit') === 'mock';
 const needBridge = !dryRun || (!useMock && (cfg.gambit?.via || 'extension') === 'extension');
 const bridge = needBridge ? startBridge(cfg.bridgePort || 8765, { reloadExtension: extensionChanged,
   hello: { type: 'settings', settings: { gambitAutoLogin: cfg.session?.gambitAutoLogin !== false, fanduelGeoRenew: cfg.session?.fanduelGeoRenew !== false,
-    betriversGeoRenew: cfg.session?.betriversGeoRenew !== false, betmgmGeoRenew: cfg.session?.betmgmGeoRenew !== false } } }) : null;
+    betriversGeoRenew: cfg.session?.betriversGeoRenew !== false, betmgmGeoRenew: cfg.session?.betmgmGeoRenew !== false,
+    thescoreGeoRenew: cfg.session?.thescoreGeoRenew !== false } } }) : null;
 const source = useMock ? makeMockSource(cfg) : makeGambitSource(cfg, bridge, { root, log });
 const books = makeBooks(cfg, bridge, dryRun);
 for (const b of Object.values(books)) {

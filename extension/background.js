@@ -207,6 +207,7 @@ async function registerGeoScripts() {
     { id: 'fd-geo', js: ['fd-geo.js'], matches: ['https://*.sportsbook.fanduel.com/*'] },
     { id: 'br-geo', js: ['br-geo.js'], matches: ['https://*.betrivers.com/*'] },
     { id: 'mgm-geo', js: ['mgm-geo.js'], matches: ['https://*.betmgm.com/*'] },
+    { id: 'ts-geo', js: ['ts-geo.js'], matches: ['https://sportsbook.thescore.bet/*'] },
   ];
   for (const s of want) {
     try {
@@ -563,103 +564,114 @@ async function keepBrGeo() {
   if (!lapsedAt || Date.now() - lapsedAt < BR_GEO_STALE_MS) return;
   renewBrGeo(`it ran out ${mins(Date.now() - lapsedAt)} ago and the page hasn't sent a new one`).catch(() => {});
 }
-// ---- BetMGM location check: keep it current ----
-// BetMGM's page runs its location check (GeoComply app on this PC + BetMGM's location server) and
-// is told when the next one is due (timeForNextCall, about 19.5 min; mgm-geo.js keeps a copy).
-// In a background tab it didn't always run the next one, and bets were refused with
-// SessionTokenInvalid (Austin, 2026-11-23). So: the page is always told its tab is in view, and
-// when the next check is due within 90s (or is overdue, or the last answer wasn't VALID_LOCATION,
-// or a bet was refused for it) the BetMGM tab is reloaded, which makes the page run a fresh check
-// at once. If a reload doesn't bring one within 45s, the next try brings the tab to the front
-// first (then goes back to your tab). Never while a BetMGM bet is being sent or waiting on its
-// live delay. Off with config.json "session": {"betmgmGeoRenew": false}.
-let mgmGeo = {};                    // from mgm-geo.js: { initAt, updateAt, nextAt, status, statusAt, operation }
-let mgmGeoJob = null, mgmGeoTriedAt = 0, mgmGeoFails = 0, mgmBusyAt = 0, mgmRefusedAt = 0;
-let mgmGeoLast = null;              // { at, ok, why } for the popup
-store.get('mgmGeo').then((v) => { if (v?.mgmGeo && !mgmGeo.updateAt) mgmGeo = v.mgmGeo; });
-const mgmNote = (text, level = 'warn') => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book: 'betmgm', level, text })); };
-const mgmTab = async () => (await bookTabs()).find((t) => t.book === 'betmgm' && /(^|\.)betmgm\.com$/.test(new URL(t.url).hostname));
-const readMgmGeo = () => { try { return sessionStorage.getItem('evPlacerMgmGeo'); } catch { return null; } };
-async function mgmGeoNow(tabId) {
-  const [r] = tabId ? await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: readMgmGeo }).catch(() => []) : [];
-  let g = null; try { g = JSON.parse(r?.result || 'null'); } catch {}
-  if (g && JSON.stringify(g) !== JSON.stringify(mgmGeo)) { mgmGeo = g; store.set({ mgmGeo }); }
-  return g || {};
-}
-const MGM_RENEW_BEFORE_MS = 90e3;
-// Why the check needs renewing now ('' = it doesn't).
-function mgmGeoDue(g) {
-  const now = Date.now();
-  if (mgmRefusedAt > (g.updateAt || 0)) return 'a bet was refused because it had lapsed';
-  if (!g.updateAt && !g.statusAt) return 'no location check seen in this page yet';
-  if (g.statusAt > (g.updateAt || 0) + 5e3 && g.status && !/^VALID/i.test(g.status) && now - g.statusAt > 30e3) return `BetMGM answered ${g.status}`;
-  if (g.nextAt && now > g.nextAt - MGM_RENEW_BEFORE_MS) return now > g.nextAt ? `the next one was due ${mins(now - g.nextAt)} ago` : `the next one is due in ${mins(g.nextAt - now)}`;
-  return '';
-}
-function renewMgmGeo(why, urgent = false) {
-  if (mgmGeoJob) return mgmGeoJob;
-  mgmGeoJob = (async () => {
-    const gap = urgent ? 60e3 : mgmGeoFails >= 3 ? 10 * 60e3 : 2 * 60e3;
-    if (Date.now() - mgmGeoTriedAt < gap) return { ok: false, why: `last try was ${mins(Date.now() - mgmGeoTriedAt)} ago` };
-    const t = await mgmTab();
-    if (!t) return { ok: false, why: 'no BetMGM tab open (open sports.co.betmgm.com and log in)' };
-    // Wait for a BetMGM bet being sent or waiting on its live delay (a reload would lose its answer).
-    for (let k = 0; k < 60 && (placing.betmgm > 0 || Date.now() - mgmBusyAt < 20e3); k++) await sleep(1000);
-    if (placing.betmgm > 0 || Date.now() - mgmBusyAt < 20e3) return { ok: false, why: 'a BetMGM bet was still being sent' };
-    mgmGeoTriedAt = Date.now();
-    const front = mgmGeoFails % 2 === 1;   // every other failed round, bring the tab to the front too
-    const name = front ? 'bringing the BetMGM tab to the front and reloading' : 'reloading the BetMGM tab';
-    mgmNote(`renewing BetMGM's location check (${why}): ${name}`, 'info');
-    const since = Date.now();
-    let back = null;
-    if (front) {
-      const tab = await chrome.tabs.get(t.id).catch(() => null);
-      const win = tab && await chrome.windows.get(tab.windowId).catch(() => null);
-      const [cur] = tab ? await chrome.tabs.query({ active: true, windowId: tab.windowId }) : [];
-      back = { tabId: cur && cur.id !== t.id ? cur.id : null, windowId: tab?.windowId, minimized: win?.state === 'minimized' };
-      await chrome.tabs.update(t.id, { active: true }).catch(() => {});
-      if (tab) await chrome.windows.update(tab.windowId, { focused: true, ...(back.minimized ? { state: 'normal' } : {}) }).catch(() => {});
-    }
-    reloadedAt.betmgm = Date.now();
-    lastReload = { book: 'betmgm', why: `renew the location check: ${name}`, at: Date.now() };
-    await chrome.tabs.reload(t.id).catch(() => {});
-    let g = {};
-    try {
-      while (Date.now() - since < 45e3) {
-        await sleep(2000);
-        await brVisible(t.id);   // in case mgm-geo.js didn't load with the page
-        g = await mgmGeoNow(t.id);
-        if ((g.updateAt || 0) > since) break;
+// ---- BetMGM and theScore location checks: keep them current ----
+// Both pages run their own location check (GeoComply) and learn when it runs out:
+//  - BetMGM: its location server answers "update" with timeForNextCall (about 19.5 min).
+//  - theScore: GeoComplyAuthorizeGeoPacket answers expiresAt (20 min) and refreshAt.
+// mgm-geo.js / ts-geo.js keep a copy ({ updateAt: last good check, nextAt: when it runs out or the
+// next one is due, status }). In a background tab the pages didn't always run the next one, and bets
+// were refused (BetMGM SessionTokenInvalid, theScore "We need to verify your location", Austin,
+// 2026-11-23). So: each page is always told its tab is in view, and when the check runs out within
+// 90s (or has, or the last answer was bad, or a bet was refused for it) the tab is reloaded, which
+// makes the page run a fresh check at once. If a reload doesn't bring one within 45s, the next try
+// brings the tab to the front first (then goes back to your tab). Never while one of that book's bets
+// is being sent or waiting on its live delay; its bets are held (not sent) while it renews.
+// Off with config.json "session": {"betmgmGeoRenew": false} / {"thescoreGeoRenew": false}.
+const GEO_RENEW_BEFORE_MS = 90e3;
+const readPageGeo = (key) => { try { return sessionStorage.getItem(key); } catch { return null; } };
+function makeGeoKeeper({ book, label, key, host, setting, help }) {
+  const k = { book, label, setting, g: {}, job: null, triedAt: 0, fails: 0, busyAt: 0, refusedAt: 0, last: null };
+  store.get(`geo_${book}`).then((v) => { if (v?.[`geo_${book}`] && !k.g.updateAt) k.g = v[`geo_${book}`]; });
+  const note = (text, level = 'warn') => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book, level, text })); };
+  const tab = async () => (await bookTabs()).find((t) => t.book === book && host.test(new URL(t.url).hostname));
+  k.now = async (tabId) => {
+    const [r] = tabId ? await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: readPageGeo, args: [key] }).catch(() => []) : [];
+    let g = null; try { g = JSON.parse(r?.result || 'null'); } catch {}
+    if (g && JSON.stringify(g) !== JSON.stringify(k.g)) { k.g = g; store.set({ [`geo_${book}`]: g }); }
+    return g || {};
+  };
+  // Why the check needs renewing now ('' = it doesn't).
+  k.due = (g) => {
+    const now = Date.now();
+    if (k.refusedAt > (g.updateAt || 0)) return 'a bet was refused because it had lapsed';
+    if (!g.updateAt && !g.statusAt) return 'no location check seen in this page yet';
+    if (g.statusAt > (g.updateAt || 0) + 5e3 && g.status && !/^(VALID|OK)/i.test(g.status) && now - g.statusAt > 30e3) return `${label} answered ${g.status}`;
+    if (g.nextAt && now > g.nextAt - GEO_RENEW_BEFORE_MS) return now > g.nextAt ? `it ran out ${mins(now - g.nextAt)} ago` : `it runs out in ${mins(g.nextAt - now)}`;
+    return '';
+  };
+  k.renew = (why, urgent = false) => {
+    if (k.job) return k.job;
+    k.job = (async () => {
+      const gap = urgent ? 60e3 : k.fails >= 3 ? 10 * 60e3 : 2 * 60e3;
+      if (Date.now() - k.triedAt < gap) return { ok: false, why: `last try was ${mins(Date.now() - k.triedAt)} ago` };
+      const t = await tab();
+      if (!t) return { ok: false, why: `no ${label} tab open (open it and log in)` };
+      // Wait for a bet being sent or waiting on its live delay (a reload would lose its answer).
+      for (let i = 0; i < 60 && (placing[book] > 0 || Date.now() - k.busyAt < 20e3); i++) await sleep(1000);
+      if (placing[book] > 0 || Date.now() - k.busyAt < 20e3) return { ok: false, why: `a ${label} bet was still being sent` };
+      k.triedAt = Date.now();
+      const front = k.fails % 2 === 1;   // every other failed round, bring the tab to the front too
+      const name = front ? `bringing the ${label} tab to the front and reloading` : `reloading the ${label} tab`;
+      note(`renewing ${label}'s location check (${why}): ${name}`, 'info');
+      const since = Date.now();
+      let back = null;
+      if (front) {
+        const tb = await chrome.tabs.get(t.id).catch(() => null);
+        const win = tb && await chrome.windows.get(tb.windowId).catch(() => null);
+        const [cur] = tb ? await chrome.tabs.query({ active: true, windowId: tb.windowId }) : [];
+        back = { tabId: cur && cur.id !== t.id ? cur.id : null, windowId: tb?.windowId, minimized: win?.state === 'minimized' };
+        await chrome.tabs.update(t.id, { active: true }).catch(() => {});
+        if (tb) await chrome.windows.update(tb.windowId, { focused: true, ...(back.minimized ? { state: 'normal' } : {}) }).catch(() => {});
       }
-    } finally {
-      if (back?.tabId) await chrome.tabs.update(back.tabId, { active: true }).catch(() => {});
-      if (back?.minimized) await chrome.windows.update(back.windowId, { state: 'minimized' }).catch(() => {});
-    }
-    if ((g.updateAt || 0) > since) {
-      mgmGeoFails = 0;
-      const left = g.nextAt > Date.now() ? `, next one due in ${mins(g.nextAt - Date.now())}` : '';
-      mgmGeoLast = { at: Date.now(), ok: true, why: `${name}, after ${Math.round((Date.now() - since) / 1000)}s${left}` };
-      mgmNote(`BetMGM location check renewed by ${mgmGeoLast.why}`, 'good');
-      return { ok: true, why: mgmGeoLast.why };
-    }
-    mgmGeoFails++;
-    const seen = (g.initAt || 0) > since ? 'the page started a check but BetMGM never confirmed it' : 'the page didn\'t start a location check';
-    const msg = `${name} didn't bring a new location check in 45s (${seen}). Is the GeoComply location app running on this PC, and are you logged in to BetMGM?`;
-    mgmGeoLast = { at: Date.now(), ok: false, why: msg };
-    mgmNote(`BetMGM location check NOT renewed: ${msg} Trying again in ${mgmGeoFails >= 3 ? 10 : 2} min`);
-    return { ok: false, why: msg };
-  })().catch((e) => ({ ok: false, why: String(e?.message || e) })).finally(() => { mgmGeoJob = null; });
-  return mgmGeoJob;
+      reloadedAt[book] = Date.now();
+      lastReload = { book, why: `renew the location check: ${name}`, at: Date.now() };
+      await chrome.tabs.reload(t.id).catch(() => {});
+      let g = {};
+      try {
+        while (Date.now() - since < 45e3) {
+          await sleep(2000);
+          await brVisible(t.id);   // in case the page script didn't load with the page
+          g = await k.now(t.id);
+          if ((g.updateAt || 0) > since) break;
+        }
+      } finally {
+        if (back?.tabId) await chrome.tabs.update(back.tabId, { active: true }).catch(() => {});
+        if (back?.minimized) await chrome.windows.update(back.windowId, { state: 'minimized' }).catch(() => {});
+      }
+      if ((g.updateAt || 0) > since) {
+        k.fails = 0;
+        const left = g.nextAt > Date.now() ? `, good for ${mins(g.nextAt - Date.now())}` : '';
+        k.last = { at: Date.now(), ok: true, why: `${name}, after ${Math.round((Date.now() - since) / 1000)}s${left}` };
+        note(`${label} location check renewed by ${k.last.why}`, 'good');
+        return { ok: true, why: k.last.why };
+      }
+      k.fails++;
+      const seen = (g.startAt || 0) > since ? 'the page started a check but it wasn\'t confirmed' : 'the page didn\'t start a location check';
+      const msg = `${name} didn't bring a new location check in 45s (${seen}). ${help}`;
+      k.last = { at: Date.now(), ok: false, why: msg };
+      note(`${label} location check NOT renewed: ${msg} Trying again in ${k.fails >= 3 ? 10 : 2} min`);
+      return { ok: false, why: msg };
+    })().catch((e) => ({ ok: false, why: String(e?.message || e) })).finally(() => { k.job = null; });
+    return k.job;
+  };
+  // Every 30 seconds (watchLogins).
+  k.keep = async () => {
+    if (settings[setting] === false || k.job) return;
+    const t = await tab();
+    if (!t || t.discarded) return;
+    await brVisible(t.id);
+    const why = k.due(await k.now(t.id));
+    if (why) k.renew(why, k.refusedAt > Date.now() - 120e3).catch(() => {});
+  };
+  k.refused = (why) => { k.refusedAt = Date.now(); if (settings[setting] !== false) k.renew(why || 'a bet was refused because it had lapsed', true).catch(() => {}); };
+  return k;
 }
-// Every 30 seconds (watchLogins).
-async function keepMgmGeo() {
-  if (settings.betmgmGeoRenew === false || mgmGeoJob) return;
-  const t = await mgmTab();
-  if (!t || t.discarded) return;
-  await brVisible(t.id);
-  const why = mgmGeoDue(await mgmGeoNow(t.id));
-  if (why) renewMgmGeo(why, mgmRefusedAt > Date.now() - 120e3).catch(() => {});
-}
+const geoKeepers = {
+  betmgm: makeGeoKeeper({ book: 'betmgm', label: 'BetMGM', key: 'evPlacerMgmGeo', host: /(^|\.)betmgm\.com$/, setting: 'betmgmGeoRenew',
+    help: 'Is the GeoComply location app running on this PC, and are you logged in to BetMGM?' }),
+  thescore: makeGeoKeeper({ book: 'thescore', label: 'theScore', key: 'evPlacerTsGeo', host: /^sportsbook\.thescore\.bet$/, setting: 'thescoreGeoRenew',
+    help: 'Is the GeoComply location app running on this PC, does Chrome allow theScore to use your location, and are you logged in to theScore?' }),
+};
 
 // Kambi refused a bet because the location check had lapsed.
 const kambiBlocked = (r) => {
@@ -693,7 +705,7 @@ const jwtExp = (tok) => {
 // debugger (chrome.debugger), which Chrome treats as real mouse/keyboard input. While it runs
 // (a few seconds) Chrome shows a bar "EV Placer Bridge started debugging this browser"; it goes
 // away by itself. Off with config.json "session": {"gambitAutoLogin": false}.
-let settings = { gambitAutoLogin: true, fanduelGeoRenew: true, betriversGeoRenew: true };
+let settings = { gambitAutoLogin: true, fanduelGeoRenew: true, betriversGeoRenew: true, betmgmGeoRenew: true, thescoreGeoRenew: true };
 chrome.storage.local.get('settings').then((v) => { if (v?.settings) settings = { ...settings, ...v.settings }; }).catch(() => {});
 let lastLogin = null;          // { at, ok, why } for the popup
 let loginBusy = false;
@@ -943,7 +955,7 @@ async function watchLogins() {
   await nudgeTabs();
   await keepFdGeo().catch(() => {});
   await keepBrGeo().catch(() => {});
-  await keepMgmGeo().catch(() => {});
+  for (const k of Object.values(geoKeepers)) await k.keep().catch(() => {});
   const now = Date.now() / 1000;
   // A token that ran out over 10 minutes ago means reloading didn't bring the login back: you're
   // really logged out, so stop reloading (the app keeps alerting until you log in).
@@ -1139,7 +1151,7 @@ async function handle(msg) {
     }
     // BetMGM's location check is being renewed (the tab is reloading): send nothing; the app checks
     // the bet again next scan.
-    if (msg.book === 'betmgm' && msg.request.kind === 'place' && mgmGeoJob) return reply({ error: 'BetMGM location check is being renewed, nothing was sent; the bet is checked again next scan', notSent: true, geoRenewing: true });
+    if (geoKeepers[msg.book]?.job && msg.request.kind === 'place') return reply({ error: `${geoKeepers[msg.book].label} location check is being renewed, nothing was sent; the bet is checked again next scan`, notSent: true, geoRenewing: true });
     if (msg.request.useBetMGMAuth) {
       for (const [h, v] of Object.entries(msg.request.headers || {})) {
         if (v !== '{{bmXsrf}}') continue;
@@ -1181,7 +1193,7 @@ async function handle(msg) {
   finally {
     if (msg.request?.kind === 'place') placing[msg.book] = Math.max(0, (placing[msg.book] || 1) - 1);
     if (msg.book === 'betrivers' && ['place', 'status'].includes(msg.request?.kind)) brBusyAt = Date.now();
-    if (msg.book === 'betmgm' && ['place', 'status'].includes(msg.request?.kind)) mgmBusyAt = Date.now();
+    if (geoKeepers[msg.book] && ['place', 'status'].includes(msg.request?.kind)) geoKeepers[msg.book].busyAt = Date.now();
   }
 }
 
@@ -1195,7 +1207,8 @@ function connect() {
     else if (m.type === 'alert') showAlert(m);
     else if (m.type === 'clearAlert') clearAlert(m);
     else if (m.type === 'reloadTab') reloadTab(m.book, m.why || 'the app found it logged out');
-    else if (m.type === 'mgmGeoRenew') { mgmRefusedAt = Date.now(); if (settings.betmgmGeoRenew !== false) renewMgmGeo(m.why || 'a bet was refused because it had lapsed', true).catch(() => {}); }
+    else if (m.type === 'mgmGeoRenew') geoKeepers.betmgm.refused(m.why);
+    else if (m.type === 'geoRenew' && geoKeepers[m.book]) geoKeepers[m.book].refused(m.why);
     else if (m.type === 'login' && m.book === 'gambit') autoLoginGambit(m.why || 'the app found it logged out').catch(() => {});
     else if (m.type === 'settings') { settings = { ...settings, ...m.settings }; chrome.storage.local.set({ settings }).catch(() => {}); }
   };
@@ -1209,7 +1222,7 @@ chrome.tabs.onUpdated.addListener((_id, info) => { if (info.url || info.status =
 chrome.tabs.onRemoved.addListener(sendTabs);
 chrome.runtime.onMessage.addListener((m, _s, respond) => {
   if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth, betriversLogin: !!kambiAuth, betriversRenewedAt: kambiRenewedAt, hardrockLogin: !!hrAuth.session, hardrockGeo: hrAuth.geoAt || 0,
-    fanduelExp: jwtExp(fdAuth.auth), fanduelGeoExp: fdGeoExp(fdAuth.geo), fanduelGeoLast: fdGeoLast, betriversGeoExp: brGeo.status === 'ALLOWED' ? brGeo.expires || 0 : 0, betriversGeoSeen: !!(brGeo.at || brGeo.flagAt), betriversGeoLast: brGeoLast, betmgmGeoNext: mgmGeo.nextAt || 0, betmgmGeoLast: mgmGeoLast,
+    fanduelExp: jwtExp(fdAuth.auth), fanduelGeoExp: fdGeoExp(fdAuth.geo), fanduelGeoLast: fdGeoLast, betriversGeoExp: brGeo.status === 'ALLOWED' ? brGeo.expires || 0 : 0, betriversGeoSeen: !!(brGeo.at || brGeo.flagAt), betriversGeoLast: brGeoLast, betmgmGeoNext: geoKeepers.betmgm.g.nextAt || 0, betmgmGeoLast: geoKeepers.betmgm.last, thescoreGeoNext: geoKeepers.thescore.g.nextAt || 0, thescoreGeoLast: geoKeepers.thescore.last,
     gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, betmgmLogin: !!bmAuth.xsrf, thescoreHeaders: Object.keys(tsAuth.headers), alert: alertText, lastReload, lastLogin, autoLogin: settings.gambitAutoLogin })); return true; }
 });
 // Keep the service worker alive while the engine runs.
