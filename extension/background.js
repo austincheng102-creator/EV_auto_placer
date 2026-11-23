@@ -598,16 +598,16 @@ const GEO_RENEW_BEFORE_MS = 90e3;
 // is valid (BetMGM's locationInfostatus VALID_LOCATION).
 const fresh = (g, since) => (g.updateAt || 0) > since || ((g.statusAt || 0) > since && /^(VALID|OK)/i.test(String(g.status || '')));
 const readPageGeo = (key) => { try { return sessionStorage.getItem(key); } catch { return null; } };
-// Removes the page's own saved location check (storage keys ending in `suffix`), so the reload runs a
-// new one instead of reusing the saved one. Returns the keys removed.
-const clearPageGeo = (suffix) => {
-  const out = [];
+// Removes the page's own saved location check (storage keys matching `pattern`, never the extension's
+// own evPlacer* copy), so the reload runs a new one instead of reusing the saved one. Returns the keys removed.
+const clearPageGeo = (pattern) => {
+  const out = [], re = new RegExp(pattern, 'i');
   for (const st of [localStorage, sessionStorage]) {
-    try { for (const k of Object.keys(st)) if (k.endsWith(suffix)) { st.removeItem(k); out.push(k); } } catch {}
+    try { for (const k of Object.keys(st)) if (re.test(k) && !/^evPlacer/.test(k)) { st.removeItem(k); out.push(k); } } catch {}
   }
   return out;
 };
-function makeGeoKeeper({ book, label, key, host, setting, help, clearSuffix }) {
+function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch }) {
   const k = { book, label, setting, g: {}, job: null, triedAt: 0, fails: 0, busyAt: 0, refusedAt: 0, last: null };
   store.get(`geo_${book}`).then((v) => { if (v?.[`geo_${book}`] && !k.g.updateAt) k.g = v[`geo_${book}`]; });
   const note = (text, level = 'warn') => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book, level, text })); };
@@ -655,7 +655,8 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearSuffix }) {
       lastReload = { book, why: `renew the location check: ${name}`, at: Date.now() };
       // theScore saves its location check in the browser and, on a reload, reuses it while it's still
       // valid instead of running a new one (so a reload alone didn't renew it). Remove the saved copy first.
-      if (clearSuffix) await chrome.scripting.executeScript({ target: { tabId: t.id }, world: 'MAIN', func: clearPageGeo, args: [clearSuffix] }).catch(() => {});
+      let cleared = null;
+      if (clearMatch) cleared = (await chrome.scripting.executeScript({ target: { tabId: t.id }, world: 'MAIN', func: clearPageGeo, args: [clearMatch] }).catch(() => []))[0]?.result || [];
       await chrome.tabs.reload(t.id).catch(() => {});
       let g = {};
       try {
@@ -672,13 +673,13 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearSuffix }) {
       if (fresh(g, since)) {
         k.fails = 0;
         const left = g.nextAt > Date.now() ? `, good for ${mins(g.nextAt - Date.now())}` : '';
-        k.last = { at: Date.now(), ok: true, why: `${name}, after ${Math.round((Date.now() - since) / 1000)}s${left}` };
+        k.last = { at: Date.now(), ok: true, why: `${name}, after ${Math.round((Date.now() - since) / 1000)}s${left}${cleared?.length ? ` (saved check removed first: ${cleared.join(', ').slice(0, 120)})` : ''}` };
         note(`${label} location check renewed by ${k.last.why}`, 'good');
         return { ok: true, why: k.last.why };
       }
       k.fails++;
       const seen = Math.max(g.startAt || 0, g.initAt || 0) > since ? 'the page started a check but it wasn\'t confirmed' : 'the page didn\'t start a location check';
-      const msg = `${name} didn't bring a new location check in 45s (${seen}). ${help}`;
+      const msg = `${name} didn't bring a new location check in 45s (${seen}${cleared ? `; saved check removed first: ${cleared.length ? cleared.join(', ').slice(0, 200) : 'none found'}` : ''}). ${help}`;
       k.last = { at: Date.now(), ok: false, why: msg };
       note(`${label} location check NOT renewed: ${msg} Trying again in ${k.fails >= 3 ? 10 : 2} min`);
       return { ok: false, why: msg };
@@ -698,9 +699,9 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearSuffix }) {
   return k;
 }
 const geoKeepers = {
-  betmgm: makeGeoKeeper({ book: 'betmgm', label: 'BetMGM', key: 'evPlacerMgmGeo', host: /(^|\.)betmgm\.com$/, setting: 'betmgmGeoRenew',
+  betmgm: makeGeoKeeper({ book: 'betmgm', label: 'BetMGM', key: 'evPlacerMgmGeo', host: /(^|\.)betmgm\.com$/, setting: 'betmgmGeoRenew', clearMatch: '^(lastFetchLocationCommand|lastLocationInfoStatus)$',
     help: 'Is the GeoComply location app running on this PC, and are you logged in to BetMGM?' }),
-  thescore: makeGeoKeeper({ book: 'thescore', label: 'theScore', key: 'evPlacerTsGeo', host: /^sportsbook\.thescore\.bet$/, setting: 'thescoreGeoRenew', clearSuffix: '__GEOCOMPLY__',
+  thescore: makeGeoKeeper({ book: 'thescore', label: 'theScore', key: 'evPlacerTsGeo', host: /^sportsbook\.thescore\.bet$/, setting: 'thescoreGeoRenew', clearMatch: '__GEOCOMPLY__$',
     help: 'Is the GeoComply location app running on this PC, does Chrome allow theScore to use your location, and are you logged in to theScore?' }),
 };
 
