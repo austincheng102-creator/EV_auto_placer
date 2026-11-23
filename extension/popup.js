@@ -39,6 +39,18 @@ async function render() {
   $('armed').textContent = armed ? 'ARMED' : 'disarmed (re-checks only)'; $('armed').className = armed ? 'on' : 'off';
   $('toggle').textContent = armed ? 'Disarm' : 'Arm (allow real bets)';
 }
+async function mgmPw() {
+  const { mgmLogin } = await chrome.storage.local.get('mgmLogin');
+  $('mgmpwst').textContent = mgmLogin?.pass ? 'password saved' : 'no password saved'; $('mgmpwst').className = mgmLogin?.pass ? 'on' : 'off';
+}
+$('mgmsave').onclick = async () => {
+  const pass = $('mgmpass').value, email = $('mgmemail').value.trim();
+  if (!pass) return;
+  await chrome.storage.local.set({ mgmLogin: { pass, email } });
+  $('mgmpass').value = ''; mgmPw();
+};
+$('mgmforget').onclick = async () => { await chrome.storage.local.remove('mgmLogin'); mgmPw(); };
+mgmPw();
 $('toggle').onclick = async () => {
   const { armed = false } = await chrome.storage.local.get('armed');
   await chrome.storage.local.set({ armed: !armed }); render();
