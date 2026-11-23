@@ -174,6 +174,15 @@ export function makeTheScore(name, label, cfg, bridge) {
       const placed = (r.placedBets || []).find((p) => (p.legs || []).some((l) => l.marketSelectionId === dr.selId)) || (r.placedBets || [])[0];
       if (placed?.id) return { betId: `thescore:${String(placed.id).replace(/^PlacedBet:/, '')}`, confirmedOdds: null, detail: `theScore place response: ${JSON.stringify(r).slice(0, 3000)}` };
       const why = errorsOf(r).join(', ') || 'no bet in the reply';
+      // "We need to verify your location before you proceed" (Austin, 2026-11-23): theScore's location
+      // check (GeoComply, run by its page) had lapsed and nothing was placed. A reload of the theScore
+      // tab makes the page run it again; the bet is checked again from the start next scan.
+      if (/verify your location|location/i.test(why)) {
+        bridge.tell?.({ type: 'reloadTab', book: name, why: 'theScore asked to verify the location again' });
+        const e = new Error(`refused: theScore's location check had lapsed ("${why.slice(0, 80)}"), nothing was placed; reloading the theScore tab so the site checks again, the bet is checked again next scan`);
+        e.detail = `theScore place response: ${JSON.stringify(r).slice(0, 3000)}`; e.notSent = true; e.geoRenewing = true;
+        throw e;
+      }
       const err = new Error(`rejected: ${why}`);
       err.detail = `theScore place response: ${JSON.stringify(r).slice(0, 3000)}`;
       if (/odds|price/i.test(why)) err.priceMoved = true;

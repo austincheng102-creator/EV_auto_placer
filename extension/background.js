@@ -207,6 +207,7 @@ async function registerGeoScripts() {
     { id: 'fd-geo', js: ['fd-geo.js'], matches: ['https://*.sportsbook.fanduel.com/*'] },
     { id: 'br-geo', js: ['br-geo.js'], matches: ['https://*.betrivers.com/*'] },
     { id: 'mgm-geo', js: ['mgm-geo.js'], matches: ['https://*.betmgm.com/*'] },
+    { id: 'ts-visible', js: ['ts-visible.js'], matches: ['https://sportsbook.thescore.bet/*'] },
   ];
   for (const s of want) {
     try {
