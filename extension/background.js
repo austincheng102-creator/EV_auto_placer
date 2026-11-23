@@ -785,6 +785,7 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch, pass
   // Every 30 seconds (watchLogins).
   k.keep = async () => {
     if (settings[setting] === false || k.job) return;
+    if (clickRenew && ws?.readyState !== 1) return;   // no clicks in the tab while the app is closed
     const t = await tab();
     if (!t || t.discarded) return;
     await brVisible(t.id);
@@ -1158,7 +1159,8 @@ async function keepDkSpan() {
 const mgmLogin = { busy: false, triedAt: 0, fails: 0, subFails: 0, submitted: false, last: null, timer: null, saidAt: 0, said: '' };
 const mgmLoginGap = () => (mgmLogin.subFails ? (mgmLogin.subFails >= 3 ? 10 * 60e3 : 2 * 60e3) : mgmLogin.fails >= 20 ? 60e3 : 5e3);
 async function autoLoginBetMGM() {
-  if (settings.betmgmAutoLogin === false || mgmLogin.busy) return;
+  // Only while the app is running (Austin, 2026-11-23: it kept trying after he closed the app).
+  if (settings.betmgmAutoLogin === false || mgmLogin.busy || ws?.readyState !== 1) return;
   const t = (await bookTabs()).find((x) => x.book === 'betmgm' && /(^|\.)betmgm\.com$/.test(new URL(x.url).hostname));
   if (!t || t.discarded || dbgBusy.has(t.id) || geoKeepers.betmgm.job || placing.betmgm > 0) return;
   let f = await inPage(t.id, false).catch(() => ({ state: 'no-page' }));
