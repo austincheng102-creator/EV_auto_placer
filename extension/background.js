@@ -825,7 +825,7 @@ async function mgmClickRenew(tabId, label, since, waitFresh) {
   }
 }
 
-function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch, passive = false, passiveHelp = '', clickRenew = null, renewBeforeMs = GEO_RENEW_BEFORE_MS, needSeen = false, holdLapsed = false, showVisible = true }) {
+function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch, passive = false, passiveHelp = '', clickRenew = null, renewBeforeMs = GEO_RENEW_BEFORE_MS, needSeen = false, holdLapsed = false, showVisible = true, frontFirst = false, onTime = false }) {
   const k = { book, label, setting, passive, clicks: !!clickRenew, reloading: false, g: {}, job: null, triedAt: 0, fails: 0, busyAt: 0, refusedAt: 0, last: null, toldAt: 0 };
   store.get(`geo_${book}`).then((v) => { if (v?.[`geo_${book}`] && !k.g.updateAt) k.g = v[`geo_${book}`]; });
   const note = (text, level = 'warn') => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book, level, text })); };
@@ -882,7 +882,8 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch, pass
         note(`${label} location check NOT renewed: ${msg} Trying again in ${k.fails >= 3 ? 10 : 2} min`);
         return { ok: false, why: msg };
       }
-      const front = k.fails % 2 === 1;   // every other failed round, bring the tab to the front too
+      // Every other failed round, bring the tab to the front too (frontFirst: every round).
+      const front = frontFirst || k.fails % 2 === 1;
       const name = front ? `bringing the ${label} tab to the front and reloading` : `reloading the ${label} tab`;
       note(`renewing ${label}'s location check (${why}): ${name}`, 'info');
       const since = Date.now();
@@ -956,6 +957,13 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch, pass
       }
       return;
     }
+    // onTime: also look again exactly renewBeforeMs before it runs out, not only on the 30s round
+    // (with DraftKings' 15s, the 30s round often came after it had already run out).
+    if (onTime && g.nextAt && g.nextAt !== k.timerAt && g.nextAt - Date.now() > renewBeforeMs) {
+      clearTimeout(k.timer);
+      k.timerAt = g.nextAt;
+      k.timer = setTimeout(() => k.keep().catch(() => {}), g.nextAt - renewBeforeMs - Date.now() + 300);
+    }
     const why = k.due(g);
     if (why) k.renew(why, k.refusedAt > Date.now() - 120e3).catch(() => {});
   };
@@ -988,9 +996,13 @@ const geoKeepers = {
   // runs out, the DraftKings tab is reloaded, which runs one at once; and from 5s before it runs out
   // until a new one comes, DraftKings bets are held (not sent) and checked again next scan. Nothing
   // is clicked and the page isn't told anything (Austin wants no nudges on DraftKings).
+  // A reload in the background didn't start a check, bringing the tab to the front did (Austin's
+  // log 2026-11-23 21:50: background reload "didn't start a location check", front reload 2 min
+  // later renewed it in 13s; DraftKings was lapsed in between). So DraftKings goes straight to the
+  // front reload (then back to the tab you were on), at exactly 15s before it runs out (onTime).
   // Off with config.json "session": {"draftkingsGeoRenew": false}.
   draftkings: makeGeoKeeper({ book: 'draftkings', label: 'DraftKings', key: 'evPlacerDkGeo', host: /^sportsbook\.draftkings\.com$/, setting: 'draftkingsGeoRenew',
-    renewBeforeMs: 15e3, needSeen: true, holdLapsed: true, showVisible: false,
+    renewBeforeMs: 15e3, needSeen: true, holdLapsed: true, showVisible: false, frontFirst: true, onTime: true,
     help: 'Is the GeoComply location app running on this PC, and are you logged in to DraftKings?' }),
 };
 // DraftKings' location answers, seen on the network (for a DraftKings page loaded before dk-geo.js

@@ -155,6 +155,9 @@ export function makeTheScore(name, label, cfg, bridge) {
     name, label,
     freePriceCheck: true,   // the bet-slip price check makes no bet: a failed check is checked again on later scans
     oneAtATime: true,   // one shared bet slip: the app sends theScore one bet at a time
+    // A live bet waits ~9-12s at theScore before its answer, so a re-check at a new price uses
+    // Gambit's newest fair price, not the one from before the hold.
+    freshFairOnRetry: true,
 
     // The price check: theScore's current odds for the selection (via its bet slip).
     async recheck(row) {
@@ -235,7 +238,21 @@ export function makeTheScore(name, label, cfg, bridge) {
       }
       const err = new Error(`rejected: ${why}`);
       err.detail = `theScore place response: ${JSON.stringify(r).slice(0, 3000)}`;
-      if (/odds|price/i.test(why)) err.priceMoved = true;
+      if (/odds|price/i.test(why)) {
+        err.priceMoved = true;
+        // "The odds ... has changed. Please accept and try again." theScore re-prices during its live
+        // hold (9-12s) and its reply carries the pick, still on the slip, at the new price (Austin's
+        // log 2026-11-23: 170 -> +140, 250 -> +135). Passed on as the new price, so the app checks
+        // every rule again at it (with Gambit's newest fair price) and sends it once more only if it
+        // still passes; otherwise the pick is taken off the slip as usual.
+        const moved = findDraft(r.betslip, dr.selId);
+        const newOdds = moved ? tsAmerican(moved.leg.marketSelection?.odds) : null;
+        if (newOdds != null && newOdds !== quote.odds && /^OPEN$/i.test(String(moved.leg.marketSelection?.status || 'OPEN'))) {
+          err.message = `rejected: theScore changed the price to ${newOdds > 0 ? '+' : ''}${newOdds} during its ${Math.round((Number(moved.bet.placeBetDelayMilliseconds) || 0) / 1000)}s hold`;
+          err.newOdds = newOdds;
+          err.newQuote = { draft: { ...dr, betId: moved.bet.id, legId: moved.leg.id, odds: moved.leg.marketSelection.odds } };
+        }
+      }
       else if (/suspend|closed|unavailable|not.?(available|open)/i.test(why)) err.gone = true;
       throw err;
     },

@@ -55,6 +55,14 @@ export function waitingOutcome(text, waitingBetId = null) {
   };
 }
 
+/** The first value of `key` anywhere in a DraftKings answer (depth-limited). */
+export function findKey(o, key, d = 0) {
+  if (!o || typeof o !== 'object' || d > 6) return null;
+  if (!Array.isArray(o) && o[key] != null && typeof o[key] !== 'object') return String(o[key]);
+  for (const v of Object.values(o)) { const r = findKey(v, key, d + 1); if (r) return r; }
+  return null;
+}
+
 const uuid = () => (globalThis.crypto?.randomUUID?.() || 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
   const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16);
 }));
@@ -104,8 +112,11 @@ export function makeDraftKings(name, label, cfg, bridge) {
     return r.json.token;
   }
 
-  return {
+  const book = {
     name, label,
+    // Live bets wait out DraftKings' delay (3-6s) before a counter-offer comes: its re-check uses
+    // Gambit's newest fair price, not the one from before the delay.
+    freshFairOnRetry: true,
     // The price check (calculateBets + selection info) makes no bet, so a failed check is checked
     // again on later scans. DraftKings watches for bots, so a watched bet is re-checked at most
     // every 5s ("draftkings": {"recheckWatchSec": 5}).
@@ -141,8 +152,18 @@ export function makeDraftKings(name, label, cfg, bridge) {
     async place(row, stake, quote) {
       let q = quote.dk;
       if (!q?.token) throw new Error('no DraftKings price token from the price check');
-      // A retry after a price move (or a DraftKings counter-offer) comes with the new price but the old
-      // price's token: get a fresh token, and bet only if it's still that price.
+      // A DraftKings counter-offer ("NewOffer", open for its delayPeriod, 120s) that the app has just
+      // checked against every rule at the offered price: take it the way the site's Accept button does,
+      // POST acceptPurchase {waitingBetId, newOfferId} (Austin's capture 2026-11-23 22:24 UTC). Sending
+      // the bet again instead was always refused "RepeatedBets" while the offer was open.
+      const off = q.offer;
+      if (off && off.odds === quote.odds && Date.now() < off.until) {
+        const res = await send('place', `${wager}/acceptPurchase`, 'POST', { waitingBetId: off.waitingBetId, newOfferId: off.newOfferId },
+          { ...slipHeaders, accept: 'application/json', 'x-request-client-timestamp': String(Date.now()) }, 30000);
+        return answer(res, { ...q, offer: null }, 'acceptPurchase', `accepted DraftKings' counter-offer ${quote.odds > 0 ? '+' : ''}${quote.odds}; `);
+      }
+      // A retry after a price move comes with the new price but the old price's token: get a fresh
+      // token, and bet only if it's still that price.
       if (dkAmerican(q.displayOdds, q.trueOdds) !== quote.odds) {
         const fresh = await this.recheck(row);
         if (!fresh.dk?.token || fresh.suspended) { const e = new Error('rejected: no longer offered'); e.gone = true; throw e; }
@@ -160,13 +181,21 @@ export function makeDraftKings(name, label, cfg, bridge) {
         locale: 'en', oddsStyle: 'american', autoAcceptMode: 'None',
       };
       const res = await send('place', `${wager}/placeBets`, 'POST', body, { ...slipHeaders, calculationid: uuid(), 'x-request-client-timestamp': String(Date.now()) }, 30000);
+      return answer(res, q, 'placeBets', '');
+    },
+  };
+  // DraftKings' answer to placeBets or acceptPurchase: placed, refused, or a counter-offer (in the
+  // answer itself, or at the end of the live delay on the waitingBets stream).
+  async function answer(res, q, op, note) {
+    {
       if (authFail(res)) throw new Error(loginMsg);
       const j = res.json || {};
-      const detail = `DraftKings placeBets response: ${JSON.stringify(j || res.text).slice(0, 3000)}`;
+      const detail = `${note}DraftKings ${op} response: ${JSON.stringify(j || res.text).slice(0, 3000)}`;
       const b0 = (j.bets || [])[0] || {};
       let status = String(b0.status || j.status || '');
       let betId = b0.betId || b0.id || j.betId || j.receiptId || null;
       let odds = dkAmerican(b0.displayOdds, b0.trueOdds);
+      let final = null;   // the stream's last event for our bet, if we waited for one
       // Live: wait out DraftKings' delay for its decision.
       let waitNote = '';
       if (/LiveDelay|Pending|Waiting/i.test(status) && j.waitingBetId) {
@@ -180,7 +209,7 @@ export function makeDraftKings(name, label, cfg, bridge) {
             { accept: 'text/event-stream', 'cache-control': 'no-cache' }, ms + 5000,
             { timeoutMs: ms, streamUntil: `"waitingBetId":"${wid}"[^\\n]*"status":"(?!LiveDelay|Active|Pending|Waiting)[A-Za-z]+"[^\\n]*\\n` });
           const o = waitingOutcome(w.text ?? JSON.stringify(w.json), j.waitingBetId);
-          if (o?.status) { status = o.status; betId = o.betId || betId; odds = o.odds ?? odds; }
+          if (o?.status) { status = o.status; betId = o.betId || betId; odds = o.odds ?? odds; final = o.raw; }
           waitNote = `waitingBets: HTTP ${w.status}${w.error ? `, ${w.error}` : ''}${w.matched === false ? ', no decision in the stream' : ''}, ${String(w.text || '').length} chars: ${String(w.text || '').slice(-600)}`;
         } catch (e) { waitNote = `waitingBets failed: ${e?.message || e}`; }
         if (/LiveDelay|Pending|Waiting/i.test(status)) {
@@ -188,7 +217,7 @@ export function makeDraftKings(name, label, cfg, bridge) {
           return { betId: `draftkings:waiting-${j.waitingBetId}`, confirmedOdds: null, detail: `${detail} (no decision seen after the live delay; ${waitNote})` };
         }
       }
-      if (res.status < 400 && (OK.test(status) || (betId && !BAD.test(status)))) {
+      if (res.status < 400 && !/NewOffer/i.test(status) && (OK.test(status) || (betId && !BAD.test(status)))) {
         return { betId: `draftkings:${betId || j.waitingBetId || uuid()}`, confirmedOdds: odds, detail };
       }
       // DraftKings puts the reason in different places (top level, per bet, per error); if none of
@@ -203,11 +232,22 @@ export function makeDraftKings(name, label, cfg, bridge) {
       err.detail = detail;
       // NewOffer: DraftKings counter-offers another price (open for delayPeriod seconds). It's never
       // accepted here: treated as a price move, so every rule is checked again at the offered price.
+      // The offer's price is the stream's (a counter-offer at the end of the live delay) or the answer's.
+      // Before 2026-11-23 the log showed the price we sent for stream offers, not the offered one.
       if (/NewOffer/i.test(status)) {
-        err.message = `rejected: DraftKings offered ${b0.displayOdds ?? 'another price'} instead (not accepted)`;
+        const src = final || j;
+        const fb = (src.bets || [])[0] || {};
+        const now = dkAmerican(fb.displayOdds ?? b0.displayOdds, fb.trueOdds ?? b0.trueOdds);
+        const newOfferId = findKey(src, 'newOfferId') || findKey(j, 'newOfferId');
+        const waitingBetId = findKey(src, 'waitingBetId') || j.waitingBetId;
         err.priceMoved = true;
-        const now = dkAmerican(b0.displayOdds, b0.trueOdds);
-        if (now != null) err.newOdds = now;
+        err.message = `rejected: DraftKings counter-offered ${now != null ? (now > 0 ? '+' : '') + now : 'another price'} (we sent ${dkAmerican(q.displayOdds, q.trueOdds)})${newOfferId ? '; checking every rule at that price before accepting it' : ', no offer id seen: not accepted'}`;
+        if (now != null) {
+          err.newOdds = now;
+          const secs = Number(fb.delayPeriod ?? b0.delayPeriod) || 120;
+          if (newOfferId && waitingBetId) err.newQuote = { dk: { ...q, offer: { newOfferId, waitingBetId, odds: now, until: Date.now() + (secs - 10) * 1000 } } };
+        }
+        if (final && final !== j) err.detail = `${detail}; waitingBets: ${JSON.stringify(final).slice(0, 1500)}`;
       } else if (/odds|price/i.test(reason)) err.priceMoved = true;
       else if (/suspend|closed|unavailable|not.?available|RepeatedBets|already placed/i.test(reason)) err.gone = true;
       // "Missing or false PlaySportsbook": DraftKings' location check (GeoComply) has lapsed, so the
@@ -220,7 +260,11 @@ export function makeDraftKings(name, label, cfg, bridge) {
         err.notSent = true; err.geoRenewing = true;
       }
       throw err;
-    },
+    }
+  }
+
+  return {
+    ...book,
 
     // Settled bets placed since `from` (ms), newest first, read 25 at a time like the My Bets page.
     async settled(from = 0) {
