@@ -152,6 +152,7 @@ export function makeTheScore(name, label, cfg, bridge) {
 
   return {
     name, label,
+    oneAtATime: true,   // one shared bet slip: the app sends theScore one bet at a time
 
     // The price check: theScore's current odds for the selection (via its bet slip).
     async recheck(row) {

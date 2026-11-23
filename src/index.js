@@ -721,16 +721,40 @@ async function tick() {
   for (const r of batch) startBet(r, scanAt, { pollAt: tickAt, via: 'scan' });
 }
 
+const bookQueue = new Map();   // book -> promise of its last queued bet (books with oneAtATime)
+const bookWaiting = new Map(); // book -> bets started or waiting (books with oneAtATime)
 function startBet(row, scanAt, t = {}) {
   const k = `${row.book}|${groupKey(row)}`;
   const book = books[row.book];
+  // At most 2 bets queued per one-at-a-time book, so they don't fill every in-flight slot; the
+  // rest come back next scan with a fresh price.
+  if (book.oneAtATime && (bookWaiting.get(row.book) || 0) >= 2) return;
   const ctx = { scanAt, pollAt: t.pollAt ?? scanAt, via: t.via || 'scan', startAt: Date.now(), attempts: [] };
   inflight.set(k, row);
-  tryBet(row, ctx)
+  // A book with one shared bet slip (theScore) takes one bet at a time: with two picks on its slip
+  // it refused bets ("You cannot parlay selections from related markets", Austin's log 2026-11-23).
+  // Each waits for the one before it, including taking its pick off the slip.
+  const run = async () => {
+    if (!book.oneAtATime) return tryBet(row, ctx);
+    bookWaiting.set(row.book, (bookWaiting.get(row.book) || 0) + 1);
+    const prev = bookQueue.get(row.book) || Promise.resolve();
+    let release;
+    const mine = new Promise((r) => { release = r; });
+    bookQueue.set(row.book, prev.then(() => mine));
+    await prev;
+    ctx.startAt = Date.now();
+    try {
+      const ok = await tryBet(row, ctx).catch((e) => { ctx.outcome = 'error'; log.err(`${book.label}: ${e.message}`); return false; });
+      await book.done?.(row, ctx.quote, ok)?.catch?.(() => {});
+      ctx.doneCalled = true;
+      return ok;
+    } finally { release(); bookWaiting.set(row.book, bookWaiting.get(row.book) - 1); }
+  };
+  run()
     .catch((e) => { ctx.outcome = 'error'; log.err(`${book.label}: ${e.message}`); return false; })
     .then((ok) => {
       inflight.delete(k);
-      book.done?.(row, ctx.quote, ok)?.catch?.(() => {});   // e.g. theScore: take the pick off its bet slip
+      if (!ctx.doneCalled) book.done?.(row, ctx.quote, ok)?.catch?.(() => {});   // e.g. theScore: take the pick off its bet slip
       if (row.isProp) propFunnel?.outcome(row, ctx.outcome);
       if (ctx.attempts.length) logTiming(row, book, ctx);
       const now = Date.now();
