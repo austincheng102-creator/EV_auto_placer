@@ -1662,7 +1662,24 @@ async function handle(msg) {
       if (a.timedOut && b.timedOut) return reply({ error: `Gambit didn't answer in ${Math.round(msg.request.timeoutMs / 1000)}s, twice (from the extension and from the Gambit tab): Chrome's internet is down or very slow, or Gambit's site is` });
       return reply({ error: `Gambit: ${a.error || `HTTP ${a.status}`}; ${b.error || `HTTP ${b.status}`}` });
     }
-    const r = await runInTab(tab.id, msg.request);
+    let r = await runInTab(tab.id, msg.request);
+    // "Failed to fetch" / no answer from the tab: usually the tab was reloading (the extension reloads
+    // book tabs to renew location checks and logins), sometimes a short network drop (Austin,
+    // 2026-11-23: a DraftKings re-check failed "in-tab request failed: Failed to fetch"). Reads (price
+    // re-checks, status) wait for the tab to finish loading and are tried once more. A bet ('place') is
+    // never sent twice: it may have reached the book.
+    if (r.error && msg.request.kind !== 'place' && /Failed to fetch|NetworkError|network|abort|didn't respond|could not run/i.test(r.error)) {
+      const ago = Date.now() - (reloadedAt[msg.book] || 0);
+      for (let i = 0; i < 16; i++) {   // up to 8s
+        const t = await chrome.tabs.get(tab.id).catch(() => null);
+        if (!t) break;
+        if (t.status === 'complete' && i > 0) break;
+        await sleep(500);
+      }
+      const again = await runInTab(tab.id, msg.request);
+      if (!again.error) r = again;
+      else r = { ...again, error: `${again.error} (also on a second try${ago < 60e3 ? `; the tab was reloaded ${Math.round(ago / 1000)}s before` : ''})` };
+    }
     if (r.error) return reply({ error: r.error });
     reply(r);
   } catch (e) { reply({ error: String(e?.message || e) }); }
