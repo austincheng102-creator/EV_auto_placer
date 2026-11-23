@@ -8,6 +8,9 @@
 //  - live mainlines need Pinnacle, Polymarket or Novig listed; props (live and pre-game) need FanDuel
 //  - soft-book check (softCheck): our price must be above 0% EV against the no-vig price of at least
 //    2 of DraftKings, Caesars and FanDuel (the book we're betting doesn't count for itself)
+//  - Pinnacle vs the market (marketCheck, 2026-11-23): skip when Pinnacle's no-vig win % for our side is more
+//    than 3 points above the median no-vig of the soft books on the row (DraftKings, FanDuel, Caesars, BetMGM,
+//    theScore, Hard Rock, ...; not the book we're betting). Needs 3+ soft books priced, otherwise it passes.
 //  - odds bands (minEvByOdds): +201 to +250 needs 12% EV, everything else minEvPct
 //  - live timing: a sharp price for the selection changed within the last 5 seconds (30 for props)
 //  - groups: same game + market (period is part of the market) share group.maxBets bets and group.maxStake $.
@@ -22,6 +25,13 @@ import { impliedProb } from './ev.js';
 
 // Gambit sportsbook ids. PS3838 is Pinnacle's feed. Polymarket has two listings.
 export const DEFAULT_SHARP_IDS = { pinnacle: 1014, kalshi: 194, polymarket: [193, 1011], novig: 192, fanduel: 100 };
+
+// Soft books the marketCheck median is taken over (Gambit ids). Prediction markets and exchanges
+// (Kalshi, Polymarket, Novig, ProphetX) aren't soft books and aren't in it.
+export const DEFAULT_MARKET_BOOKS = {
+  draftkings: 200, fanduel: 100, caesars: 300, betmgm: [400, 1001], thescore: 700, hardrock: [851, 850, 1008, 1016],
+  betrivers: 1004, kambi: 500, betparx: 1005, fliff: 800, bet365: 365, bovada: 1006, betonline: 613,
+};
 
 /** Fills in defaults for the new settings, so configs from older versions get Austin's rules. */
 export function applyFilterDefaults(cfg) {
@@ -66,6 +76,18 @@ export function applyFilterDefaults(cfg) {
   if (sc.minBooks === undefined) sc.minBooks = 2;
   if (sc.minEvPct === undefined) sc.minEvPct = 0;
   if (sc.skipOwnBook === undefined) sc.skipOwnBook = true;
+  // Pinnacle vs the market: Pinnacle's no-vig % for our side may be at most maxPts above the median
+  // no-vig % of these soft books (each needs both sides; one price per book, first listed id wins).
+  // The book we're betting is left out, plus ownAlso (BetRivers runs on Kambi's odds). Fewer than
+  // minBooks priced = nothing to compare, passes. arb: false = Arb-table rows (no Pinnacle fair) skip it.
+  const mc = (cfg.marketCheck ||= {});
+  if (mc.enabled === undefined) mc.enabled = true;
+  if (mc.maxPts === undefined) mc.maxPts = 3;
+  if (mc.minBooks === undefined) mc.minBooks = 3;
+  if (mc.sharp === undefined) mc.sharp = 'pinnacle';
+  if (mc.books === undefined) mc.books = DEFAULT_MARKET_BOOKS;
+  if (mc.ownAlso === undefined) mc.ownAlso = { betrivers: ['kambi'] };
+  if (mc.arb === undefined) mc.arb = false;
   // Higher minimum EV for long odds: first band whose odds range holds the price wins (if above minEvPct).
   if (cfg.minEvByOdds === undefined) cfg.minEvByOdds = [{ from: 201, to: 250, minEvPct: 12 }];
   return cfg;
@@ -102,6 +124,43 @@ export function softCheck(cfg, row, odds = row.odds) {
   const pass = vals.filter((e) => e > (sc.minEvPct ?? 0)).length;
   return { ok: pass >= need, evs, pass, n: vals.length, need, mine };
 }
+
+/**
+ * Pinnacle vs the market. Returns { ok, sharp, median, gap, probs: {draftkings: 0.48, ...}, n, need }.
+ * sharp/median are win probabilities (0..1) for our side; gap = (sharp - median) in points.
+ * ok when off, when Pinnacle lacks both sides, when fewer than minBooks soft books are priced,
+ * or when gap <= maxPts. Pinnacle below the market never fails it.
+ */
+export function marketCheck(cfg, row) {
+  const mc = cfg.marketCheck;
+  if (!mc?.enabled || (row.arb && !mc.arb)) return { ok: true, off: true, probs: {}, n: 0 };
+  let sharp = null;
+  for (const id of [].concat(cfg.sharp?.ids?.[mc.sharp] ?? []).map(Number)) {
+    const pr = row.prices?.[id];
+    sharp = pr ? bookFairProb(pr.odds, pr.oppOdds) : null;
+    if (sharp != null) break;
+  }
+  const own = new Set([row.book, ...((mc.ownAlso || {})[row.book] || [])]);
+  const probs = {};
+  for (const [name, idv] of Object.entries(mc.books || {})) {
+    const idList = [].concat(idv ?? []).map(Number);
+    if (own.has(name) || idList.includes(Number(row.gambitBookId))) continue;
+    for (const id of idList) {
+      const pr = row.prices?.[id];
+      const p = pr && bookFairProb(pr.odds, pr.oppOdds);
+      if (p != null) { probs[name] = p; break; }
+    }
+  }
+  const vals = Object.values(probs).sort((a, b) => a - b), need = mc.minBooks ?? 3;
+  const median = vals.length ? (vals.length % 2 ? vals[(vals.length - 1) / 2] : (vals[vals.length / 2 - 1] + vals[vals.length / 2]) / 2) : null;
+  if (sharp == null || vals.length < need) return { ok: true, sharp, median, gap: null, probs, n: vals.length, need };
+  const gap = (sharp - median) * 100;
+  return { ok: mc.maxPts == null || gap <= mc.maxPts, sharp, median, gap, probs, n: vals.length, need };
+}
+
+/** "Pinnacle 53.0% vs soft-book median 48.5% (+4.5 pts, 8 books)" for logs. */
+export const fmtMarket = (mc) => (mc.gap == null ? `not compared (${mc.sharp == null ? 'no two-sided Pinnacle price' : `${mc.n} soft books priced, need ${mc.need}`})`
+  : `Pinnacle ${(mc.sharp * 100).toFixed(1)}% vs soft-book median ${(mc.median * 100).toFixed(1)}% (${mc.gap >= 0 ? '+' : ''}${mc.gap.toFixed(1)} pts, ${mc.n} books)`);
 
 /** "DraftKings +3.1%, Caesars -0.4%" for logs. */
 export const fmtSoft = (sc) => Object.entries(sc.evs).map(([n, e]) => `${n} ${e >= 0 ? '+' : ''}${e.toFixed(1)}%`).join(', ') || 'none priced';

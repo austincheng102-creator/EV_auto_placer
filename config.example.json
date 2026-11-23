@@ -132,6 +132,11 @@
     "minEvPct": 0,
     "skipOwnBook": true
   },
+  "marketCheck": {
+    "enabled": true,
+    "maxPts": 3,
+    "minBooks": 3
+  },
   "minEvByOdds": [
     {
       "from": 201,
