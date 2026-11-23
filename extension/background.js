@@ -891,6 +891,24 @@ async function pageFetch(req) {
     // cookies; the site itself calls them without, so the app asks for 'omit' there.
     credentials: req.credentials || 'include',
   });
+  // Event streams (DraftKings' waitingBets) stay open: read them as they come and stop once a
+  // line matches req.streamUntil, or at the time limit, returning what arrived either way.
+  if (req.streamUntil && res.body?.getReader) {
+    const until = new RegExp(req.streamUntil);
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let text = '', done = false;
+    try {
+      while (true) {
+        const r = await reader.read();
+        if (r.done) { done = true; break; }
+        text += dec.decode(r.value, { stream: true });
+        if (until.test(text)) break;
+      }
+    } catch {}
+    try { reader.cancel(); } catch {}
+    return { status: res.status, json: null, text: text.slice(-20000), streamEnded: done, matched: until.test(text) };
+  }
   const text = await res.text();
   let json = null; try { json = JSON.parse(text); } catch {}
   return { status: res.status, json, text: json ? undefined : text.slice(0, 2000) };

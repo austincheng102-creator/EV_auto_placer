@@ -29,12 +29,18 @@ export function dkAmerican(display, trueOdds) {
 }
 
 /** What DraftKings' waitingBets event stream says: the last JSON event's status, bet id, odds. */
-export function waitingOutcome(text) {
+// Each event repeats the whole bet: first status "LiveDelay", then (about 3s later) "Open" with the betId
+// when DraftKings takes it (Austin's capture, 2026-11-23). The stream can carry other waiting bets too,
+// so only events for our waitingBetId count when one is given.
+export function waitingOutcome(text, waitingBetId = null) {
   let last = null;
   for (const line of String(text || '').split(/\r?\n/)) {
     const m = /^data:\s*(.*)$/.exec(line);
     if (!m) continue;
-    try { const j = JSON.parse(m[1]); if (j && typeof j === 'object') last = j; } catch {}
+    try {
+      const j = JSON.parse(m[1]);
+      if (j && typeof j === 'object' && (!waitingBetId || !j.waitingBetId || j.waitingBetId === waitingBetId)) last = j;
+    } catch {}
   }
   if (!last) { try { last = JSON.parse(text); } catch {} }
   if (!last) return null;
@@ -63,8 +69,8 @@ export function makeDraftKings(name, label, cfg, bridge) {
   const slipHeaders = { accept: '*/*', 'content-type': 'application/json', clienttype: 'Website', 'x-client-name': 'web',
     'x-client-feature': 'betslip', 'x-client-page': 'home', 'x-client-widget-name': 'betslip' };
   const loginMsg = 'DraftKings didn\'t accept the login: refresh the DraftKings tab and stay logged in';
-  const send = (kind, url, method, body, extra = {}, ms = 20000) => bridge.send(name, {
-    kind, url, method, headers: { ...extra }, body: body == null ? undefined : JSON.stringify(body), credentials: 'include' }, ms);
+  const send = (kind, url, method, body, extra = {}, ms = 20000, more = {}) => bridge.send(name, {
+    kind, url, method, headers: { ...extra }, body: body == null ? undefined : JSON.stringify(body), credentials: 'include', ...more }, ms);
   const authFail = (r) => r.status === 401 || r.status === 403;
   const why = (j) => [j?.errorCode, j?.errorMessage, j?.message, j?.status, ...(j?.errors || []).map((e) => e?.message || e?.code || e?.errorCode)]
     .filter((x) => x && !OK.test(String(x))).join(', ');
@@ -130,9 +136,14 @@ export function makeDraftKings(name, label, cfg, bridge) {
       if (/LiveDelay|Pending|Waiting/i.test(status) && j.waitingBetId) {
         try {
           const jwt = await loginJwt();
+          // The stream stays open, so the extension reads it as it arrives and stops at our bet's
+          // first status other than LiveDelay (extension 0.8.2), or at the time limit.
+          const ms = ((Number(b0.delayPeriod) || 3) + 15) * 1000;
+          const wid = String(j.waitingBetId).replace(/[^0-9A-Za-z-]/g, '');
           const w = await send('status', `${gateway}/waitingBets?jwt=${encodeURIComponent(jwt)}`, 'GET', null,
-            { accept: 'text/event-stream', 'cache-control': 'no-cache' }, ((Number(b0.delayPeriod) || 3) + 20) * 1000);
-          const o = waitingOutcome(w.text ?? JSON.stringify(w.json));
+            { accept: 'text/event-stream', 'cache-control': 'no-cache' }, ms + 5000,
+            { timeoutMs: ms, streamUntil: `"waitingBetId":"${wid}"[^\\n]*"status":"(?!LiveDelay|Active|Pending|Waiting)[A-Za-z]+"[^\\n]*\\n` });
+          const o = waitingOutcome(w.text ?? JSON.stringify(w.json), j.waitingBetId);
           if (o?.status) { status = o.status; betId = o.betId || betId; odds = o.odds ?? odds; }
         } catch {}
         if (/LiveDelay|Pending|Waiting/i.test(status)) {
