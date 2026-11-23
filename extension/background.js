@@ -1525,6 +1525,27 @@ async function extFetch(req) {
   } catch (e) { return { status: 0, timedOut: e?.name === 'TimeoutError', error: e?.name === 'TimeoutError' ? `no answer in ${Math.round(req.timeoutMs / 1000)}s` : `extension request failed: ${e?.message || e}` }; }
 }
 
+// What Chrome itself saw for the books' requests from their tabs (status code or network error),
+// so a fetch that fails in the page with only "Failed to fetch" (e.g. an answer without the
+// cross-site headers, like a 403/429 from a bot filter, or a cut connection) says what really happened.
+const netSeen = new Map();   // url without query -> { at, status?, error? }
+const netKey = (u) => String(u || '').split('?')[0];
+const netNote = (d, o) => {
+  if (d.tabId < 0 || d.type === 'main_frame') return;
+  netSeen.set(netKey(d.url), { at: Date.now(), ...o });
+  if (netSeen.size > 300) netSeen.delete(netSeen.keys().next().value);
+};
+{
+  const urls = (chrome.runtime.getManifest().host_permissions || []).filter((u) => !/gambitodds/.test(u));
+  chrome.webRequest.onCompleted.addListener((d) => { if (d.method !== 'OPTIONS' || d.statusCode >= 400) netNote(d, { status: d.statusCode, method: d.method }); }, { urls });
+  chrome.webRequest.onErrorOccurred.addListener((d) => netNote(d, { error: d.error, method: d.method }), { urls });
+}
+const netWhy = (url) => {
+  const n = netSeen.get(netKey(url));
+  if (!n || Date.now() - n.at > 30e3) return '';
+  return n.error ? ` (Chrome: ${n.error}${n.method === 'OPTIONS' ? ' on the pre-check' : ''})` : ` (Chrome saw HTTP ${n.status}${n.method === 'OPTIONS' ? ' on the pre-check' : ''})`;
+};
+
 async function runInTab(tabId, request) {
   // A frozen or still-loading tab can leave executeScript hanging: give up a little after the
   // request's own time limit so the app gets a real reason instead of its generic timeout.
@@ -1662,7 +1683,25 @@ async function handle(msg) {
       if (a.timedOut && b.timedOut) return reply({ error: `Gambit didn't answer in ${Math.round(msg.request.timeoutMs / 1000)}s, twice (from the extension and from the Gambit tab): Chrome's internet is down or very slow, or Gambit's site is` });
       return reply({ error: `Gambit: ${a.error || `HTTP ${a.status}`}; ${b.error || `HTTP ${b.status}`}` });
     }
-    const r = await runInTab(tab.id, msg.request);
+    let r = await runInTab(tab.id, msg.request);
+    // "Failed to fetch" / no answer from the tab: usually the tab was reloading (the extension reloads
+    // book tabs to renew location checks and logins), sometimes a short network drop (Austin,
+    // 2026-11-23: a DraftKings re-check failed "in-tab request failed: Failed to fetch"). Reads (price
+    // re-checks, status) wait for the tab to finish loading and are tried once more. A bet ('place') is
+    // never sent twice: it may have reached the book.
+    if (r.error && /Failed to fetch|NetworkError/i.test(r.error)) r = { ...r, error: r.error + netWhy(msg.request.url) };
+    if (r.error && msg.request.kind !== 'place' && /Failed to fetch|NetworkError|network|abort|didn't respond|could not run/i.test(r.error)) {
+      const ago = Date.now() - (reloadedAt[msg.book] || 0);
+      for (let i = 0; i < 16; i++) {   // up to 8s
+        const t = await chrome.tabs.get(tab.id).catch(() => null);
+        if (!t) break;
+        if (t.status === 'complete' && i > 0) break;
+        await sleep(500);
+      }
+      const again = await runInTab(tab.id, msg.request);
+      if (!again.error) r = again;
+      else r = { ...again, error: `${again.error}${/Failed to fetch|NetworkError/i.test(again.error) ? netWhy(msg.request.url) : ''} (also on a second try${ago < 60e3 ? `; the tab was reloaded ${Math.round(ago / 1000)}s before` : ''})` };
+    }
     if (r.error) return reply({ error: r.error });
     reply(r);
   } catch (e) { reply({ error: String(e?.message || e) }); }
