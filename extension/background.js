@@ -224,6 +224,7 @@ async function registerGeoScripts() {
     { id: 'br-geo', js: ['br-geo.js'], matches: ['https://*.betrivers.com/*'] },
     { id: 'mgm-geo', js: ['mgm-geo.js'], matches: ['https://*.betmgm.com/*'] },
     { id: 'ts-geo', js: ['ts-geo.js'], matches: ['https://sportsbook.thescore.bet/*'] },
+    { id: 'dk-geo', js: ['dk-geo.js'], matches: ['https://sportsbook.draftkings.com/*'] },
   ];
   for (const s of want) {
     try {
@@ -723,7 +724,7 @@ async function mgmClickRenew(tabId, label, since, waitFresh) {
   }
 }
 
-function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch, passive = false, passiveHelp = '', clickRenew = null }) {
+function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch, passive = false, passiveHelp = '', clickRenew = null, renewBeforeMs = GEO_RENEW_BEFORE_MS, needSeen = false, holdLapsed = false, showVisible = true }) {
   const k = { book, label, setting, passive, g: {}, job: null, triedAt: 0, fails: 0, busyAt: 0, refusedAt: 0, last: null, toldAt: 0 };
   store.get(`geo_${book}`).then((v) => { if (v?.[`geo_${book}`] && !k.g.updateAt) k.g = v[`geo_${book}`]; });
   const note = (text, level = 'warn') => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book, level, text })); };
@@ -732,17 +733,19 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch, pass
     const [r] = tabId ? await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: readPageGeo, args: [key] }).catch(() => []) : [];
     let g = null; try { g = JSON.parse(r?.result || 'null'); } catch {}
     if (g && JSON.stringify(g) !== JSON.stringify(k.g)) { k.g = g; store.set({ [`geo_${book}`]: g }); }
+    // A page loaded before dk-geo.js was in it: what the extension saw on the network instead.
+    if (!g && k.g.via === 'network') return k.g;
     return g || {};
   };
   // Why the check needs renewing now ('' = it doesn't).
   k.due = (g) => {
     const now = Date.now();
     if (k.refusedAt > Math.max(g.updateAt || 0, /^(VALID|OK)/i.test(String(g.status || '')) ? g.statusAt || 0 : 0)) return 'a bet was refused because it had lapsed';
-    if (!g.updateAt && !g.statusAt) return 'no location check seen in this page yet';
+    if (!g.updateAt && !g.statusAt) return needSeen ? '' : 'no location check seen in this page yet';
     if (g.statusAt > (g.updateAt || 0) + 5e3 && g.status && !/^(VALID|OK)/i.test(g.status) && now - g.statusAt > 30e3) return `${label} answered ${g.status}`;
     // Clicking odds: give the page's own next check (due at nextAt) 20s first.
     if (clickRenew && settings.betmgmGeoClick !== false) { if (g.nextAt && now > g.nextAt + 20e3) return `it was due ${mins(now - g.nextAt)} ago`; return ''; }
-    if (g.nextAt && now > g.nextAt - GEO_RENEW_BEFORE_MS) return now > g.nextAt ? `it ran out ${mins(now - g.nextAt)} ago` : `it runs out in ${mins(g.nextAt - now)}`;
+    if (g.nextAt && now > g.nextAt - renewBeforeMs) return now > g.nextAt ? `it ran out ${mins(now - g.nextAt)} ago` : `it runs out in ${mins(g.nextAt - now)}`;
     return '';
   };
   k.renew = (why, urgent = false) => {
@@ -802,7 +805,7 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch, pass
       try {
         while (Date.now() - since < 45e3) {
           await sleep(2000);
-          await brVisible(t.id);   // in case the page script didn't load with the page
+          if (showVisible) await brVisible(t.id);   // in case the page script didn't load with the page
           g = await k.now(t.id);
           if (fresh(g, since)) break;
         }
@@ -832,7 +835,7 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch, pass
     if (clickRenew && ws?.readyState !== 1) return;   // no clicks in the tab while the app is closed
     const t = await tab();
     if (!t || t.discarded) return;
-    await brVisible(t.id);
+    if (showVisible) await brVisible(t.id);
     const g = await k.now(t.id);
     if (passive && !(clickRenew && settings.betmgmGeoClick !== false)) {
       // The page runs its own next check when the location server said to (timeForNextCall); a
@@ -847,6 +850,8 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch, pass
     const why = k.due(g);
     if (why) k.renew(why, k.refusedAt > Date.now() - 120e3).catch(() => {});
   };
+  // DraftKings: the check has run out (or does within 5s) and no new one has come: its bets are held.
+  k.lapsed = (g) => holdLapsed && settings[setting] !== false && !!g?.nextAt && Date.now() > g.nextAt - 5e3;
   k.refused = (why) => {
     k.refusedAt = Date.now();
     if (passive && !(clickRenew && settings.betmgmGeoClick !== false)) { if (Date.now() - k.toldAt > 2 * 60e3) { k.toldAt = Date.now(); note(`${label} refused a bet because its location check had lapsed. ${passiveHelp}`); } return; }
@@ -867,7 +872,29 @@ const geoKeepers = {
     help: 'Is the GeoComply location app running on this PC, and are you logged in to BetMGM?' }),
   thescore: makeGeoKeeper({ book: 'thescore', label: 'theScore', key: 'evPlacerTsGeo', host: /^sportsbook\.thescore\.bet$/, setting: 'thescoreGeoRenew', clearMatch: '__GEOCOMPLY__$',
     help: 'Is the GeoComply location app running on this PC, does Chrome allow theScore to use your location, and are you logged in to theScore?' }),
+  // DraftKings runs its next check itself 35s before the last one runs out (20 min). In a background
+  // tab Chrome runs the page's timers late (up to a minute), so it sometimes ran after the check had
+  // run out and bets in between were refused "Missing or false PlaySportsbook" (Austin, 2026-11-23,
+  // even with Chrome's Local network access allowed). So: if the page hasn't run it by 15s before it
+  // runs out, the DraftKings tab is reloaded, which runs one at once; and from 5s before it runs out
+  // until a new one comes, DraftKings bets are held (not sent) and checked again next scan. Nothing
+  // is clicked and the page isn't told anything (Austin wants no nudges on DraftKings).
+  // Off with config.json "session": {"draftkingsGeoRenew": false}.
+  draftkings: makeGeoKeeper({ book: 'draftkings', label: 'DraftKings', key: 'evPlacerDkGeo', host: /^sportsbook\.draftkings\.com$/, setting: 'draftkingsGeoRenew',
+    renewBeforeMs: 15e3, needSeen: true, holdLapsed: true, showVisible: false,
+    help: 'Is the GeoComply location app running on this PC, and are you logged in to DraftKings?' }),
 };
+// DraftKings' location answers, seen on the network (for a DraftKings page loaded before dk-geo.js
+// was in it). The answer itself isn't readable here, so: good for 20 minutes from a 200.
+chrome.webRequest.onCompleted.addListener((d) => {
+  if (d.tabId < 0 || d.method !== 'POST' || !/\/geolocations\/v\d+\/geolocations\/verify/.test(d.url)) return;
+  const k = geoKeepers.draftkings;
+  if ((k.g.updateAt || 0) > d.timeStamp - 5e3 && k.g.via !== 'network') return;   // dk-geo.js has it
+  k.g = d.statusCode < 400
+    ? { ...k.g, updateAt: d.timeStamp, nextAt: d.timeStamp + 1200e3, status: 'OK', statusAt: d.timeStamp, via: 'network' }
+    : { ...k.g, status: `HTTP ${d.statusCode}`, statusAt: d.timeStamp, via: 'network' };
+  store.set({ geo_draftkings: k.g });
+}, { urls: ['https://api.draftkings.com/sites/*'] });
 
 // Kambi refused a bet because the location check had lapsed.
 const kambiBlocked = (r) => {
@@ -901,7 +928,7 @@ const jwtExp = (tok) => {
 // debugger (chrome.debugger), which Chrome treats as real mouse/keyboard input. While it runs
 // (a few seconds) Chrome shows a bar "EV Placer Bridge started debugging this browser"; it goes
 // away by itself. Off with config.json "session": {"gambitAutoLogin": false}.
-let settings = { gambitAutoLogin: true, fanduelGeoRenew: true, betriversGeoRenew: true, betmgmGeoRenew: true, betmgmGeoClick: true, betmgmAutoLogin: true, thescoreGeoRenew: true, draftkingsPlaySpan: true };
+let settings = { gambitAutoLogin: true, fanduelGeoRenew: true, betriversGeoRenew: true, betmgmGeoRenew: true, betmgmGeoClick: true, betmgmAutoLogin: true, thescoreGeoRenew: true, draftkingsPlaySpan: true, draftkingsGeoRenew: true };
 chrome.storage.local.get('settings').then((v) => { if (v?.settings) settings = { ...settings, ...v.settings }; }).catch(() => {});
 let lastLogin = null;          // { at, ok, why } for the popup
 let loginBusy = false;
@@ -1531,7 +1558,15 @@ async function handle(msg) {
     }
     // BetMGM's location check is being renewed (the tab is reloading): send nothing; the app checks
     // the bet again next scan.
-    if (geoKeepers[msg.book]?.job && msg.request.kind === 'place') return reply({ error: `${geoKeepers[msg.book].label} location check is being renewed, nothing was sent; the bet is checked again next scan`, notSent: true, geoRenewing: true });
+    if (geoKeepers[msg.book]?.lapsed && msg.request.kind === 'place' && !geoKeepers[msg.book].job) {
+      const k = geoKeepers[msg.book], g = await k.now(tab.id);
+      if (k.lapsed(g)) {
+        msg.held = true;
+        k.renew(Date.now() > g.nextAt ? `it ran out ${mins(Date.now() - g.nextAt)} ago` : 'it runs out in a few seconds', true).catch(() => {});
+        return reply({ error: `${k.label}'s location check ${Date.now() > g.nextAt ? 'has run out' : 'runs out in a few seconds'} and no new one has come yet; nothing was sent. Renewing it (reloading the ${k.label} tab); the bet is checked again next scan`, notSent: true, geoRenewing: true });
+      }
+    }
+    if (geoKeepers[msg.book]?.job && msg.request.kind === 'place') { msg.held = true; return reply({ error: `${geoKeepers[msg.book].label} location check is being renewed, nothing was sent; the bet is checked again next scan`, notSent: true, geoRenewing: true }); }
     if (msg.request.useBetMGMAuth) {
       for (const [h, v] of Object.entries(msg.request.headers || {})) {
         if (v !== '{{bmXsrf}}') continue;
@@ -1574,7 +1609,7 @@ async function handle(msg) {
   finally {
     if (msg.request?.kind === 'place') placing[msg.book] = Math.max(0, (placing[msg.book] || 1) - 1);
     if (msg.book === 'betrivers' && ['place', 'status'].includes(msg.request?.kind)) brBusyAt = Date.now();
-    if (geoKeepers[msg.book] && ['place', 'status'].includes(msg.request?.kind)) geoKeepers[msg.book].busyAt = Date.now();
+    if (geoKeepers[msg.book] && !msg.held && ['place', 'status'].includes(msg.request?.kind)) geoKeepers[msg.book].busyAt = Date.now();
   }
 }
 
