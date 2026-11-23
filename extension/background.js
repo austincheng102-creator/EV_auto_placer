@@ -642,7 +642,7 @@ function mgmOddsPick(mode) {
 // Runs in the BetMGM page: is the GeoComply app answering on this PC (the page asks it the same way)?
 async function mgmGeoAppUp() {
   for (const port of [53280]) {
-    try { const r = await fetch(`http://127.0.0.1:${port}/check?t=${Date.now()}`, { method: 'HEAD', cache: 'no-store' }); if (r) return true; } catch {}
+    try { const r = await fetch(`http://127.0.0.1:${port}/check?t=${Date.now()}`, { method: 'HEAD', mode: 'no-cors', cache: 'no-store' }); if (r) return true; } catch {}
   }
   return false;
 }
