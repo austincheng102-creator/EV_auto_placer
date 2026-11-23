@@ -119,7 +119,12 @@ export function makeDraftKings(name, label, cfg, bridge) {
       const [calc, si] = await Promise.all([
         send('recheck', `${wager}/calculateBets`, 'POST', { selections: [{ id }], selectionsForYourBet: [], oddsStyle: 'american' },
           { ...slipHeaders, 'x-request-client-timestamp': String(Date.now()) }),
-        send('recheck', `${info}?siteName=${site}&selectionIds=${encodeURIComponent(id)}`, 'GET', null, { accept: '*/*', 'x-pe-cn': 'web', 'x-pe-ep': 'SB', 'x-pe-loc': `US-${st.toUpperCase()}` }),
+        // The details (line, suspended) are a nice-to-have: the price token from calculateBets is for
+        // this exact selection (DraftKings' selection id includes the line), and no token = suspended.
+        // So if this read fails (Austin, 2026-11-23: "Failed to fetch" several times), the check goes on
+        // without it instead of failing the bet.
+        send('recheck', `${info}?siteName=${site}&selectionIds=${encodeURIComponent(id)}`, 'GET', null, { accept: '*/*', 'x-pe-cn': 'web', 'x-pe-ep': 'SB', 'x-pe-loc': `US-${st.toUpperCase()}` })
+          .catch((e) => ({ status: 0, error: String(e?.message || e) })),
       ]);
       if (authFail(calc)) throw new Error(loginMsg);
       if (calc.status >= 400 || !calc.json) throw new Error(`price check HTTP ${calc.status}: ${why(calc.json) || String(calc.text || '').slice(0, 200)}`);
