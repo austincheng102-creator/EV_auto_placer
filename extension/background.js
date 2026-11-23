@@ -61,7 +61,47 @@ store.get(['gambitAuth', 'gambitSpare']).then((v) => {
 chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
   const h = (d.requestHeaders || []).find((x) => x.name.toLowerCase() === 'authorization');
   if (h?.value) takeGambitToken(h.value);
-}, { urls: ['https://api-sports.gambitodds.com/*'] }, ['requestHeaders', 'extraHeaders']);
+}, { urls: ['https://api-sports.gambitodds.com/*', 'https://api.gambitodds.com/*'] }, ['requestHeaders', 'extraHeaders']);
+
+// The Gambit page keeps its login token in its own storage. A background Gambit tab can log in (or
+// renew) without making any odds request we'd see the token on, so polls kept failing with 401
+// until you switched to the tab (Austin, 2026-11-23). So we also read the token straight from the
+// page. Runs in the Gambit page: every JWT-looking value in its storage and cookies.
+function gambitPageTokens() {
+  const out = new Set();
+  const re = /eyJ[\w-]+\.eyJ[\w-]+\.[\w-]+/g;
+  const scan = (st) => { try { for (let i = 0; i < st.length; i++) { const v = st.getItem(st.key(i)) || ''; for (const m of v.match(re) || []) out.add(m); } } catch {} };
+  scan(localStorage); scan(sessionStorage);
+  try { for (const m of document.cookie.match(re) || []) out.add(m); } catch {}
+  return [...out];
+}
+const jwtBody = (tok) => { try { return JSON.parse(atob(String(tok).replace(/^Bearer\s+/i, '').split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))) || {}; } catch { return {}; } };
+// Same kind of token as the one Gambit already took from us (same issuer / same fields), so an
+// unrelated token in the page's storage (analytics etc.) is never used without being tried first.
+const sameGambitKind = (a, b) => {
+  const x = jwtBody(a), y = jwtBody(b);
+  if (x.iss || y.iss) return x.iss === y.iss;
+  return Object.keys(x).sort().join() === Object.keys(y).sort().join();
+};
+async function pageGambitTokens(tabId) {
+  const r = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: gambitPageTokens }).catch(() => []);
+  const pre = gambitAuth && !/^Bearer\s/i.test(gambitAuth) ? '' : 'Bearer ';   // same form the page sends
+  return (r[0]?.result || []).map((t) => `${pre}${t}`).filter(gambitTokenOk)
+    .sort((a, b) => jwtExp(b) - jwtExp(a));
+}
+// Take the page's token when it's newer than ours and of the same kind (every 30s, and after a login).
+async function syncGambitToken(tabId) {
+  for (const t of await pageGambitTokens(tabId)) {
+    const cur = String(gambitAuth || '').replace(/^Bearer\s+/i, '');
+    if (t.replace(/^Bearer\s+/i, '') === cur) return false;
+    if (gambitAuth && !sameGambitKind(t, gambitAuth)) continue;
+    if (!gambitAuth) continue;      // nothing to compare with: only a token Gambit accepted on a poll is used
+    if (gambitTokenOk(gambitAuth) && jwtExp(t) <= jwtExp(gambitAuth)) return false;
+    takeGambitToken(t);
+    return true;
+  }
+  return false;
+}
 
 // BetRivers (Kambi) works the same way: its bet-slip requests carry a login token in an
 // Authorization header. We keep the latest one your BetRivers tab sent.
@@ -225,6 +265,7 @@ async function registerGeoScripts() {
     { id: 'mgm-geo', js: ['mgm-geo.js'], matches: ['https://*.betmgm.com/*'] },
     { id: 'ts-geo', js: ['ts-geo.js'], matches: ['https://sportsbook.thescore.bet/*'] },
     { id: 'dk-geo', js: ['dk-geo.js'], matches: ['https://sportsbook.draftkings.com/*'] },
+    { id: 'gambit-page', js: ['gambit-page.js'], matches: ['https://gambitodds.com/*', 'https://www.gambitodds.com/*'] },
   ];
   for (const s of want) {
     try {
@@ -1077,6 +1118,7 @@ async function autoLoginGambit(why) {
   if (t.discarded) return;
   if (!chrome.debugger) return say({ ok: false, why: 'the extension is missing the "debugger" permission: reload it in chrome://extensions' });
   loginBusy = true;
+  await brVisible(t.id);
   const done = (ok, msg) => {
     lastLogin = { at: Date.now(), ok, why: msg };
     loginFails = ok ? 0 : loginFails + 1;
@@ -1145,6 +1187,7 @@ async function autoLoginGambit(why) {
     // Logged in when the page sends a new token or the login box goes away.
     for (let i = 0; i < 20; i++) {
       await sleep(1000);
+      await syncGambitToken(t.id).catch(() => {});
       if (gambitAuth !== before && gambitTokenOk(gambitAuth)) return done(true, 'logged back in to Gambit with Chrome\'s saved password');
       const h = await inPage(t.id, false).catch(() => ({}));
       if (h.state === 'logged-in') return done(true, 'logged back in to Gambit with Chrome\'s saved password');
@@ -1411,6 +1454,12 @@ async function watchLogins() {
   // Gambit: only once its token has been out for a minute with no new one from the page. Reloading
   // earlier can land while the page is renewing its own login and knock it out.
   await rememberGambitPage().catch(() => {});
+  // Keep the Gambit page told its tab is in view (gambit-page.js does it from page start; this covers
+  // a page opened before this version), and take any newer login token it has stored.
+  for (const t of (await bookTabs()).filter((x) => x.book === 'gambit' && !x.discarded && !/api/.test(new URL(x.url).hostname))) {
+    await brVisible(t.id);
+    await syncGambitToken(t.id).catch(() => {});
+  }
   // Gambit's tab sitting on its logged-out home page: log back in.
   if (settings.gambitAutoLogin && !loginBusy && (await bookTabs()).some((t) => t.book === 'gambit' && /gambitodds\.com\/welcome/.test(t.url || ''))) autoLoginGambit('the Gambit tab is on its logged-out home page').catch(() => {});
   const gExp = jwtExp(gambitAuth);
@@ -1670,6 +1719,22 @@ async function handle(msg) {
       while (a.status === 401 && msg.request.headers.authorization === gambitAuth && dropGambitToken(gambitAuth)) {
         msg.request.headers.authorization = gambitAuth;
         a = await extFetch(msg.request);
+      }
+      // Still refused: the page may hold a newer login than any request it made showed us (a background
+      // tab renews or logs in without asking for odds). Try the tokens in its storage; keep one that works.
+      if (refused(a)) {
+        await brVisible(tab.id);
+        for (const t of (await pageGambitTokens(tab.id)).slice(0, 3)) {
+          if (t.replace(/^Bearer\s+/i, '') === String(msg.request.headers.authorization).replace(/^Bearer\s+/i, '')) continue;
+          const c = await extFetch({ ...msg.request, headers: { ...msg.request.headers, authorization: t } });
+          if (!c.error && c.status && c.status < 400) {
+            gambitAuth = null; takeGambitToken(t);
+            gambitRefused = 0;
+            if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'login', book: 'gambit', note: 'picked up the Gambit tab\'s newer login from the page (no need to switch to the tab)' }));
+            return reply(c);
+          }
+          if (c.timedOut) break;
+        }
       }
       if (!a.error && a.status && a.status < 400) { gambitRefused = 0; return reply(a); }
       // A timeout means the connection is slow: trying again from the tab only adds to the wait
