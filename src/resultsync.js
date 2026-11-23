@@ -39,7 +39,9 @@ export function makeResultSync({ cfg, bridge, root, dryRun = false, log, bets, b
     { book: 'betrivers', idRe: /^coupon:(\d+)/, api: books.betrivers?.settled ? books.betrivers : makeBetRivers('betrivers', 'BetRivers', cfg, bridge) },
     { book: 'fanduel', idRe: /^fanduel:(us-[a-z]+:[0-9a-z]+)/, api: books.fanduel?.settled ? books.fanduel : makeFanDuel('fanduel', 'FanDuel', cfg, bridge) },
     { book: 'thescore', idRe: /^thescore:([^ ]+)$/, api: books.thescore?.settled ? books.thescore : makeTheScore('thescore', 'theScore', cfg, bridge) },
-    { book: 'draftkings', idRe: /^draftkings:(\d+)$/, api: books.draftkings?.settled ? books.draftkings : makeDraftKings('draftkings', 'DraftKings', cfg, bridge) },
+    // Live DraftKings bets whose decision wasn't seen are logged as draftkings:waiting-<id>: those are
+    // matched by placement time (within 90s) and stake instead (loose).
+    { book: 'draftkings', idRe: /^draftkings:(?:waiting-)?([0-9A-Za-z-]+)$/, loose: true, api: books.draftkings?.settled ? books.draftkings : makeDraftKings('draftkings', 'DraftKings', cfg, bridge) },
     { book: 'betmgm', idRe: /^betmgm:([0-9A-Z]{6,})(?: |$)/, api: books.betmgm?.settled ? books.betmgm : makeBetMGM('betmgm', 'BetMGM', cfg, bridge) },
   ];
   const warned = new Set();
@@ -92,7 +94,19 @@ export function makeResultSync({ cfg, bridge, root, dryRun = false, log, bets, b
         const byId = new Map(waiting.map((b) => [idRe.exec(b.betId)[1], b]));
         const label = BOOK_LABELS[book] || book;
         try {
-          const settled = (await read(src, waiting, byId)).filter((r) => byId.has(r.betId));
+          const all = await read(src, waiting, byId);
+          const settled = all.filter((r) => byId.has(r.betId));
+          if (src.loose) {
+            // Bets with no matching id: the settled bet placed within 90s of ours with the same stake.
+            const used = new Set(settled.map((r) => r.betId));
+            for (const [id, b] of byId) {
+              if (used.has(id)) continue;
+              const t0 = Date.parse(b.placedAt);
+              const hit = all.find((r) => !used.has(r.betId) && r.placedAt && Math.abs(Date.parse(r.placedAt) - t0) < 90e3
+                && (r.stake == null || Math.abs(r.stake - Number(b.stake)) < 0.005));
+              if (hit) { used.add(hit.betId); settled.push({ ...hit, betId: id }); }
+            }
+          }
           lastOk[book] = now();
           warned.delete(book);
           const n = settled.length ? store.setMany(settled.map((r) => ({ key: betKey(byId.get(r.betId)), result: r.result, payout: r.payout, odds: r.odds, settledAt: r.settledAt }))) : 0;

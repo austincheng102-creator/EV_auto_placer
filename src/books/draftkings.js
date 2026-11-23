@@ -156,6 +156,7 @@ export function makeDraftKings(name, label, cfg, bridge) {
       let betId = b0.betId || b0.id || j.betId || j.receiptId || null;
       let odds = dkAmerican(b0.displayOdds, b0.trueOdds);
       // Live: wait out DraftKings' delay for its decision.
+      let waitNote = '';
       if (/LiveDelay|Pending|Waiting/i.test(status) && j.waitingBetId) {
         try {
           const jwt = await loginJwt();
@@ -168,10 +169,11 @@ export function makeDraftKings(name, label, cfg, bridge) {
             { timeoutMs: ms, streamUntil: `"waitingBetId":"${wid}"[^\\n]*"status":"(?!LiveDelay|Active|Pending|Waiting)[A-Za-z]+"[^\\n]*\\n` });
           const o = waitingOutcome(w.text ?? JSON.stringify(w.json), j.waitingBetId);
           if (o?.status) { status = o.status; betId = o.betId || betId; odds = o.odds ?? odds; }
-        } catch {}
+          waitNote = `waitingBets: HTTP ${w.status}${w.error ? `, ${w.error}` : ''}${w.matched === false ? ', no decision in the stream' : ''}, ${String(w.text || '').length} chars: ${String(w.text || '').slice(-600)}`;
+        } catch (e) { waitNote = `waitingBets failed: ${e?.message || e}`; }
         if (/LiveDelay|Pending|Waiting/i.test(status)) {
           // No decision seen: it may still go through, so record it (never bet twice) and say so.
-          return { betId: `draftkings:waiting-${j.waitingBetId}`, confirmedOdds: null, detail: `${detail} (no decision seen after the live delay)` };
+          return { betId: `draftkings:waiting-${j.waitingBetId}`, confirmedOdds: null, detail: `${detail} (no decision seen after the live delay; ${waitNote})` };
         }
       }
       if (res.status < 400 && (OK.test(status) || (betId && !BAD.test(status)))) {
