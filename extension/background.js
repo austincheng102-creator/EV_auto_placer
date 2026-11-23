@@ -176,12 +176,28 @@ chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
 // BetMGM: its bet requests carry an x-xsrf-token header (the page's anti-forgery token, tied to
 // your login cookies). We keep the newest one your BetMGM tab sent; the login itself is the
 // tab's cookies, which the in-tab request uses on its own.
-let bmAuth = { xsrf: null, at: 0 };
-store.get('bmAuth').then((v) => { if (v?.bmAuth && !bmAuth.xsrf) bmAuth = v.bmAuth; });
+// The page's sports requests (bets included) also carry headers that HAR exports may leave out or
+// that the app didn't send (authorization, x-device-type, x-bwin-browser-url, ...). BetMGM refused
+// every app bet with SessionTokenInvalid while bets placed by hand went through (Austin, 2026-11-23),
+// so the newest values of these are kept too and added to the app's BetMGM requests, as for theScore.
+let bmAuth = { xsrf: null, at: 0, headers: {} };
+store.get('bmAuth').then((v) => { if (v?.bmAuth && !bmAuth.xsrf) bmAuth = { headers: {}, ...v.bmAuth }; });
+const BM_SKIP = /^(x-xsrf-token|x-datadog-)/;
+const bmKeep = (n) => n === 'authorization' || n === 'x-device-type' || (/^x-/.test(n) && !BM_SKIP.test(n));
 chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
-  const x = (d.requestHeaders || []).find((h) => h.name.toLowerCase() === 'x-xsrf-token')?.value;
-  if (x && x !== bmAuth.xsrf) { bmAuth = { xsrf: x, at: Date.now() }; store.set({ bmAuth }); }
-  else if (x) bmAuth.at = Date.now();
+  const hs = d.requestHeaders || [];
+  const x = hs.find((h) => h.name.toLowerCase() === 'x-xsrf-token')?.value;
+  let changed = false;
+  if (x && x !== bmAuth.xsrf) { bmAuth = { ...bmAuth, xsrf: x }; changed = true; }
+  if (x) bmAuth.at = Date.now();
+  // The page's sports requests (the app's own carry the same copied values, so they change nothing).
+  if (d.tabId >= 0 && /\/sports\/api\//.test(d.url)) {
+    for (const h of hs) {
+      const n = h.name.toLowerCase();
+      if (bmKeep(n) && h.value && bmAuth.headers?.[n] !== h.value) { bmAuth.headers = { ...(bmAuth.headers || {}), [n]: h.value }; changed = true; }
+    }
+  }
+  if (changed) store.set({ bmAuth });
 }, { urls: ['https://*.betmgm.com/*'] }, ['requestHeaders', 'extraHeaders']);
 
 // theScore: its own requests may carry an authorization header and a device id (x-install-id)
@@ -578,6 +594,9 @@ async function keepBrGeo() {
 // is being sent or waiting on its live delay; its bets are held (not sent) while it renews.
 // Off with config.json "session": {"betmgmGeoRenew": false} / {"thescoreGeoRenew": false}.
 const GEO_RENEW_BEFORE_MS = 90e3;
+// A new check since `since`: a new answer with an expiry, or the location server saying the location
+// is valid (BetMGM's locationInfostatus VALID_LOCATION).
+const fresh = (g, since) => (g.updateAt || 0) > since || ((g.statusAt || 0) > since && /^(VALID|OK)/i.test(String(g.status || '')));
 const readPageGeo = (key) => { try { return sessionStorage.getItem(key); } catch { return null; } };
 // Removes the page's own saved location check (storage keys ending in `suffix`), so the reload runs a
 // new one instead of reusing the saved one. Returns the keys removed.
@@ -602,7 +621,7 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearSuffix }) {
   // Why the check needs renewing now ('' = it doesn't).
   k.due = (g) => {
     const now = Date.now();
-    if (k.refusedAt > (g.updateAt || 0)) return 'a bet was refused because it had lapsed';
+    if (k.refusedAt > Math.max(g.updateAt || 0, /^(VALID|OK)/i.test(String(g.status || '')) ? g.statusAt || 0 : 0)) return 'a bet was refused because it had lapsed';
     if (!g.updateAt && !g.statusAt) return 'no location check seen in this page yet';
     if (g.statusAt > (g.updateAt || 0) + 5e3 && g.status && !/^(VALID|OK)/i.test(g.status) && now - g.statusAt > 30e3) return `${label} answered ${g.status}`;
     if (g.nextAt && now > g.nextAt - GEO_RENEW_BEFORE_MS) return now > g.nextAt ? `it ran out ${mins(now - g.nextAt)} ago` : `it runs out in ${mins(g.nextAt - now)}`;
@@ -644,13 +663,13 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearSuffix }) {
           await sleep(2000);
           await brVisible(t.id);   // in case the page script didn't load with the page
           g = await k.now(t.id);
-          if ((g.updateAt || 0) > since) break;
+          if (fresh(g, since)) break;
         }
       } finally {
         if (back?.tabId) await chrome.tabs.update(back.tabId, { active: true }).catch(() => {});
         if (back?.minimized) await chrome.windows.update(back.windowId, { state: 'minimized' }).catch(() => {});
       }
-      if ((g.updateAt || 0) > since) {
+      if (fresh(g, since)) {
         k.fails = 0;
         const left = g.nextAt > Date.now() ? `, good for ${mins(g.nextAt - Date.now())}` : '';
         k.last = { at: Date.now(), ok: true, why: `${name}, after ${Math.round((Date.now() - since) / 1000)}s${left}` };
@@ -658,7 +677,7 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearSuffix }) {
         return { ok: true, why: k.last.why };
       }
       k.fails++;
-      const seen = (g.startAt || 0) > since ? 'the page started a check but it wasn\'t confirmed' : 'the page didn\'t start a location check';
+      const seen = Math.max(g.startAt || 0, g.initAt || 0) > since ? 'the page started a check but it wasn\'t confirmed' : 'the page didn\'t start a location check';
       const msg = `${name} didn't bring a new location check in 45s (${seen}). ${help}`;
       k.last = { at: Date.now(), ok: false, why: msg };
       note(`${label} location check NOT renewed: ${msg} Trying again in ${k.fails >= 3 ? 10 : 2} min`);
@@ -1170,6 +1189,7 @@ async function handle(msg) {
         if (!bmAuth.xsrf) return reply({ error: 'BetMGM login not seen yet: refresh the BetMGM tab (stay logged in)', notSent: true });
         msg.request.headers[h] = bmAuth.xsrf;
       }
+      msg.request.headers = { ...(bmAuth.headers || {}), ...(msg.request.headers || {}) };
     }
     if (msg.request.useTheScoreAuth) msg.request.headers = { ...(msg.request.headers || {}), ...tsAuth.headers };
     if (msg.request.useGambitAuth) {
@@ -1235,7 +1255,7 @@ chrome.tabs.onRemoved.addListener(sendTabs);
 chrome.runtime.onMessage.addListener((m, _s, respond) => {
   if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth, betriversLogin: !!kambiAuth, betriversRenewedAt: kambiRenewedAt, hardrockLogin: !!hrAuth.session, hardrockGeo: hrAuth.geoAt || 0,
     fanduelExp: jwtExp(fdAuth.auth), fanduelGeoExp: fdGeoExp(fdAuth.geo), fanduelGeoLast: fdGeoLast, betriversGeoExp: brGeo.status === 'ALLOWED' ? brGeo.expires || 0 : 0, betriversGeoSeen: !!(brGeo.at || brGeo.flagAt), betriversGeoLast: brGeoLast, betmgmGeoNext: geoKeepers.betmgm.g.nextAt || 0, betmgmGeoLast: geoKeepers.betmgm.last, thescoreGeoNext: geoKeepers.thescore.g.nextAt || 0, thescoreGeoLast: geoKeepers.thescore.last,
-    gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, betmgmLogin: !!bmAuth.xsrf, thescoreHeaders: Object.keys(tsAuth.headers), alert: alertText, lastReload, lastLogin, autoLogin: settings.gambitAutoLogin })); return true; }
+    gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, betmgmLogin: !!bmAuth.xsrf, betmgmHeaders: Object.keys(bmAuth.headers || {}), thescoreHeaders: Object.keys(tsAuth.headers), alert: alertText, lastReload, lastLogin, autoLogin: settings.gambitAutoLogin })); return true; }
 });
 // Keep the service worker alive while the engine runs.
 chrome.alarms?.create('keepalive', { periodInMinutes: 0.5 });
