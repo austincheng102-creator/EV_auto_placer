@@ -1613,30 +1613,45 @@ async function extFetch(req) {
 const netSeen = new Map();   // url without query -> { at, status?, error? }
 const netKey = (u) => String(u || '').split('?')[0];
 const netHdr = new Map();   // request id -> status code the server answered (a blocked answer still has one)
+const swSeen = new Map();   // the same, for requests a page's service worker sent on its behalf (no tab)
 const netNote = (d, o) => {
-  if (d.tabId < 0 || d.type === 'main_frame') return;
+  if (d.type === 'main_frame') return;
   const status = o.status ?? netHdr.get(d.requestId);
   netHdr.delete(d.requestId);
-  netSeen.set(netKey(d.url), { at: Date.now(), ...o, ...(status ? { status } : {}) });
-  if (netSeen.size > 300) netSeen.delete(netSeen.keys().next().value);
+  const seen = d.tabId < 0 ? swSeen : netSeen;
+  const key = netKey(d.url);
+  const prev = seen.get(key);
+  // A cross-site POST is preceded by Chrome's CORS pre-check (OPTIONS, its own request id). When the
+  // pre-check is refused, the POST fails "net::ERR_FAILED" with no answer of its own: keep the
+  // pre-check's answer with it, so the error says which one failed.
+  const pre = o.error && !status && o.method !== 'OPTIONS' && prev?.method === 'OPTIONS' && Date.now() - prev.at < 5e3 ? prev : null;
+  seen.set(key, { at: Date.now(), ...o, ...(status ? { status } : {}), ...(pre ? (pre.ok ? { preOk: pre.status } : { method: 'OPTIONS', status: pre.status, preError: pre.error }) : {}) });
+  if (seen.size > 300) seen.delete(seen.keys().next().value);
 };
 {
   const urls = (chrome.runtime.getManifest().host_permissions || []).filter((u) => !/gambitodds/.test(u));
+  // 'extraHeaders' also shows Chrome's CORS pre-checks (OPTIONS), which are hidden without it.
+  const extra = ['extraHeaders'];
   chrome.webRequest.onHeadersReceived.addListener((d) => {
-    if (d.tabId < 0) return;
     netHdr.set(d.requestId, d.statusCode);
     if (netHdr.size > 500) netHdr.delete(netHdr.keys().next().value);
-  }, { urls });
-  chrome.webRequest.onCompleted.addListener((d) => { if (d.method !== 'OPTIONS' || d.statusCode >= 400) netNote(d, { status: d.statusCode, method: d.method }); else netHdr.delete(d.requestId); }, { urls });
+  }, { urls }, extra);
+  chrome.webRequest.onCompleted.addListener((d) => { if (d.method !== 'OPTIONS' || d.statusCode >= 400) netNote(d, { status: d.statusCode, method: d.method }); else { netHdr.delete(d.requestId); netNote(d, { method: 'OPTIONS', status: d.statusCode, ok: true }); } }, { urls }, extra);
   chrome.webRequest.onErrorOccurred.addListener((d) => netNote(d, { error: d.error, method: d.method }), { urls });
 }
 // e.g. "(Chrome: net::ERR_FAILED after an HTTP 403 answer)": net::ERR_FAILED alone, with no answer,
 // is a request that never got one (cut off, or blocked before it was sent).
 const netWhy = (url) => {
   const n = netSeen.get(netKey(url));
-  if (!n || Date.now() - n.at > 30e3) return '';
+  const sw = swSeen.get(netKey(url));
+  const swNote = sw && Date.now() - sw.at < 30e3 && (sw.error || sw.status >= 400) ? `; the page's service worker saw ${sw.error || `HTTP ${sw.status}`}` : '';
+  if (!n || Date.now() - n.at > 30e3) return swNote ? ` (Chrome${swNote.slice(1)})` : '';
+  if (n.ok) return swNote ? ` (Chrome${swNote.slice(1)})` : '';
+  if (n.error && n.preOk) return ` (Chrome: ${n.error}: the pre-check (OPTIONS) passed with HTTP ${n.preOk}, then the request itself got no answer${swNote})`;
   const pre = n.method === 'OPTIONS' ? ' on the pre-check' : '';
-  return n.error ? ` (Chrome: ${n.error}${pre}${n.status ? ` after an HTTP ${n.status} answer` : ', no answer from the server'})` : ` (Chrome saw HTTP ${n.status}${pre})`;
+  if (n.error && pre && n.status) return ` (Chrome: ${n.error}: the pre-check (OPTIONS) was answered HTTP ${n.status}, so Chrome never sent the request${swNote})`;
+  if (n.error && n.preError) return ` (Chrome: ${n.error}: the pre-check (OPTIONS) failed ${n.preError}${swNote})`;
+  return n.error ? ` (Chrome: ${n.error}${pre}${n.status ? ` after an HTTP ${n.status} answer` : ', no answer from the server'}${swNote})` : ` (Chrome saw HTTP ${n.status}${pre}${swNote})`;
 };
 
 async function runInTab(tabId, request) {
