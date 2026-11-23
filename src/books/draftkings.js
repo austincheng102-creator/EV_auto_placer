@@ -114,8 +114,16 @@ export function makeDraftKings(name, label, cfg, bridge) {
     },
 
     async place(row, stake, quote) {
-      const q = quote.dk;
+      let q = quote.dk;
       if (!q?.token) throw new Error('no DraftKings price token from the price check');
+      // A retry after a price move (or a DraftKings counter-offer) comes with the new price but the old
+      // price's token: get a fresh token, and bet only if it's still that price.
+      if (dkAmerican(q.displayOdds, q.trueOdds) !== quote.odds) {
+        const fresh = await this.recheck(row);
+        if (!fresh.dk?.token || fresh.suspended) { const e = new Error('rejected: no longer offered'); e.gone = true; throw e; }
+        if (fresh.odds !== quote.odds) { const e = new Error(`rejected: price is now ${fresh.odds}`); e.priceMoved = true; e.newOdds = fresh.odds; e.newQuote = { dk: fresh.dk }; throw e; }
+        q = fresh.dk;
+      }
       const ret = Math.floor(stake * Number(q.trueOdds) * 100) / 100;
       const body = {
         bets: [{ type: 'Single', selectionsMapped: [{ id: q.id }], stake, trueOdds: q.trueOdds, displayOdds: q.displayOdds, numberOfBets: 1,
@@ -157,7 +165,14 @@ export function makeDraftKings(name, label, cfg, bridge) {
       const reason = why(j) || status || `HTTP ${res.status}`;
       const err = new Error(`rejected: ${reason}`);
       err.detail = detail;
-      if (/odds|price/i.test(reason)) err.priceMoved = true;
+      // NewOffer: DraftKings counter-offers another price (open for delayPeriod seconds). It's never
+      // accepted here: treated as a price move, so every rule is checked again at the offered price.
+      if (/NewOffer/i.test(status)) {
+        err.message = `rejected: DraftKings offered ${b0.displayOdds ?? 'another price'} instead (not accepted)`;
+        err.priceMoved = true;
+        const now = dkAmerican(b0.displayOdds, b0.trueOdds);
+        if (now != null) err.newOdds = now;
+      } else if (/odds|price/i.test(reason)) err.priceMoved = true;
       else if (/suspend|closed|unavailable|not.?available/i.test(reason)) err.gone = true;
       throw err;
     },

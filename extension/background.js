@@ -184,6 +184,22 @@ chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
   else if (x) bmAuth.at = Date.now();
 }, { urls: ['https://*.betmgm.com/*'] }, ['requestHeaders', 'extraHeaders']);
 
+// theScore: its own requests may carry an authorization header and a device id (x-install-id)
+// next to the login cookies (HAR exports leave these out, so they can't be seen there). We keep the
+// newest ones your theScore tab sent and add them to the app's requests, so they match the site's.
+let tsAuth = { headers: {}, at: 0 };
+store.get('tsAuth').then((v) => { if (v?.tsAuth && !tsAuth.at) tsAuth = v.tsAuth; });
+const TS_KEEP = ['authorization', 'x-install-id', 'x-dma', 'x-anonymous-authorization', 'x-auth-token'];
+chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
+  if (d.tabId < 0) return;   // only the page's own requests
+  const got = {};
+  for (const h of d.requestHeaders || []) if (TS_KEEP.includes(h.name.toLowerCase()) && h.value) got[h.name.toLowerCase()] = h.value;
+  if (!Object.keys(got).length) return;
+  const next = { ...tsAuth.headers, ...got };
+  if (JSON.stringify(next) !== JSON.stringify(tsAuth.headers)) { tsAuth = { headers: next, at: Date.now() }; store.set({ tsAuth }); }
+  else tsAuth.at = Date.now();
+}, { urls: ['https://*.thescore.bet/graphql/*'] }, ['requestHeaders', 'extraHeaders']);
+
 // fd-geo.js / br-geo.js have to be in the FanDuel / BetRivers page from the start to see their
 // location checks.
 async function registerGeoScripts() {
@@ -1028,6 +1044,7 @@ async function handle(msg) {
         msg.request.headers[h] = bmAuth.xsrf;
       }
     }
+    if (msg.request.useTheScoreAuth) msg.request.headers = { ...(msg.request.headers || {}), ...tsAuth.headers };
     if (msg.request.useGambitAuth) {
       if (!gambitAuth) return reply({ error: 'no Gambit login seen yet: refresh your Gambit tab' });
       msg.request.headers = { ...(msg.request.headers || {}), authorization: gambitAuth };
@@ -1088,7 +1105,7 @@ chrome.tabs.onRemoved.addListener(sendTabs);
 chrome.runtime.onMessage.addListener((m, _s, respond) => {
   if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth, betriversLogin: !!kambiAuth, betriversRenewedAt: kambiRenewedAt, hardrockLogin: !!hrAuth.session, hardrockGeo: hrAuth.geoAt || 0,
     fanduelExp: jwtExp(fdAuth.auth), fanduelGeoExp: fdGeoExp(fdAuth.geo), fanduelGeoLast: fdGeoLast, betriversGeoExp: brGeo.status === 'ALLOWED' ? brGeo.expires || 0 : 0, betriversGeoSeen: !!(brGeo.at || brGeo.flagAt), betriversGeoLast: brGeoLast,
-    gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, betmgmLogin: !!bmAuth.xsrf, alert: alertText, lastReload, lastLogin, autoLogin: settings.gambitAutoLogin })); return true; }
+    gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, betmgmLogin: !!bmAuth.xsrf, thescoreHeaders: Object.keys(tsAuth.headers), alert: alertText, lastReload, lastLogin, autoLogin: settings.gambitAutoLogin })); return true; }
 });
 // Keep the service worker alive while the engine runs.
 chrome.alarms?.create('keepalive', { periodInMinutes: 0.5 });
