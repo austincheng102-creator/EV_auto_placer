@@ -389,14 +389,20 @@ export function makeFanDuel(name, label, cfg, bridge) {
     async recheck(row) {
       if (row.isProp && f.props !== true) throw new Error('player props are off for FanDuel');
       const m = await coMarket(row);
-      const mk = (await marketPrices([m.marketId])).find((x) => x.marketId === m.marketId);
+      // The market read (status, line, bet delay) and the slip check (price, betReference) go out
+      // together instead of one after the other: one round trip through the FanDuel tab, not two.
+      // Both are reads; no bet is made.
+      const [mks, slip] = await Promise.all([
+        marketPrices([m.marketId]),
+        send('recheck', `${host('sib')}/api/sports/fixedodds/transactional/v1/implyBets?pricePolicy=SUGGESTED`, 'POST',
+          { betLegs: [{ legType: 'SIMPLE_SELECTION', betRunners: [{ runner: { marketId: m.marketId, selectionId: m.selectionId } }] }] }),
+      ]);
+      const mk = mks.find((x) => x.marketId === m.marketId);
       const rn = runnerOf(mk, m.selectionId);
       if (!mk || !rn) return { odds: null, suspended: true };
       const line = row.line == null ? null : lineOf(rn, m);
       if (mk.marketStatus !== 'OPEN' || rn.runnerStatus !== 'ACTIVE') return { odds: fdAmerican(rn.winRunnerOdds), line, suspended: true };
 
-      const slip = await send('recheck', `${host('sib')}/api/sports/fixedodds/transactional/v1/implyBets?pricePolicy=SUGGESTED`, 'POST',
-        { betLegs: [{ legType: 'SIMPLE_SELECTION', betRunners: [{ runner: { marketId: m.marketId, selectionId: m.selectionId } }] }] });
       const j = slip.json || {};
       if (authFail(slip)) throw new Error(loginMsg);
       if (slip.status >= 400 || j.respCode !== 'SUCCESS') throw new Error(`slip check ${slip.status >= 400 ? `HTTP ${slip.status}` : j.respCode || 'failed'}: ${fdWhy(j) || JSON.stringify(j || slip.text).slice(0, 200)}`);
@@ -408,6 +414,7 @@ export function makeFanDuel(name, label, cfg, bridge) {
       return {
         odds, line, suspended: false, loginOk: true,   // the slip check used your login and FanDuel accepted it
         maxStake: Number.isFinite(max) && max > 0 ? max : null,
+        betDelaySec: Number(mk.betDelay) || null,   // FanDuel holds live bets this long before it answers
         // The line goes with the slip's reference: the slip check says which line it priced (a
         // spread/total's line can move under the same selection), so the bet sends that one.
         fd: { ...m, handicap: Number((j.winRunnerOdds || j.runnerOdds || []).find((r) => String(r.runner?.selectionId) === String(m.selectionId))?.runner?.handicap ?? rn.handicap) || 0, betReference: combo.betReference, trueOdds: ro?.trueOdds, oddsFor: odds, delay: mk.betDelay },
