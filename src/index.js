@@ -354,6 +354,7 @@ async function tryBet(row, ctx) {
     return false;
   }
   ctx.quote = quote; ctx.checkedAt = Date.now();
+  if (quote.debug) log.debug(`${desc(row)}: ${quote.debug}`);   // e.g. theScore: each step's price
   if (quote.loginOk) session.bookOk(row.book);
   if (book.freePriceCheck) ctx.realOdds = quote.odds;
   // A watched bet whose price, line and fair odds haven't changed since its last check stays quiet.
