@@ -202,10 +202,12 @@ export function makeDraftKings(name, label, cfg, bridge) {
       else if (/suspend|closed|unavailable|not.?available|RepeatedBets|already placed/i.test(reason)) err.gone = true;
       // "Missing or false PlaySportsbook": DraftKings' location check (GeoComply) has lapsed, so the
       // login isn't allowed to bet (Austin, 2026-11-23, same morning BetMGM couldn't reach the
-      // GeoComply app). A tab reload makes the page run a new check.
+      // GeoComply app). The extension renews it (reloads the DraftKings tab, which runs a new check),
+      // and the bet is checked again from the start next scan, like theScore's.
       if (/PlaySportsbook/i.test(reason)) {
-        err.message = `rejected: DraftKings' location check has lapsed (${reason}); nothing was placed. Reloading the DraftKings tab so it runs a new one. If this keeps happening, check the GeoComply location app is running on this PC`;
-        bridge.tell?.({ type: 'reloadTab', book: name, why: 'DraftKings refused a bet: its location check had lapsed (PlaySportsbook)' });
+        err.message = `rejected: DraftKings' location check has lapsed (${reason}); nothing was placed. Renewing it (reloading the DraftKings tab); the bet is checked again next scan. If this keeps happening, check the GeoComply location app is running on this PC`;
+        bridge.tell?.({ type: 'geoRenew', book: name, why: 'DraftKings refused a bet: its location check had lapsed (PlaySportsbook)' });
+        err.notSent = true; err.geoRenewing = true;
       }
       throw err;
     },
