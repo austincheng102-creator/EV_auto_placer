@@ -1149,8 +1149,9 @@ async function keepDkSpan() {
 
 // BetMGM logs you out after a while (Austin, 2026-11-23: logged out while away; the page shows its
 // login box with the email remembered). Logs back in like the Gambit auto login: real clicks through
-// Chrome's debugger so Chrome fills its saved password, then "Log in". The extension never reads,
-// keeps or sends your password. Off with config.json "session": {"betmgmAutoLogin": false}.
+// Chrome's debugger so Chrome fills its saved password, then "Log in". Chrome's list didn't take the
+// extension's key presses, so the password Austin saves in the extension popup (kept only in this
+// Chrome, never sent to the app) is typed in instead. Off with config.json "session": {"betmgmAutoLogin": false}.
 // Retries every 5 seconds (Austin, 2026-11-23: 2 minutes was too long), slowing to once a minute
 // after 20 tries in a row. But after it actually pressed Log in and BetMGM still refused, it waits
 // 2 minutes (10 after 3 in a row): fast wrong-password tries can lock the account.
@@ -1192,7 +1193,7 @@ async function autoLoginBetMGM() {
     await chrome.tabs.update(t.id, { active: true }).catch(() => {});
     if (tb) await chrome.windows.update(tb.windowId, { focused: true, ...(back.minimized ? { state: 'normal' } : {}) }).catch(() => {});
     await sleep(800);
-    if (!mgmLogin.fails) note('BetMGM is logged out: logging back in with Chrome\'s saved password', 'info');
+    if (!mgmLogin.fails) note('BetMGM is logged out: logging back in', 'info');
     f = await inPage(t.id, true);
     if (f.state !== 'form' || !f.pass) return done(false, f.state === 'no-form' ? 'clicked Log In but no login box showed up' : `couldn't find the login box (${f.state})`);
     if (f.captcha) return done(false, 'BetMGM is showing an "are you a robot" check: log in by hand');
@@ -1208,6 +1209,18 @@ async function autoLoginBetMGM() {
       await sleep(1000);
       return inPage(t.id, true);
     };
+    // Chrome's saved-password list doesn't take the extension's key presses (Austin, 2026-11-23:
+    // "Chrome didn't fill in the saved password"), so the login Austin saved in the extension's
+    // popup (chrome.storage.local, this PC only) is typed in instead.
+    const saved = (await chrome.storage.local.get('mgmLogin').catch(() => ({}))).mgmLogin;
+    if (g.state === 'form' && !g.passLen && saved?.pass) {
+      if (!g.userLen && saved.email && g.user) { await realClick(target, g.user); await sleep(300); await dbgCmd(target, 'Input.insertText', { text: saved.email }); await sleep(300); }
+      await realClick(target, g.pass);
+      await sleep(300);
+      await dbgCmd(target, 'Input.insertText', { text: saved.pass });
+      await sleep(800);
+      g = await inPage(t.id, true);
+    }
     if (g.state === 'form' && !g.passLen) {
       // Chrome didn't fill it on its own: pick the saved login from Chrome's list under the password
       // box (Down, Enter). If the list wasn't open yet, the first Down only opens it: Down twice.
@@ -1223,16 +1236,16 @@ async function autoLoginBetMGM() {
         g = await inPage(t.id, true);
       }
     }
-    if (g.state === 'logged-in') return done(true, 'logged back in with Chrome\'s saved password');
+    if (g.state === 'logged-in') return done(true, 'logged back in');
     if (g.state !== 'form') return done(false, `the login box closed unexpectedly (${g.state})`);
-    if (!g.passLen) return done(false, 'Chrome didn\'t fill in the saved password. Save your BetMGM password in Chrome (chrome://password-manager) by logging in once and choosing Save');
+    if (!g.passLen) return done(false, saved?.pass ? 'typed the saved password but the box stayed empty' : 'no password saved: open the extension popup, "BetMGM auto login", and save your BetMGM password there');
     if (!g.submit) return done(false, 'couldn\'t find the Log in button');
     mgmLogin.submitted = true;
     await realClick(target, g.submit);
     for (let i = 0; i < 20; i++) {
       await sleep(1000);
       const h = await inPage(t.id, false).catch(() => ({}));
-      if (h.state === 'logged-in') return done(true, 'logged back in with Chrome\'s saved password');
+      if (h.state === 'logged-in') return done(true, 'logged back in');
     }
     done(false, 'pressed Log in but BetMGM still shows the login box (wrong saved password, or BetMGM wants a code)');
   } catch (e) {
