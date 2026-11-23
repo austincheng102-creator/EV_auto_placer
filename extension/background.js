@@ -607,8 +607,8 @@ const clearPageGeo = (pattern) => {
   }
   return out;
 };
-function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch }) {
-  const k = { book, label, setting, g: {}, job: null, triedAt: 0, fails: 0, busyAt: 0, refusedAt: 0, last: null };
+function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch, passive = false, passiveHelp = '' }) {
+  const k = { book, label, setting, passive, g: {}, job: null, triedAt: 0, fails: 0, busyAt: 0, refusedAt: 0, last: null, toldAt: 0 };
   store.get(`geo_${book}`).then((v) => { if (v?.[`geo_${book}`] && !k.g.updateAt) k.g = v[`geo_${book}`]; });
   const note = (text, level = 'warn') => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book, level, text })); };
   const tab = async () => (await bookTabs()).find((t) => t.book === book && host.test(new URL(t.url).hostname));
@@ -692,14 +692,33 @@ function makeGeoKeeper({ book, label, key, host, setting, help, clearMatch }) {
     const t = await tab();
     if (!t || t.discarded) return;
     await brVisible(t.id);
-    const why = k.due(await k.now(t.id));
+    const g = await k.now(t.id);
+    if (passive) {
+      // The page runs its own next check when the location server said to (timeForNextCall); a
+      // reload cancels that and doesn't start a new one, so the extension only watches and says so
+      // (once every 10 minutes) when the check is more than 3 minutes overdue.
+      if (g.nextAt && Date.now() > g.nextAt + 180e3 && (g.updateAt || 0) < g.nextAt && Date.now() - k.toldAt > 10 * 60e3) {
+        k.toldAt = Date.now();
+        note(`${label}'s location check is ${mins(Date.now() - g.nextAt)} overdue and the page hasn't run it. ${passiveHelp}`);
+      }
+      return;
+    }
+    const why = k.due(g);
     if (why) k.renew(why, k.refusedAt > Date.now() - 120e3).catch(() => {});
   };
-  k.refused = (why) => { k.refusedAt = Date.now(); if (settings[setting] !== false) k.renew(why || 'a bet was refused because it had lapsed', true).catch(() => {}); };
+  k.refused = (why) => {
+    k.refusedAt = Date.now();
+    if (passive) { if (Date.now() - k.toldAt > 2 * 60e3) { k.toldAt = Date.now(); note(`${label} refused a bet because its location check had lapsed. ${passiveHelp}`); } return; }
+    if (settings[setting] !== false) k.renew(why || 'a bet was refused because it had lapsed', true).catch(() => {});
+  };
   return k;
 }
 const geoKeepers = {
   betmgm: makeGeoKeeper({ book: 'betmgm', label: 'BetMGM', key: 'evPlacerMgmGeo', host: /(^|\.)betmgm\.com$/, setting: 'betmgmGeoRenew', clearMatch: '^(lastFetchLocationCommand|lastLocationInfoStatus)$',
+    // BetMGM doesn't start a location check on a page load (Austin, 2026-11-23: every reload "didn't
+    // start a location check"); it runs the next one itself ~19.5 min after the last (timeForNextCall),
+    // and when you use the site. Reloading cancelled that, so the BetMGM tab is never reloaded for it.
+    passive: true, passiveHelp: 'BetMGM runs it when you use the site: click any odds in the BetMGM tab (then remove it from the slip) to run it now. Keep the GeoComply app running.',
     help: 'Is the GeoComply location app running on this PC, and are you logged in to BetMGM?' }),
   thescore: makeGeoKeeper({ book: 'thescore', label: 'theScore', key: 'evPlacerTsGeo', host: /^sportsbook\.thescore\.bet$/, setting: 'thescoreGeoRenew', clearMatch: '__GEOCOMPLY__$',
     help: 'Is the GeoComply location app running on this PC, does Chrome allow theScore to use your location, and are you logged in to theScore?' }),
