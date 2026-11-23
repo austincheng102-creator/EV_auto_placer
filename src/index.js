@@ -477,8 +477,19 @@ async function placeAt(row, book, quote, ctx, retries = 0) {
       // (default 2): a live price can move again during the book's delay on the retry.
       const maxRetries = Number.isFinite(Number(cfg.priceMoveRetries)) ? Math.max(0, Number(cfg.priceMoveRetries)) : 2;
       if (hasNew && retries < maxRetries) {
+        // Books that hold a live bet for a long time (theScore ~9-12s): the fair price from before the
+        // hold may be stale, so the re-check uses the newest scan's row (fair price, other books'
+        // prices, sharp timing). Gone from Gambit's table, or its sharp price too old: not sent again.
+        let next = row;
+        if (book.freshFairOnRetry && lastScan && lastScan.scanAt > (ctx.scanAt ?? 0)) {
+          const fresh = lastScan.rows.find((r) => r.id === row.id);
+          if (!fresh) { lg.warn(`${book.label}: price moved ${fmtAmerican(quote.odds)} → ${fmtAmerican(e.newOdds)}; Gambit no longer lists this bet — skipped, nothing placed`); return false; }
+          if (sharpTooOld(fresh)) { ctx.outcome = 'price moved'; lg.warn(`${book.label}: price moved ${fmtAmerican(quote.odds)} → ${fmtAmerican(e.newOdds)}; no fresh sharp price to check it against — skipped, nothing placed`); return false; }
+          next = { ...fresh };
+          if (next.fairOdds !== row.fairOdds) lg.info(`${book.label}: fair price is now ${fmtAmerican(next.fairOdds)} (was ${fmtAmerican(row.fairOdds)} before ${book.label}'s hold)`);
+        }
         lg.warn(`${book.label}: price moved ${fmtAmerican(quote.odds)} → ${fmtAmerican(e.newOdds)}, checking again${retries ? ` (retry ${retries + 1} of ${maxRetries})` : ''}`);
-        return placeAt(row, book, { ...quote, ...(e.newQuote || {}), odds: e.newOdds }, ctx, retries + 1);
+        return placeAt(next, book, { ...quote, ...(e.newQuote || {}), odds: e.newOdds }, ctx, retries + 1);
       }
       lg.warn(`${book.label}: price moved${hasNew ? ` to ${fmtAmerican(e.newOdds)}` : ''} — skipped, nothing placed`);
       return false;
