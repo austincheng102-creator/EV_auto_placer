@@ -184,6 +184,25 @@ all the rules above), and nothing is placed at a price that didn't pass.
   checked at the book first). FanDuel CO game lookups run in the background and are remembered
   for 10 minutes (a game not found is tried again after 60s). If a scan takes much longer than
   `pollSeconds`, a warning says how long Gambit and the book reads took.
+- **Fast price check between Gambit polls.** Every `fastPrices.everySec` (default 1) seconds the
+  app reads each book's own prices again for the selections from the last scan that are within
+  `fastPrices.marginPts` (default 3) points of min EV and still pass the rules that don't depend on
+  the price (up to `fastPrices.max`, default 20, per book). One that now clears min EV goes through
+  every rule and the book's price re-check, exactly like a bet found by a scan, and the screen says
+  "Fast price check". The fair price is still the last Gambit poll's. Any book with direct prices
+  (BetRivers, Hard Rock, FanDuel, and books added later) takes part. `"fastPrices": {"everySec": 0}`
+  turns it off.
+- **Quicker re-checks:** FanDuel's market read and slip check go out together (one round trip
+  instead of two); BetRivers sends the bet without the slip's separate validate call first (the bet
+  is refused for the same reasons; `"betrivers": {"validateFirst": true}` puts it back); Hard Rock
+  reuses a selection's max stake from the last `hardrock.stakeCheckCacheSec` (default 300) seconds
+  when its live feed has the price (`0` = check every time). Price changes are still never accepted
+  without a check.
+- **Bet timing:** for each bet sent to a book, a `timing:` line on screen and a line in
+  `bet-timing.csv` say where the seconds went: Gambit poll, waiting for book prices, the re-check,
+  our rules, and how long the book took to answer (with the book's own live bet delay when it says,
+  FanDuel and BetRivers). Book delays are the book holding a live bet before it re-prices it; the
+  app can't shorten those.
 - `prices.csv` next to the app gets a line for each check: Gambit's price, how long Gambit had shown
   it, the book's real price and EV, how long ago BetRivers last changed that price, and what happened. This shows how far behind Gambit is.
 - `sharp-skips.csv` next to the app gets a line for each bet skipped by the sharp-books rule

@@ -98,6 +98,7 @@ export function makeHardRock(name, label, cfg, bridge) {
   // Hard Rock's live prices, streamed from Hard Rock itself (hardrock-feed.js).
   // "hardrock": {"directPrices": false} turns it off and uses Gambit's copy of the price.
   const feed = h.directPrices === false ? null : makeHardRockFeed(cfg, log);
+  const stakeSeen = new Map();   // selection id -> { at, max }: last stake check
 
   return {
     name, label,
@@ -134,14 +135,27 @@ export function makeHardRock(name, label, cfg, bridge) {
     // and Hard Rock refuses it if the price moved. Here we only check the stake limit,
     // which also confirms the selection exists and the login works (safe while disarmed).
     async recheck(row) {
-      if (!hardrockSelectionId(row)) throw new Error(`no Hard Rock selection id in Gambit's link (${String(row.link || 'no link').slice(0, 160)})`);
+      const selId = hardrockSelectionId(row);
+      if (!selId) throw new Error(`no Hard Rock selection id in Gambit's link (${String(row.link || 'no link').slice(0, 160)})`);
+      // With the live feed on, row.odds is Hard Rock's real price as of this scan; read it again now.
+      let p = feed?.live() && row.direct === true ? feed.price(selId) : null;
+      // The stake check is a round trip through the Hard Rock tab. The same selection's max stake
+      // from the last few minutes (hardrock.stakeCheckCacheSec, default 300; 0 = check every
+      // time) is used instead when the live feed has its price; placeBets still refuses any change.
+      const cached = stakeSeen.get(String(selId));
+      if (p && cached && Date.now() - cached.at < (h.stakeCheckCacheSec ?? 300) * 1000) {
+        return { odds: p.odds, line: row.line, maxStake: cached.max, suspended: !!p.suspended,
+          changedAt: p.changedAt ? new Date(p.changedAt).toISOString() : null };
+      }
       const res = await post('recheck', `${apiHost}/sportsbook/v1/api/getMaxAllowedBetStake`, body(betsJson(row, 1, toDecimal(row.odds)), false));
       const j = res.json || {};
       if (res.status === 401 || res.status === 403 || loginError(j)) throw new Error('Hard Rock didn\'t accept the login: refresh the Hard Rock tab and stay logged in');
       if (res.status >= 400) throw new Error(`stake check HTTP ${res.status}: ${JSON.stringify(j || res.text).slice(0, 200)}`);
       const max = Number(j.Double ?? j.Single);
-      // With the live feed on, row.odds is Hard Rock's real price as of this scan; read it again now.
-      const p = feed?.live() && row.direct === true ? feed.price(hardrockSelectionId(row)) : null;
+      stakeSeen.set(String(selId), { at: Date.now(), max: Number.isFinite(max) && max > 0 ? max : null });
+      if (stakeSeen.size > 2000) stakeSeen.delete(stakeSeen.keys().next().value);
+      const now = feed?.live() && row.direct === true ? feed.price(selId) : null;   // the price after the stake check
+      if (now) p = now;
       return { odds: p ? p.odds : row.odds, line: row.line, maxStake: Number.isFinite(max) && max > 0 ? max : null, suspended: !!p?.suspended,
         changedAt: p?.changedAt ? new Date(p.changedAt).toISOString() : null };
     },
