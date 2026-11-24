@@ -166,6 +166,8 @@ export function makeBetLog(dir, { dryRun = false, log } = {}) {
       feed: row.src === 'propprofessor' ? 'PropProfessor' : 'Gambit',
       league: row.league ?? null, event: row.event, live: !!row.isLive, startDate: row.startDate ?? null,
       market: row.market, marketKey: row.marketKey ?? null, selection: row.selection, line: row.line ?? null,
+      // The book's own id for the selection (DraftKings: matches the bet in My Bets when the bet id wasn't seen).
+      bookRef: quote.dk?.id ?? row.bookRef ?? null,
       gambitOdds: row.odds, sentOdds: quote.odds, confirmedOdds: confirmedOdds ?? null,
       oddsMatch: confirmedOdds == null ? 'not reported' : confirmedOdds === quote.odds ? 'yes' : 'NO',
       fairOdds: row.fairOdds, fairProb: row.fairProb ?? null,

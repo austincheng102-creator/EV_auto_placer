@@ -77,8 +77,13 @@ export function dkSettled(b) {
     : /void|cancel|refund/i.test(st) ? 'void' : null;
   if (!result) return null;
   const n = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v) * 100) / 100 : null);
+  // What was bet on, for matching bets logged without DraftKings' bet id (resultsync.js).
+  const sel = (b.selections || [])[0] || {};
+  const label = [sel.selectionDisplayName, sel.marketDisplayName, sel.points, ...(sel.players || []).map((x) => x?.name), ...(sel.participants || []).map((x) => x?.name)]
+    .filter((x) => x != null && x !== '').join(' ');
   return { betId: String(b.betId), result, status: st, payout: result === 'lost' ? 0 : n(b.returns), stake: n(b.stake),
-    odds: dkAmerican(b.displayOdds), settledAt: b.settlementDate || null, placedAt: b.placementDate || null };
+    odds: dkAmerican(b.displayOdds), settledAt: b.settlementDate || null, placedAt: b.placementDate || null,
+    selectionId: sel.selectionId || null, label: label || null };
 }
 
 const BAD = /reject|declin|fail|cancel|error|expired/i;
