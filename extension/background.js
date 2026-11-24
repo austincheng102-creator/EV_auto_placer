@@ -1816,7 +1816,9 @@ async function handle(msg) {
     // re-checks, status) wait for the tab to finish loading and are tried once more. A bet ('place') is
     // never sent twice: it may have reached the book.
     if (r.error && /Failed to fetch|NetworkError/i.test(r.error)) r = { ...r, error: r.error + netWhy(msg.request.url) };
-    if (r.error && msg.request.kind !== 'place' && /Failed to fetch|NetworkError|network|abort|didn't respond|could not run/i.test(r.error)) {
+    // An answer the server refused (e.g. DraftKings' bot filter: HTTP 403) isn't tried again: a second
+    // request right away would only make it worse.
+    if (r.error && msg.request.kind !== 'place' && /Failed to fetch|NetworkError|network|abort|didn't respond|could not run/i.test(r.error) && !/HTTP 4\d\d/.test(r.error)) {
       const ago = Date.now() - (reloadedAt[msg.book] || 0);
       for (let i = 0; i < 16; i++) {   // up to 8s
         const t = await chrome.tabs.get(tab.id).catch(() => null);

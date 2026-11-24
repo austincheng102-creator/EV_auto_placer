@@ -14,6 +14,7 @@
 // DraftKings runs bot detection in its page; bets placed by the app carry no clicks.
 
 import { decimalToAmerican } from '../ev.js';
+import { log } from '../log.js';
 
 /** DraftKings selection id from Gambit's link: .../event/<slug>/<eventId>?outcomes=<id>[,<id>] */
 export function draftkingsRef(link) {
@@ -95,6 +96,30 @@ export function makeDraftKings(name, label, cfg, bridge) {
   const send = (kind, url, method, body, extra = {}, ms = 20000, more = {}) => bridge.send(name, {
     kind, url, method, headers: { ...extra }, body: body == null ? undefined : JSON.stringify(body), credentials: 'include', ...more }, ms);
   const authFail = (r) => r.status === 401 || r.status === 403;
+  // DraftKings' bot filter answers price checks HTTP 403 when they come too often (Austin, 2026-11-23:
+  // "Failed to fetch (Chrome: net::ERR_FAILED after an HTTP 403 answer)"). Price checks go out at most
+  // one every minGapSec (default 2) across all bets, and after a 403 they stop for a while (1 min,
+  // doubling up to 10 min while it keeps refusing; back to 1 min after a check goes through).
+  // Bets are never sent without a price check, so nothing is placed while paused.
+  const minGap = Number(k.minGapSec ?? 2) * 1000;
+  let gate = Promise.resolve(), lastAt = 0, blockedUntil = 0, blockMs = 0;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const takeTurn = () => {
+    const turn = gate.then(async () => { const wait = lastAt + minGap - Date.now(); if (wait > 0) await sleep(wait); lastAt = Date.now(); });
+    gate = turn.catch(() => {});
+    return turn;
+  };
+  const paused = () => {
+    const e = new Error(`DraftKings price checks paused until ${new Date(blockedUntil).toLocaleTimeString()} (its bot filter refused them with HTTP 403)`);
+    e.paused = true; e.until = blockedUntil;
+    return e;
+  };
+  const refused403 = (msg) => /HTTP 403/.test(String(msg || ''));
+  const noteBlocked = () => {
+    blockMs = Math.min(Math.max(blockMs * 2, 60e3), 600e3);
+    blockedUntil = Date.now() + blockMs;
+    log.warn(`DraftKings refused a price check with HTTP 403 (its bot filter): no DraftKings price checks or bets for ${Math.round(blockMs / 60e3)} min, until ${new Date(blockedUntil).toLocaleTimeString()}`);
+  };
   const why = (j) => [j?.errorCode, j?.errorMessage, j?.message, j?.status, ...(j?.errors || []).map((e) => e?.message || e?.code || e?.errorCode)]
     .filter((x) => x && !OK.test(String(x))).join(', ');
   const lineOf = (sel, row) => {
@@ -119,13 +144,25 @@ export function makeDraftKings(name, label, cfg, bridge) {
     freshFairOnRetry: true,
     // The price check (calculateBets + selection info) makes no bet, so a failed check is checked
     // again on later scans. DraftKings watches for bots, so a watched bet is re-checked at most
-    // every 5s ("draftkings": {"recheckWatchSec": 5}).
+    // every 10s ("draftkings": {"recheckWatchSec": 10}; 5 drew HTTP 403s from its bot filter).
     freePriceCheck: true,
-    recheckWatchSec: 5,
+    recheckWatchSec: 10,
 
     async recheck(row) {
       const id = row.bookRef || draftkingsRef(row.link).bookRef;
       if (!id) throw new Error(`no DraftKings selection id in Gambit's link (${String(row.link || 'no link').slice(0, 160)})`);
+      if (Date.now() < blockedUntil) throw paused();
+      await takeTurn();
+      if (Date.now() < blockedUntil) throw paused();
+      try { const q = await check(row, id); blockMs = 0; return q; }
+      catch (e) {
+        if (refused403(e.message)) { if (Date.now() >= blockedUntil) noteBlocked(); const p = paused(); p.message = e.message; throw p; }
+        throw e;
+      }
+    },
+  };
+  async function check(row, id) {
+    {
       // The odds/token check and the selection's details go out together: both are reads.
       const [calc, si] = await Promise.all([
         send('recheck', `${wager}/calculateBets`, 'POST', { selections: [{ id }], selectionsForYourBet: [], oddsStyle: 'american' },
@@ -147,7 +184,9 @@ export function makeDraftKings(name, label, cfg, bridge) {
       return { odds: dkAmerican(bet.displayOdds, bet.trueOdds), line: sel ? lineOf(sel, row) : row.line,
         suspended: !!mk?.isSuspended || sel?.isSuspended === true, maxStake: Number.isFinite(max) && max > 0 ? max : null,
         dk: { id, token: bet.token, trueOdds: bet.trueOdds, displayOdds: bet.displayOdds } };
-    },
+    }
+  }
+  Object.assign(book, {
 
     async place(row, stake, quote) {
       let q = quote.dk;
@@ -183,7 +222,7 @@ export function makeDraftKings(name, label, cfg, bridge) {
       const res = await send('place', `${wager}/placeBets`, 'POST', body, { ...slipHeaders, calculationid: uuid(), 'x-request-client-timestamp': String(Date.now()) }, 30000);
       return answer(res, q, 'placeBets', '');
     },
-  };
+  });
   // DraftKings' answer to placeBets or acceptPurchase: placed, refused, or a counter-offer (in the
   // answer itself, or at the end of the live delay on the waitingBets stream).
   async function answer(res, q, op, note) {
