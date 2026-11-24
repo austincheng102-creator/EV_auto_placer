@@ -14,6 +14,12 @@
     "sec": 3,
     "evPts": 3
   },
+  "gambitBehind": {
+    "exceptBooks": [
+      "hardrock"
+    ],
+    "maxPts": 0
+  },
   "pregameMaxHours": 12,
   "arbProps": {
     "enabled": true,
