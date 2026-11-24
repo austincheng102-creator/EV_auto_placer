@@ -19,7 +19,8 @@
     "exceptBooks": [
       "hardrock"
     ],
-    "maxPts": 0
+    "maxPts": 0,
+    "fastAllBooks": true
   },
   "pregameMaxHours": 12,
   "arbProps": {
