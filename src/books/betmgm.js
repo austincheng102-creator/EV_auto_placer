@@ -312,10 +312,14 @@ export function makeBetMGM(name, label, cfg, bridge) {
       throw err;
     },
 
-    // One page of My Bets (typeFilter 'Settled' or 'Open'), newest first.
-    async myBets(typeFilter, page, per) {
+    // One page of My Bets (typeFilter 'Settled' or 'Open'), newest first. BetMGM pages with a cursor,
+    // like the site's "load more" (Austin's HAR 2026-11-24): page N+1 sends index N+1 and, per betting
+    // platform, the last slip of the page before ({"1": {"betNumber": "20UU..."}}). Without it every
+    // request returns the same newest ~49 slips.
+    async myBets(typeFilter, page, per, after = {}) {
       const res = await send('history', `${origin}/en/sports/api/mybets/betslips`, 'POST',
-        JSON.stringify({ index: page, maxItems: per, typeFilter, eventIds: [], useGroupedView: true, paging: { count: per, lastBetByBettingPlatformInstanceIds: {} } }),
+        JSON.stringify({ index: page, maxItems: per, typeFilter, ...(typeFilter === 'Open' ? { pinnedBetslipIds: '' } : {}), eventIds: [], useGroupedView: true,
+          paging: { count: per, lastBetByBettingPlatformInstanceIds: after } }),
         { 'x-xsrf-token': XSRF }, 30000);
       if (authFail(res)) throw new Error(loginMsg);
       const list = res.json?.betslips;
@@ -323,48 +327,46 @@ export function makeBetMGM(name, label, cfg, bridge) {
       return list;
     },
 
-    // Settled bets placed since `from` (ms), from the same list as My Bets > Settled (newest
-    // first, read a page at a time). Read-only, so it works while the extension is disarmed.
-    // If a page brings nothing new (BetMGM ignoring the page number), one big page is read instead,
-    // so bets further down the list aren't missed.
-    async settled(from) {
-      let per = b.settledPageSize || 50;
+    // Every slip of a list, newest first, page by page with the cursor, until `stop(page)` says enough,
+    // a page brings nothing new, or `maxPages`.
+    async allSlips(typeFilter, { per = b.settledPageSize || 50, maxPages = 40, stop = () => false } = {}) {
       const seen = new Map();
-      const take = (list) => { let n = 0; for (const x of list) if (x?.betSlipNumber && !seen.has(x.betSlipNumber)) { seen.set(x.betSlipNumber, x); n++; } return n; };
-      for (let page = 1; page <= 20; page++) {
-        const list = await this.myBets('Settled', page, per);
-        const fresh = take(list);
-        if (page > 1 && !fresh && list.length) {
-          const big = await this.myBets('Settled', 1, per * 10);
-          const more = take(big);
-          log.debug(`BetMGM settled list: page ${page} repeated earlier pages; read one page of ${per * 10} instead (${big.length} slips, ${more} new)`);
-          break;
-        }
-        // A short page doesn't mean the end: BetMGM may hand back fewer than asked (2026-11-24: settled
-        // bets further down, e.g. 20UU806YZT, were never read). Stop at an empty page or once past `from`.
-        // If page 1 came back short, ask for that many from then on, so page N starts where page N-1 ended.
-        if (page === 1 && list.length && list.length < per) { log.debug(`BetMGM settled list: asked ${per} a page, got ${list.length}; using ${list.length} a page`); per = list.length; }
-        const oldest = Math.min(...list.map((x) => Date.parse(x.conclusionDateUtc)).filter(Number.isFinite));
-        if (!list.length || (Number.isFinite(oldest) && oldest < from)) break;
+      let after = {};
+      for (let page = 1; page <= maxPages; page++) {
+        const list = await this.myBets(typeFilter, page, per, after);
+        let fresh = 0;
+        for (const x of list) if (x?.betSlipNumber && !seen.has(x.betSlipNumber)) { seen.set(x.betSlipNumber, x); fresh++; }
+        if (!list.length || !fresh || stop(list)) break;
+        // The cursor: the last slip of this page, per betting platform it came from.
+        after = {};
+        for (const x of list) after[String(x.businessContext?.bettingPlatformInstanceId ?? 1)] = { betNumber: String(x.betSlipNumber) };
       }
-      return [...seen.values()].map(settledSlip).filter(Boolean);
+      return [...seen.values()];
+    },
+
+    // Settled bets placed since `from` (ms), from the same list as My Bets > Settled (newest
+    // first). Read-only, so it works while the extension is disarmed.
+    async settled(from) {
+      const slips = await this.allSlips('Settled', { stop: (list) => {
+        const oldest = Math.min(...list.map((x) => Date.parse(x.conclusionDateUtc)).filter(Number.isFinite));
+        return Number.isFinite(oldest) && oldest < from;
+      } });
+      return slips.map(settledSlip).filter(Boolean);
     },
 
     // Where are these bets on BetMGM? For bets still unsettled long after they were placed: open, in the
     // settled list in a form we don't read, or not listed at all. Text for the log.
     async whereAre(ids) {
-      const per = b.settledPageSize || 50;
       const where = new Map();
-      for (const [type, pages] of [['Open', 4], ['Settled', 6]]) {
-        for (let page = 1; page <= pages; page++) {
-          const list = await this.myBets(type, page, per);
-          for (const x of list) if (ids.includes(String(x.betSlipNumber)) && !where.has(String(x.betSlipNumber))) {
-            where.set(String(x.betSlipNumber), `${type} list, state ${x.state}, ${(x.bets || []).length} bets, outcome ${(x.bets || []).map((y) => y.state || y.outcome).join('/')}`);
-          }
-          if (!list.length) break;
+      for (const [type, maxPages] of [['Open', 6], ['Settled', 10]]) {
+        let list = [];
+        try { list = await this.allSlips(type, { maxPages, stop: () => ids.every((id) => where.has(id)) }); }
+        catch (e) { for (const id of ids) if (!where.has(id)) where.set(id, `${type} list unreadable (${e.message})`); continue; }
+        for (const x of list) if (ids.includes(String(x.betSlipNumber)) && (!where.has(String(x.betSlipNumber)) || /unreadable/.test(where.get(String(x.betSlipNumber))))) {
+          where.set(String(x.betSlipNumber), `${type} list, state ${x.state}, ${(x.bets || []).length} bets, outcome ${(x.bets || []).map((y) => y.state || y.outcome).join('/')}`);
         }
       }
-      return ids.map((id) => `${id}: ${where.get(id) || 'not in the open or settled list (first pages)'}`);
+      return ids.map((id) => `${id}: ${where.get(id) || 'not in the open or settled list'}`);
     },
 
     // Once a minute (session.js): the balance (read-only, the site reads it all the time) tells us
