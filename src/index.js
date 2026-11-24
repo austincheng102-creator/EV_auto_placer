@@ -320,6 +320,10 @@ const minEv = (r, odds = r.odds) => minEvFor(cfg, r.minEv ?? cfg.minEvPct, odds,
 // sharp move in the last few seconds, sharp books within N points). Price re-check, odds range,
 // max EV, groups and the daily limit still apply.
 const freeLive = (r) => cfg[r.book]?.sharpRules === false;
+// A PropProfessor game line with no Pinnacle and no valid prediction-market price: priced off
+// PropProfessor's own fair (Austin, 2026-11-24). Not props (they need FanDuel) and not arb-table rows.
+const ppFallbackOk = (r) => r.src === 'propprofessor' && cfg.propprofessor?.fairFallback !== false
+  && !r.isProp && !r.arb && Number.isFinite(r.fairProb) && r.fairProb > 0 && r.fairProb < 1;
 const inEventCap = (p) => cfg.propsInEventCap === true || !isPropBet(p);
 const overEventCap = (r, perEvent) => inEventCap(r) && (perEvent[r.event] || 0) >= (cfg.maxBetsPerEvent ?? Infinity);
 
@@ -331,7 +335,7 @@ function propStage(r, { groups, perEvent, stats, now }) {
   if (tooLong(r.odds, r) || tooShort(cfg, r.odds)) return 'odds';
   if (evTooHigh(cfg, r.ev)) return 'evCap';
   if (tooEarly(r)) return 'pregameFar';
-  if (!freeLive(r) && liveSharpMissing(cfg, r)) return 'noSharp';
+  if (!freeLive(r) && !r.ppFairFallback && liveSharpMissing(cfg, r)) return 'noSharp';
   if (!freeLive(r) && !sharpSpread(cfg, r).ok) return 'sharpSpread';
   if (!softCheck(cfg, r).ok) return 'softBooks';
   if (!marketCheck(cfg, r).ok) return 'pinnacleOff';
@@ -615,7 +619,7 @@ function pickBets(rows, { quiet = false } = {}) {
     .filter((r) => (!tooLong(r.odds, r) && !tooShort(cfg, r.odds)) || drop('odds'))
     .filter((r) => !evTooHigh(cfg, r.ev) || drop('evCap'))
     .filter((r) => !tooEarly(r) || (farOff++, false))
-    .filter((r) => freeLive(r) || !liveSharpMissing(cfg, r) || drop('noSharp'))
+    .filter((r) => freeLive(r) || r.ppFairFallback || !liveSharpMissing(cfg, r) || drop('noSharp'))
     .filter((r) => { if (freeLive(r)) return true; const sp = sharpSpread(cfg, r); if (sp.ok) return true; if (!quiet) logSpreadSkip(r, sp); return drop('sharpSpread'); })
     .filter((r) => softCheck(cfg, r).ok || drop('softBooks'))
     .filter((r) => { const mc = marketCheck(cfg, r); if (mc.ok) return true; if (!quiet) logMarketSkip(r, mc); return drop('pinnacleOff'); })
@@ -690,11 +694,20 @@ async function tick() {
   // Fair price from the sharp books only (Pinnacle + Kalshi/Polymarket with $500+ liquidity), lowest wins.
   // Gambit's "market" fair is replaced (it can include thin prediction-market prices); rows with no
   // sharp book priced are dropped.
-  let noSharpFair = 0;
+  let noSharpFair = 0, ppFallback = 0;
   rows = rows.filter((r) => {
     const sf = sharpFair(cfg, r);
     if (!sf) return true;
-    if (sf.prob == null || !(sf.prob > 0 && sf.prob < 1)) { noSharpFair++; return false; }
+    if (sf.prob == null || !(sf.prob > 0 && sf.prob < 1)) {
+      // PropProfessor sends no Pinnacle (2026-11-24), so its game lines would all land here. Austin's
+      // choice: those use PropProfessor's own no-vig fair instead ("propprofessor": {"fairFallback": false}
+      // turns it off). Props still need FanDuel, as always.
+      if (!ppFallbackOk(r)) { noSharpFair++; return false; }
+      r.ppFairFallback = true; ppFallback++;
+      r.fairCalc = { probs: {}, books: [], ppFallback: true };
+      r.fairSource = 'PropProfessor (no Pinnacle/prediction market)';
+      return true;
+    }
     // Kept for the bet log: each sharp book's win % as the fair calculation saw it (fairBreakdown).
     r.fairCalc = { probs: sf.probs, books: sf.books.length ? sf.books : sf.gambitPinnacle ? ['pinnacle'] : [], gambitPinnacle: sf.gambitPinnacle };
     if (sf.changed) {
@@ -767,6 +780,7 @@ async function tick() {
   }
   const whyText = [
     noSharpFair && `${noSharpFair} with no sharp price for the fair (Pinnacle, or a valid Kalshi/Polymarket/Novig/ProphetX price)`,
+    ppFallback && `${ppFallback} game lines priced off PropProfessor's fair (no Pinnacle/prediction market)`,
     why.noProps && `${why.noProps} props on a book with props off`,
     why.odds && `${why.odds} outside ${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)} to ${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)}`,
     why.evCap && `${why.evCap} above ${cfg.maxEvPct}% EV`,

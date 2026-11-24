@@ -358,6 +358,9 @@ export function fairBreakdown(cfg, row) {
     return { how: `${avg ? 'Average' : 'Lowest'} no-vig win % of the reference books that agree (simple no-vig of each book's two sides)`, books };
   }
   const fc = row.fairCalc;
+  if (fc?.ppFallback) {
+    return { how: "PropProfessor's own no-vig fair: no Pinnacle price and no prediction market with enough money behind it", books: [{ name: 'PropProfessor', id: null, noVig: row.fairProb, role: 'fair', why: null }] };
+  }
   if (fc) {
     const pm = pmState(cfg, row);
     for (const [n, p] of Object.entries(fc.probs || {})) {
@@ -439,7 +442,9 @@ const watched = (cfg, row) => (row.isProp ? cfg.sharp.livePropNeeds : cfg.sharp.
  */
 export function makeSharpClock(cfg) {
   const seen = new Map();   // key -> { sig, changedAt, lastSeen }
-  const sigOf = (row) => watched(cfg, row).flatMap((n) => ids(cfg, n))
+  // A PropProfessor game line priced off PropProfessor's own fair (no sharp book listed): the live
+  // timing rule watches that fair instead (its no-vig odds), so it still needs a move in the last 5s.
+  const sigOf = (row) => row.ppFairFallback ? `pp:${Number(row.fairProb).toFixed(4)}` : watched(cfg, row).flatMap((n) => ids(cfg, n))
     .map((id) => { const pr = sharpPrice(cfg, row, id); return `${id}:${pr?.odds ?? ''}/${pr?.oppOdds ?? ''}`; }).join(',');
   return {
     update(rows, now = Date.now()) {
