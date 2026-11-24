@@ -12,7 +12,8 @@ const WS_URL = 'wss://api.hardrocksportsbook.com/graphql-ws';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const HEADERS = { accept: 'application/json', origin: 'https://app.hardrock.bet', referer: 'https://app.hardrock.bet/', 'user-agent': UA };
 const STATES = { CO: 'COLORADO' };
-const DEFAULT_SPORTS = ['BASKETBALL', 'AMERICAN_FOOTBALL', 'ICE_HOCKEY', 'BASEBALL', 'SOCCER'];
+// TENNIS added 2026-11-24 (PropProfessor sends tennis rows). "hardrock": {"feedSports": [...]} sets the list.
+const DEFAULT_SPORTS = ['BASKETBALL', 'AMERICAN_FOOTBALL', 'ICE_HOCKEY', 'BASEBALL', 'SOCCER', 'TENNIS'];
 
 /** Ladder rows -> Map rootIndex -> { decimal, american }. */
 export function parseLadder(j) {
