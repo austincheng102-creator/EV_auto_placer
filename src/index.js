@@ -349,6 +349,9 @@ async function tryBet(row, ctx) {
   catch (e) {
     ctx.outcome = 'check error';
     session.bookError(row.book, e.message);
+    // The book has paused its price checks (DraftKings after an HTTP 403 from its bot filter): it said
+    // so once; this bet waits for the pause to end instead of the usual 5 minutes.
+    if (e.paused) { ctx.outcome = 'paused'; ctx.pausedUntil = e.until; log.debug(`${book.label} ${desc(row)}: ${e.message}`); return false; }
     if (w) log.debug(`${book.label} ${desc(row)}: re-check error: ${e.message}`);
     else { log.header(headerText(row)); log.warn(`${book.label}: re-check error: ${e.message}`); }
     return false;
@@ -772,6 +775,7 @@ function startBet(row, scanAt, t = {}) {
       const now = Date.now();
       const w = watch.get(row.id);
       if (ok) watch.delete(row.id);
+      else if (ctx.pausedUntil) cooldown.set(row.id, ctx.pausedUntil);
       // A fresh-jump skip only waits for the jump to be freshJump.sec old, so it's watched on every book.
       else if ((book.freePriceCheck || ctx.outcome === 'fresh jump') && WATCH_MS > 0 && ctx.quote && (!ctx.sent || ctx.priceMoved) && (!w || now - w.since < WATCH_MS)) {
         if (!w) watch.set(row.id, { since: now, sig: ctx.sig });
