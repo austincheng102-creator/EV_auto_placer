@@ -180,12 +180,12 @@ export function makeResultSync({ cfg, bridge, root, dryRun = false, log, bets, b
             } catch (e) { log?.debug?.(`Results: couldn't look up ${label}'s unsettled bets: ${e.message}`); }
           }
           // DraftKings bets logged as waiting (decision not seen) with no DraftKings bet at all on that
-          // selection, stake and time a day later: DraftKings never took them (it declined), so they're
+          // selection, stake and time 6 hours later (they are live bets, so the game is over): DraftKings never took them (it declined), so they're
           // marked "not placed" (no profit, no expected profit) instead of staying open forever.
           if (src.loose) {
             const read = all.filter((r) => r.placedAt);
             const oldestRead = Math.min(...read.map((r) => Date.parse(r.placedAt)));
-            const gone = waiting.filter((b) => /waiting-/.test(b.betId) && !got.has(idRe.exec(b.betId)[1]) && t - Date.parse(b.placedAt) > DAY
+            const gone = waiting.filter((b) => /waiting-/.test(b.betId) && !got.has(idRe.exec(b.betId)[1]) && t - Date.parse(b.placedAt) > 6 * 3600e3
               && oldestRead < Date.parse(b.placedAt) - 3600e3
               && !read.some((r) => Math.abs(Date.parse(r.placedAt) - Date.parse(b.placedAt)) < 90e3 && (r.stake == null || Math.abs(r.stake - Number(b.stake)) < 0.005) && sameSelection(b, r)));
             if (gone.length) {
