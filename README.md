@@ -388,8 +388,13 @@ links for each book. Arbitrage-table props are priced off `arbProps.refBooks` th
 ```json
 "propprofessor": { "live": true, "pregame": true, "arbPregame": true, "arbLive": true,
                    "openTabs": true, "liveMaxAgeSec": 600, "pregameMaxAgeSec": 1800,
-                   "pregameEverySec": 10 }
+                   "pregameEverySec": 10, "fairFallback": true }
 ```
+PropProfessor sends no Pinnacle prices, so with `"fairFallback": true` (the default) a game line
+(spread, total, moneyline) that has no Pinnacle and no prediction market with enough money behind it
+uses PropProfessor's own no-vig fair instead of being skipped. Every other rule still applies (min EV,
+soft-book check, live timing, which then watches PropProfessor's fair for a move). Player props still
+need FanDuel. `false` skips those game lines, as before.
 On the first run, a sample of each table is saved next to the app
 (`propprofessor-sample-ev-pregame.json` and so on), to check how it was read.
 

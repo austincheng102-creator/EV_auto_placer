@@ -181,6 +181,7 @@
     "openTabs": true,
     "liveMaxAgeSec": 600,
     "pregameMaxAgeSec": 1800,
-    "pregameEverySec": 10
+    "pregameEverySec": 10,
+    "fairFallback": true
   }
 }
