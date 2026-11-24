@@ -1063,7 +1063,7 @@ const jwtExp = (tok) => {
 // debugger (chrome.debugger), which Chrome treats as real mouse/keyboard input. While it runs
 // (a few seconds) Chrome shows a bar "EV Placer Bridge started debugging this browser"; it goes
 // away by itself. Off with config.json "session": {"gambitAutoLogin": false}.
-let settings = { gambitAutoLogin: true, fanduelGeoRenew: true, betriversGeoRenew: true, betmgmGeoRenew: true, betmgmGeoClick: true, betmgmAutoLogin: true, thescoreGeoRenew: true, draftkingsPlaySpan: true, draftkingsGeoRenew: true };
+let settings = { gambitAutoLogin: true, fanduelGeoRenew: true, betriversGeoRenew: true, betmgmGeoRenew: true, betmgmGeoClick: true, betmgmAutoLogin: true, thescoreGeoRenew: true, thescoreAutoLogin: true, draftkingsPlaySpan: true, draftkingsGeoRenew: true };
 chrome.storage.local.get('settings').then((v) => { if (v?.settings) settings = { ...settings, ...v.settings }; }).catch(() => {});
 let lastLogin = null;          // { at, ok, why } for the popup
 let loginBusy = false;
@@ -1292,7 +1292,8 @@ async function reloadTab(book, why) {
 // minutes kept it logged in past 50 minutes). So every few minutes we give each site's tab a
 // small, harmless sign of use: the pointer moves and Shift is tapped. Nothing is clicked or typed.
 const NUDGE_MS = 4 * 60e3;
-const NUDGE_BOOKS = ['hardrock', 'gambit'];
+// theScore too: its page logs you out after 15 minutes with no key or mouse press (see autoLoginTheScore).
+const NUDGE_BOOKS = ['hardrock', 'gambit', 'thescore'];
 const nudgedAt = {};
 function nudgePage() {
   const x = 40 + Math.round(Math.random() * 300), y = 40 + Math.round(Math.random() * 200);
@@ -1474,6 +1475,120 @@ async function autoLoginBetMGM() {
   }
 }
 
+// theScore logs you out after 15 minutes with no mouse or keyboard use in its tab (Austin,
+// 2026-11-24). From theScore's own page code: its Startup answer has inactivityThresholdMinutes 15,
+// and the page runs a 15-minute timer that only a keydown / mousedown / touchstart on the window
+// resets; when it runs out the page itself logs you out ("You have been logged out due to
+// inactivity") and goes to /login. The tab nudges (NUDGE_BOOKS) now include theScore, which keeps
+// that timer from running out. If it still logs out (PC asleep, the site ended the login), this
+// logs back in on theScore's /login page: real clicks through Chrome's debugger so Chrome fills
+// the saved email and password, then "Log In". If Chrome doesn't fill them, a password saved in the
+// extension popup (kept only in this Chrome, never sent to the app) is typed in instead.
+// Off with config.json "session": {"thescoreAutoLogin": false}. Only while the app is running.
+// Pace: checking the page costs theScore nothing, so a try that never pressed Log In repeats every
+// 15 seconds (once a minute after 20 in a row). Pressing Log In and still being refused waits
+// 5 minutes, then 30 minutes after 2 in a row: repeated wrong-password logins can lock the account.
+const tsLogin = { busy: false, triedAt: 0, fails: 0, subFails: 0, submitted: false, last: null, timer: null, saidAt: 0, said: '' };
+const tsLoginGap = () => (tsLogin.subFails ? (tsLogin.subFails >= 2 ? 30 * 60e3 : 5 * 60e3) : tsLogin.fails >= 20 ? 60e3 : 15e3);
+async function autoLoginTheScore() {
+  if (settings.thescoreAutoLogin === false || tsLogin.busy || ws?.readyState !== 1) return;
+  const t = (await bookTabs()).find((x) => x.book === 'thescore');
+  if (!t || t.discarded || dbgBusy.has(t.id) || geoKeepers.thescore.job || placing.thescore > 0) return;
+  let f = await inPage(t.id, false).catch(() => ({ state: 'no-page' }));
+  if (f.state === 'logged-in' || f.state === 'no-page') return;
+  if (Date.now() - tsLogin.triedAt < tsLoginGap() - 500) return;
+  if (!chrome.debugger) return;
+  tsLogin.busy = true; tsLogin.triedAt = Date.now();
+  const note = (text, level = 'warn') => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book: 'thescore', level, text })); };
+  const done = (ok, why) => {
+    tsLogin.last = { at: Date.now(), ok, why };
+    tsLogin.fails = ok ? 0 : tsLogin.fails + 1;
+    tsLogin.subFails = ok ? 0 : tsLogin.submitted ? tsLogin.subFails + 1 : tsLogin.subFails;
+    if (ok) { tsLogin.said = ''; return note(`theScore: ${why}`, 'good'); }
+    if (why === tsLogin.said && Date.now() - tsLogin.saidAt < 60e3) return;
+    tsLogin.said = why; tsLogin.saidAt = Date.now();
+    const gap = tsLoginGap();
+    note(`theScore auto login failed: ${why}. Trying again in ${gap >= 60e3 ? `${gap / 60e3} min` : `${gap / 1000}s`}`);
+  };
+  tsLogin.submitted = false;
+  const target = { tabId: t.id };
+  let attached = false, back = null;
+  dbgBusy.add(t.id);
+  try {
+    // Chrome fills saved passwords (and opens its list) only in a tab that's in front: bring it
+    // forward for the login, then go back to the tab you had open.
+    const tb = await chrome.tabs.get(t.id).catch(() => null);
+    const win = tb && await chrome.windows.get(tb.windowId).catch(() => null);
+    const [cur] = tb ? await chrome.tabs.query({ active: true, windowId: tb.windowId }) : [];
+    back = { tabId: cur && cur.id !== t.id ? cur.id : null, windowId: tb?.windowId, minimized: win?.state === 'minimized' };
+    await chrome.tabs.update(t.id, { active: true }).catch(() => {});
+    if (tb) await chrome.windows.update(tb.windowId, { focused: true, ...(back.minimized ? { state: 'normal' } : {}) }).catch(() => {});
+    await sleep(800);
+    if (!tsLogin.fails) note('theScore is logged out: logging back in', 'info');
+    f = await inPage(t.id, true);   // on another page: presses its "Log In" button, which opens /login
+    if (f.state !== 'form' || !f.pass) return done(false, f.state === 'no-form' ? 'pressed Log In but no login box showed up' : `couldn't find the login box (${f.state})`);
+    if (f.captcha) return done(false, 'theScore is showing an "are you a robot" check: log in by hand');
+    await new Promise((res, rej) => chrome.debugger.attach(target, '1.3', () => (chrome.runtime.lastError ? rej(new Error(chrome.runtime.lastError.message)) : res())));
+    attached = true;
+    await dbgCmd(target, 'Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
+    // A real click in the password box: Chrome now lets the page see what it filled in.
+    await realClick(target, f.pass);
+    await sleep(1000);
+    let g = await inPage(t.id, true);
+    if (g.state === 'form' && (!g.passLen || !g.userLen) && g.user) {
+      // Not filled: pick the saved login from Chrome's list under the email box (Down, Enter).
+      await realClick(target, g.user);
+      await sleep(800);
+      await realKey(target, 'ArrowDown', 'ArrowDown', 40);
+      await sleep(300);
+      await realKey(target, 'Enter', 'Enter', 13, '\r');
+      await sleep(1000);
+      g = await inPage(t.id, true);
+    }
+    const saved = (await chrome.storage.local.get('tsLogin').catch(() => ({}))).tsLogin;
+    if (g.state === 'form' && !g.passLen && saved?.pass) {
+      // Chrome's list didn't take it: type the login saved in the extension popup.
+      if (!g.userLen && saved.email && g.user) { await realClick(target, g.user); await sleep(300); await dbgCmd(target, 'Input.insertText', { text: saved.email }); await sleep(300); }
+      await realClick(target, g.pass);
+      await sleep(300);
+      await dbgCmd(target, 'Input.insertText', { text: saved.pass });
+      await sleep(800);
+      g = await inPage(t.id, true);
+    }
+    if (g.state === 'logged-in') return done(true, 'logged back in with Chrome\'s saved password');
+    if (g.state !== 'form') return done(false, `the login box closed unexpectedly (${g.state})`);
+    if (!g.userLen || !g.passLen) {
+      return done(false, `Chrome didn't fill in the saved ${!g.userLen ? 'email' : 'password'}. Check chrome://password-manager has a login for thescore.bet, or save it in the extension popup ("theScore auto login")`);
+    }
+    if (!g.submit) return done(false, 'couldn\'t find the Log In button');
+    tsLogin.submitted = true;
+    await realClick(target, g.submit);
+    for (let i = 0; i < 20; i++) {
+      await sleep(1000);
+      const h = await inPage(t.id, false).catch(() => ({}));
+      if (h.state === 'logged-in') {
+        // Still on /login after logging in: go to the sportsbook home page (the location check runs there).
+        const now = await chrome.tabs.get(t.id).catch(() => null);
+        if (now && /\/login/.test(new URL(now.url || 'https://x/').pathname)) chrome.tabs.update(t.id, { url: 'https://sportsbook.thescore.bet/' }).catch(() => {});
+        return done(true, 'logged back in with Chrome\'s saved password');
+      }
+    }
+    done(false, 'pressed Log In but theScore still shows the login box (wrong saved password, or theScore wants a code)');
+  } catch (e) {
+    done(false, String(e?.message || e).includes('Another debugger') ? 'Chrome DevTools is open on the theScore tab: close it' : String(e?.message || e));
+  } finally {
+    if (attached) chrome.debugger.detach(target, () => void chrome.runtime.lastError);
+    if (back?.tabId) await chrome.tabs.update(back.tabId, { active: true }).catch(() => {});
+    if (back?.minimized) await chrome.windows.update(back.windowId, { state: 'minimized' }).catch(() => {});
+    dbgBusy.delete(t.id);
+    tsLogin.busy = false;
+    if (tsLogin.last && !tsLogin.last.ok && Date.now() - tsLogin.last.at < 5e3) {
+      clearTimeout(tsLogin.timer);
+      tsLogin.timer = setTimeout(() => autoLoginTheScore().catch(() => {}), tsLoginGap());
+    }
+  }
+}
+
 async function watchLogins() {
   await keepTabsLoaded();
   await keepDkSpan().catch(() => {});
@@ -1481,6 +1596,7 @@ async function watchLogins() {
   await keepFdGeo().catch(() => {});
   await keepBrGeo().catch(() => {});
   await autoLoginBetMGM().catch(() => {});
+  await autoLoginTheScore().catch(() => {});
   for (const k of Object.values(geoKeepers)) await k.keep().catch(() => {});
   const now = Date.now() / 1000;
   // A token that ran out over 10 minutes ago means reloading didn't bring the login back: you're
@@ -1997,6 +2113,7 @@ function connect() {
     else if (m.type === 'mgmGeoRenew') geoKeepers.betmgm.refused(m.why);
     else if (m.type === 'geoRenew' && geoKeepers[m.book]) geoKeepers[m.book].refused(m.why);
     else if (m.type === 'login' && m.book === 'gambit') autoLoginGambit(m.why || 'the app found it logged out').catch(() => {});
+    else if (m.type === 'login' && m.book === 'thescore') autoLoginTheScore().catch(() => {});
     else if (m.type === 'settings') { settings = { ...settings, ...m.settings }; chrome.storage.local.set({ settings }).catch(() => {}); }
   };
   ws.onclose = () => { status = 'disconnected'; ws = null; setTimeout(connect, 3000); };
@@ -2009,7 +2126,7 @@ chrome.tabs.onUpdated.addListener((_id, info) => { if (info.url || info.status =
 chrome.tabs.onRemoved.addListener(sendTabs);
 chrome.runtime.onMessage.addListener((m, _s, respond) => {
   if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth, betriversLogin: !!kambiAuth, betriversRenewedAt: kambiRenewedAt, hardrockLogin: !!hrAuth.session, hardrockGeo: hrAuth.geoAt || 0,
-    fanduelExp: jwtExp(fdAuth.auth), fanduelGeoExp: fdGeoExp(fdAuth.geo), fanduelGeoLast: fdGeoLast, betriversGeoExp: brGeo.status === 'ALLOWED' ? brGeo.expires || 0 : 0, betriversGeoSeen: !!(brGeo.at || brGeo.flagAt), betriversGeoLast: brGeoLast, betmgmGeoNext: geoKeepers.betmgm.g.nextAt || 0, betmgmGeoLast: geoKeepers.betmgm.last, thescoreGeoNext: geoKeepers.thescore.g.nextAt || 0, thescoreGeoLast: geoKeepers.thescore.last,
+    fanduelExp: jwtExp(fdAuth.auth), fanduelGeoExp: fdGeoExp(fdAuth.geo), fanduelGeoLast: fdGeoLast, betriversGeoExp: brGeo.status === 'ALLOWED' ? brGeo.expires || 0 : 0, betriversGeoSeen: !!(brGeo.at || brGeo.flagAt), betriversGeoLast: brGeoLast, betmgmGeoNext: geoKeepers.betmgm.g.nextAt || 0, betmgmGeoLast: geoKeepers.betmgm.last, thescoreGeoNext: geoKeepers.thescore.g.nextAt || 0, thescoreGeoLast: geoKeepers.thescore.last, thescoreLogin: tsLogin.last,
     gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, dkSpanLeft: dkSpan.left, dkSpanAt: dkSpan.at, dkSpanRenewedAt: dkSpan.renewedAt, betmgmLogin: !!bmAuth.xsrf, betmgmHeaders: Object.keys(bmAuth.headers || {}), thescoreHeaders: Object.keys(tsAuth.headers), alert: alertText, lastReload, lastLogin, autoLogin: settings.gambitAutoLogin })); return true; }
 });
 // Keep the service worker alive while the engine runs.

@@ -31,6 +31,7 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
   const label = (site) => (site === 'gambit' ? 'Gambit' : site === 'propprofessor' ? 'PropProfessor' : labels[site] || site);
   const howToFix = (site) => site === 'gambit' ? (s.gambitAutoLogin !== false ? 'The extension is logging back in with your Chrome-saved password; if that keeps failing, log in again in the Gambit tab' : 'Log in again in the Gambit tab')
     : site === 'propprofessor' ? 'Log in again in a PropProfessor tab (the extension reads the tables from it)'
+    : site === 'thescore' && s.thescoreAutoLogin !== false ? 'The extension is logging back in with your Chrome-saved password; if that keeps failing, log in again in the theScore tab'
     : site === 'hardrock' ? 'Log in again in the Hard Rock tab, then place one small bet by hand for the location check'
     : `Log in again in the ${label(site)} tab`;
 
@@ -55,6 +56,8 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
       alarm(site, why);
       // The site may still have you logged in under the hood: a reload lets it renew from its cookies.
       if (site === 'gambit' && gambitAutoLogin) fixGambit(`the app found it logged out (${why})`);
+      // theScore: the extension logs back in on its /login page (it checks the page itself too).
+      if (site === 'thescore' && s.thescoreAutoLogin !== false) bridge?.tell({ type: 'login', book: 'thescore', why });
       else if (reloadTabs && !needsGeo(why)) bridge?.tell({ type: 'reloadTab', book: site, why: `the app found it logged out (${why})` });
     } else if (Date.now() - d.remindedAt >= remindMs) {
       d.remindedAt = Date.now(); d.why = why;
