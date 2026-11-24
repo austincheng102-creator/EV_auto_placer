@@ -19,6 +19,7 @@
 //            side, so the bet request carries nothing for it.
 
 import { decimalToAmerican, americanToDecimal } from '../ev.js';
+import { log } from '../log.js';
 
 const XSRF = '{{bmXsrf}}';
 
@@ -311,23 +312,55 @@ export function makeBetMGM(name, label, cfg, bridge) {
       throw err;
     },
 
+    // One page of My Bets (typeFilter 'Settled' or 'Open'), newest first.
+    async myBets(typeFilter, page, per) {
+      const res = await send('history', `${origin}/en/sports/api/mybets/betslips`, 'POST',
+        JSON.stringify({ index: page, maxItems: per, typeFilter, eventIds: [], useGroupedView: true, paging: { count: per, lastBetByBettingPlatformInstanceIds: {} } }),
+        { 'x-xsrf-token': XSRF }, 30000);
+      if (authFail(res)) throw new Error(loginMsg);
+      const list = res.json?.betslips;
+      if (res.status >= 400 || !Array.isArray(list)) throw new Error(`${typeFilter.toLowerCase()} bets HTTP ${res.status}: ${String(JSON.stringify(res.json) || res.text || '').slice(0, 200)}`);
+      return list;
+    },
+
     // Settled bets placed since `from` (ms), from the same list as My Bets > Settled (newest
     // first, read a page at a time). Read-only, so it works while the extension is disarmed.
+    // If a page brings nothing new (BetMGM ignoring the page number), one big page is read instead,
+    // so bets further down the list aren't missed.
     async settled(from) {
-      const out = [];
       const per = b.settledPageSize || 50;
+      const seen = new Map();
+      const take = (list) => { let n = 0; for (const x of list) if (x?.betSlipNumber && !seen.has(x.betSlipNumber)) { seen.set(x.betSlipNumber, x); n++; } return n; };
       for (let page = 1; page <= 20; page++) {
-        const res = await send('history', `${origin}/en/sports/api/mybets/betslips`, 'POST',
-          JSON.stringify({ index: page, maxItems: per, typeFilter: 'Settled', eventIds: [], useGroupedView: true, paging: { count: per, lastBetByBettingPlatformInstanceIds: {} } }),
-          { 'x-xsrf-token': XSRF }, 30000);
-        if (authFail(res)) throw new Error(loginMsg);
-        const list = res.json?.betslips;
-        if (res.status >= 400 || !Array.isArray(list)) throw new Error(`settled bets HTTP ${res.status}: ${String(JSON.stringify(res.json) || res.text || '').slice(0, 200)}`);
-        for (const x of list) { const r = settledSlip(x); if (r) out.push(r); }
+        const list = await this.myBets('Settled', page, per);
+        const fresh = take(list);
+        if (page > 1 && !fresh && list.length) {
+          const big = await this.myBets('Settled', 1, per * 10);
+          const more = take(big);
+          log.debug(`BetMGM settled list: page ${page} repeated earlier pages; read one page of ${per * 10} instead (${big.length} slips, ${more} new)`);
+          break;
+        }
         const oldest = Math.min(...list.map((x) => Date.parse(x.conclusionDateUtc)).filter(Number.isFinite));
         if (list.length < per || (Number.isFinite(oldest) && oldest < from)) break;
       }
-      return out;
+      return [...seen.values()].map(settledSlip).filter(Boolean);
+    },
+
+    // Where are these bets on BetMGM? For bets still unsettled long after they were placed: open, in the
+    // settled list in a form we don't read, or not listed at all. Text for the log.
+    async whereAre(ids) {
+      const per = b.settledPageSize || 50;
+      const where = new Map();
+      for (const [type, pages] of [['Open', 4], ['Settled', 6]]) {
+        for (let page = 1; page <= pages; page++) {
+          const list = await this.myBets(type, page, per);
+          for (const x of list) if (ids.includes(String(x.betSlipNumber)) && !where.has(String(x.betSlipNumber))) {
+            where.set(String(x.betSlipNumber), `${type} list, state ${x.state}, ${(x.bets || []).length} bets, outcome ${(x.bets || []).map((y) => y.state || y.outcome).join('/')}`);
+          }
+          if (list.length < per) break;
+        }
+      }
+      return ids.map((id) => `${id}: ${where.get(id) || 'not in the open or settled list (first pages)'}`);
     },
 
     // Once a minute (session.js): the balance (read-only, the site reads it all the time) tells us

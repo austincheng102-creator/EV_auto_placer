@@ -386,7 +386,7 @@ function stats(list) {
     avgEv: list.length ? sum(list, (b) => b.ev) / list.length : null,
     clv: withClv.length ? sum(withClv, (b) => b.clv) / withClv.length : null, nClv: withClv.length,
     open: list.length - settled.length,
-    record: [['won', 'half-won'], ['lost', 'half-lost'], ['push', 'void']].map((rs) => list.filter((b) => rs.includes(b.result)).length),
+    record: [['won', 'half-won'], ['lost', 'half-lost'], ['push', 'void', 'not placed']].map((rs) => list.filter((b) => rs.includes(b.result)).length),
   };
 }
 
@@ -606,7 +606,7 @@ function table(list) {
       } else if (i === 9) {
         if (LIVE) {
           const sel = document.createElement('select');
-          for (const [v, t] of [['', 'not settled'], ['won', 'won'], ['lost', 'lost'], ['push', 'push'], ['void', 'void'], ['half-won', 'half won'], ['half-lost', 'half lost'], ['cashout', 'cashed out']]) {
+          for (const [v, t] of [['', 'not settled'], ['won', 'won'], ['lost', 'lost'], ['push', 'push'], ['void', 'void'], ['half-won', 'half won'], ['half-lost', 'half lost'], ['cashout', 'cashed out'], ['not placed', 'not placed']]) {
             const o = document.createElement('option'); o.value = v; o.textContent = t; if ((b.result || '') === v) o.selected = true; sel.append(o);
           }
           sel.onchange = () => setResult(b.key, sel.value, sel);

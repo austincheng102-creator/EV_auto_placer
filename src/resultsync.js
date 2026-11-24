@@ -93,7 +93,7 @@ export function makeResultSync({ cfg, bridge, root, dryRun = false, log, bets, b
     { book: 'betmgm', idRe: /^betmgm:([0-9A-Z]{6,})(?: |$)/, api: books.betmgm?.settled ? books.betmgm : makeBetMGM('betmgm', 'BetMGM', cfg, bridge) },
   ];
   const warned = new Set();
-  const lastTry = {}, lastOk = {}, toldOld = {};
+  const lastTry = {}, lastOk = {}, toldOld = {}, lastWhere = {};
   let running = false;
 
   /** Bets per book still waiting for a result (placed within the look-back window). */
@@ -168,6 +168,30 @@ export function makeResultSync({ cfg, bridge, root, dryRun = false, log, bets, b
           const old = waiting.filter((b) => !got.has(idRe.exec(b.betId)[1]) && t - Date.parse(b.placedAt) > DAY);
           if (old.length && old.length !== toldOld[book]) {
             log?.warn(`Results: ${old.length} ${label} bet${old.length === 1 ? '' : 's'} placed over a day ago still not in ${label}'s settled list (oldest ${old[0].placedAt}, ${old[0].betId})`);
+          }
+          // Bets still missing 8h after they were placed: ask the book where they are (once an hour), into debug.log.
+          const late = waiting.filter((b) => !got.has(idRe.exec(b.betId)[1]) && t - Date.parse(b.placedAt) > 8 * 3600e3);
+          if (late.length && src.api.whereAre && !(lastWhere[book] > t - 3600e3)) {
+            lastWhere[book] = t;
+            try {
+              const lines = await src.api.whereAre(late.slice(0, 30).map((b) => idRe.exec(b.betId)[1]));
+              log?.warn(`Results: ${late.length} ${label} bet${late.length === 1 ? '' : 's'} still unsettled 8h+ after placing; where ${label} has them is in debug.log`);
+              log?.debug?.(`Results: ${label} unsettled bets: ${lines.join('; ')}`);
+            } catch (e) { log?.debug?.(`Results: couldn't look up ${label}'s unsettled bets: ${e.message}`); }
+          }
+          // DraftKings bets logged as waiting (decision not seen) with no DraftKings bet at all on that
+          // selection, stake and time a day later: DraftKings never took them (it declined), so they're
+          // marked "not placed" (no profit, no expected profit) instead of staying open forever.
+          if (src.loose) {
+            const read = all.filter((r) => r.placedAt);
+            const oldestRead = Math.min(...read.map((r) => Date.parse(r.placedAt)));
+            const gone = waiting.filter((b) => /waiting-/.test(b.betId) && !got.has(idRe.exec(b.betId)[1]) && t - Date.parse(b.placedAt) > DAY
+              && oldestRead < Date.parse(b.placedAt) - 3600e3
+              && !read.some((r) => Math.abs(Date.parse(r.placedAt) - Date.parse(b.placedAt)) < 90e3 && (r.stake == null || Math.abs(r.stake - Number(b.stake)) < 0.005) && sameSelection(b, r)));
+            if (gone.length) {
+              const n2 = store.setMany(gone.map((b) => ({ key: betKey(b), result: 'not placed', payout: null, odds: null, settledAt: null })));
+              if (n2) log?.info(`Results: ${n2} ${label} bet${n2 === 1 ? '' : 's'} marked not placed (${label} has no such bet; it declined after the live delay)`);
+            }
           }
           toldOld[book] = old.length;
         } catch (e) {
