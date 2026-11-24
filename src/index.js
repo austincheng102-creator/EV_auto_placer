@@ -221,7 +221,7 @@ const bridge = needBridge ? startBridge(cfg.bridgePort || 8765, { reloadExtensio
     thescoreGeoRenew: cfg.session?.thescoreGeoRenew !== false, draftkingsPlaySpan: cfg.session?.draftkingsPlaySpan !== false, draftkingsGeoRenew: cfg.session?.draftkingsGeoRenew !== false } } }) : null;
 const gambitSource = useGambit ? makeGambitSource(cfg, bridge, { root, log }) : null;
 if (gambitSource) Object.assign(gambitSource, { name: 'gambit', label: 'Gambit' });
-const ppSource = usePP ? makePropProfessorSource(cfg, bridge, { root, log }) : null;
+const ppSource = usePP ? makePropProfessorSource(cfg, bridge, { root, log, standalone: !gambitSource }) : null;
 // "both": a failing source is reported to the session watch (logged-out alarm) without stopping the other.
 const sourceError = (n, e) => (n === 'propprofessor' ? session.propprofessor(e) : session.gambit(e));
 const source = useMock ? Object.assign(makeMockSource(cfg), { label: 'mock feed' })
@@ -649,13 +649,19 @@ const sharpTooOld = (r) => {
   return !(a != null && a <= lim);
 };
 
+const bothWarnedAt = new Map();
 async function tick() {
   if (state.day !== today()) { state.day = today(); state.staked = 0; save(); }
   let rows;
   const tickAt = Date.now();
   try {
     rows = await source.fetchRows();
-    if (source.name === 'both') { for (const e of rows.errors || []) log.warn(`${e} (using the other source this scan)`); }
+    if (source.name === 'both') {
+      for (const e of rows.errors || []) {
+        // One line a minute per error, not one per scan.
+        if (Date.now() - (bothWarnedAt.get(e.text) || 0) > 60e3) { bothWarnedAt.set(e.text, Date.now()); log.warn(`${e.text} (using the other source this scan)`); }
+      }
+    }
     else sourceError(source.name, null);
   } catch (e) {
     log.err(`${source.label || 'Gambit'} fetch failed: ${e.message}`);

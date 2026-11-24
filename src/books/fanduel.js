@@ -86,7 +86,9 @@ export function sameGame(fdName, gambitName) {
   const a = String(fdName).split(' @ '), b = String(gambitName).split(' @ ');
   if (a.length !== 2 || b.length !== 2) return false;
   const inside = (x, y) => { const wy = new Set(words(y)); const wx = words(x); return wx.length > 0 && wx.every((w) => wy.has(w)); };
-  return [0, 1].every((i) => inside(a[i], b[i]) || inside(b[i], a[i]));
+  const same = (x, y) => inside(x, y) || inside(y, x);
+  // Either order: PropProfessor's game names don't always put the away team first.
+  return (same(a[0], b[0]) && same(a[1], b[1])) || (same(a[0], b[1]) && same(a[1], b[0]));
 }
 
 // Gambit market key -> which FanDuel markets can be the same bet: the kind (FanDuel marketType
@@ -243,7 +245,8 @@ export function makeFanDuel(name, label, cfg, bridge) {
     const oneSide = (e) => { const a = String(e.name).split(' @ '), b = String(row.event).split(' @ ');
       const inside = (x, y) => { const wy = new Set(words(y)); const wx = words(x); return wx.length > 0 && wx.every((w) => wy.has(w)); };
       const share = (x, y) => { const wy = new Set(words(y)); return words(x).some((w) => wy.has(w)); };
-      return a.length === 2 && b.length === 2 && [0, 1].some((i) => (inside(a[i], b[i]) || inside(b[i], a[i])) && share(a[1 - i], b[1 - i])); };
+      const one = (bb) => [0, 1].some((i) => (inside(a[i], bb[i]) || inside(bb[i], a[i])) && share(a[1 - i], bb[1 - i]));
+      return a.length === 2 && b.length === 2 && (one(b) || one([b[1], b[0]])); };
     const soon = (e) => Number.isFinite(start) && Math.abs(Date.parse(e.openDate) - start) <= 30 * 60e3;
     const byHalf = events.filter((e) => soon(e) && oneSide(e));
     const hit = byName.length === 1 ? byName[0] : byTeam.length === 1 ? byTeam[0] : byName.find((e) => byTeam.includes(e))

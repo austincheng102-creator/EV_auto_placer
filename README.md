@@ -384,7 +384,8 @@ links for each book. Arbitrage-table props are priced off `arbProps.refBooks` th
 
 ```json
 "propprofessor": { "live": true, "pregame": true, "arbPregame": true, "arbLive": true,
-                   "openTabs": true, "liveMaxAgeSec": 30, "pregameMaxAgeSec": 180, "preferInBoth": false }
+                   "openTabs": true, "liveMaxAgeSec": 600, "pregameMaxAgeSec": 1800,
+                   "pregameEverySec": 10, "preferInBoth": false }
 ```
 On the first run, a sample of each table is saved next to the app
 (`propprofessor-sample-ev-pregame.json` and so on), to check how it was read.
