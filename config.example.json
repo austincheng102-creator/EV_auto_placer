@@ -181,7 +181,6 @@
     "openTabs": true,
     "liveMaxAgeSec": 600,
     "pregameMaxAgeSec": 1800,
-    "pregameEverySec": 10,
-    "preferInBoth": false
+    "pregameEverySec": 10
   }
 }

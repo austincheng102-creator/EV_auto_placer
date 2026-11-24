@@ -9,7 +9,6 @@ import { makeGambitSource } from './sources/gambit.js';
 import { arbStats } from './sources/gambit-arbs.js';
 import { makeMockSource } from './sources/mock.js';
 import { makePropProfessorSource } from './sources/propprofessor.js';
-import { makeCombinedSource } from './sources/combined.js';
 import { startBridge } from './books/bridge.js';
 import { makeBooks, parseBooks, BOOK_LABELS, propsOff } from './books/index.js';
 import { makeResultSync } from './resultsync.js';
@@ -207,12 +206,14 @@ try {
 } catch (e) { log.err(e.message); process.exit(1); }
 
 // Where the +EV rows come from: "source" in config.json (or --source): "gambit" (default),
-// "propprofessor", or "both". "mock" is the fake feed for dry runs.
+// or "propprofessor". One source per run: the two never share rows, names or prices.
+// "mock" is the fake feed for dry runs.
 const sourceName = String(opt('--source', cfg.source || 'gambit')).toLowerCase().replace(/[^a-z]/g, '');
 const useMock = sourceName === 'mock';
-const usePP = ['propprofessor', 'both'].includes(sourceName);
-const useGambit = !useMock && sourceName !== 'propprofessor';
-if (!useMock && !['gambit', 'propprofessor', 'both'].includes(sourceName)) { log.err(`"source": "${sourceName}" isn't known: use "gambit", "propprofessor" or "both"`); process.exit(1); }
+const usePP = sourceName === 'propprofessor';
+const useGambit = sourceName === 'gambit';
+if (sourceName === 'both') { log.err('"source": "both" was removed: Gambit and PropProfessor now run separately. Use "gambit" or "propprofessor".'); process.exit(1); }
+if (!useMock && !['gambit', 'propprofessor'].includes(sourceName)) { log.err(`"source": "${sourceName}" isn't known: use "gambit" or "propprofessor"`); process.exit(1); }
 // The extension is needed to place bets, and also to read Gambit / PropProfessor through your logged-in tabs.
 const needBridge = !dryRun || usePP || (useGambit && (cfg.gambit?.via || 'extension') === 'extension');
 const bridge = needBridge ? startBridge(cfg.bridgePort || 8765, { reloadExtension: extensionChanged,
@@ -221,11 +222,9 @@ const bridge = needBridge ? startBridge(cfg.bridgePort || 8765, { reloadExtensio
     thescoreGeoRenew: cfg.session?.thescoreGeoRenew !== false, draftkingsPlaySpan: cfg.session?.draftkingsPlaySpan !== false, draftkingsGeoRenew: cfg.session?.draftkingsGeoRenew !== false } } }) : null;
 const gambitSource = useGambit ? makeGambitSource(cfg, bridge, { root, log }) : null;
 if (gambitSource) Object.assign(gambitSource, { name: 'gambit', label: 'Gambit' });
-const ppSource = usePP ? makePropProfessorSource(cfg, bridge, { root, log, standalone: !gambitSource }) : null;
-// "both": a failing source is reported to the session watch (logged-out alarm) without stopping the other.
+const ppSource = usePP ? makePropProfessorSource(cfg, bridge, { root, log }) : null;
 const sourceError = (n, e) => (n === 'propprofessor' ? session.propprofessor(e) : session.gambit(e));
 const source = useMock ? Object.assign(makeMockSource(cfg), { label: 'mock feed' })
-  : gambitSource && ppSource ? makeCombinedSource(cfg, [gambitSource, ppSource], { onError: (n, e) => sourceError(n, e) })
   : gambitSource || ppSource;
 const books = makeBooks(cfg, bridge, dryRun);
 for (const b of Object.values(books)) {
@@ -649,24 +648,16 @@ const sharpTooOld = (r) => {
   return !(a != null && a <= lim);
 };
 
-const bothWarnedAt = new Map();
 async function tick() {
   if (state.day !== today()) { state.day = today(); state.staked = 0; save(); }
   let rows;
   const tickAt = Date.now();
   try {
     rows = await source.fetchRows();
-    if (source.name === 'both') {
-      for (const e of rows.errors || []) {
-        // One line a minute per error, not one per scan.
-        if (Date.now() - (bothWarnedAt.get(e.text) || 0) > 60e3) { bothWarnedAt.set(e.text, Date.now()); log.warn(`${e.text} (using the other source this scan)`); }
-      }
-    }
-    else sourceError(source.name, null);
+    sourceError(source.name, null);
   } catch (e) {
     log.err(`${source.label || 'Gambit'} fetch failed: ${e.message}`);
-    if (source.name === 'both') sourceError('gambit', e), sourceError('propprofessor', e);
-    else sourceError(source.name, e);
+    sourceError(source.name, e);
     return;
   }
   // Closing line value: follow Gambit's fair price for bets already placed.

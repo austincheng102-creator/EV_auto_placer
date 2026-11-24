@@ -1,5 +1,5 @@
-// PropProfessor (propprofessor.com) as a source of +EV rows, next to or instead of Gambit.
-// config.json: "source": "gambit" (default) | "propprofessor" | "both".
+// PropProfessor (propprofessor.com) as a source of +EV rows, instead of Gambit (never both at once:
+// the two run separately and share nothing). config.json: "source": "gambit" (default) | "propprofessor".
 //
 // How the rows get here: PropProfessor's own pages (Positive EV, Arbitrage) keep their table in the
 // page, fed live by PropProfessor's servers. The Chrome extension reads that table out of your open,
@@ -289,7 +289,7 @@ export function tableFreshAt(t) {
   return at;
 }
 
-export function makePropProfessorSource(cfg, bridge, { root = null, log = null, standalone = true } = {}) {
+export function makePropProfessorSource(cfg, bridge, { root = null, log = null } = {}) {
   const p = cfg.propprofessor || {};
   const ourBooks = (cfg.books || []).filter((b) => Object.values(PP_BOOKS).includes(b));
   const arb = arbDefaults(cfg);
@@ -358,8 +358,7 @@ export function makePropProfessorSource(cfg, bridge, { root = null, log = null, 
       arbFair = nextArbFair;
       if (this.arb) {
         arbState.rows = out.filter((r) => r.arb).length; arbState.error = null;
-        // In "both" mode the scan line's arbitrage counts stay Gambit's (it writes them itself).
-        if (standalone) Object.assign(arbStats, ast);
+        Object.assign(arbStats, ast);
       }
       return out;
     },

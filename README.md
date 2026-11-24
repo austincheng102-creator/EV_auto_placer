@@ -351,16 +351,16 @@ from `bets.json`, so the running placer never overwrites them.
 - A read-only copy is saved as `bets.html` and opens on its own later.
 - Bets placed before the bet log existed (from `state.json`) are included.
 
-## Odds source: Gambit, PropProfessor or both
+## Odds source: Gambit or PropProfessor
 Where the +EV rows come from is one line in config.json:
 ```json
 "source": "gambit"
 ```
 - `"gambit"` (default): Gambit's +EV and arbitrage tables, as before.
 - `"propprofessor"`: PropProfessor's Positive EV and Arbitrage tables instead.
-- `"both"`: both at once. The same bet listed by both is tried once (Gambit's row, or PropProfessor's with
-  `"propprofessor": {"preferInBoth": true}`). PropProfessor's games take Gambit's game names, so "one bet
-  per game and market" still holds across the two. If one of them fails, the other keeps going.
+
+One source per run. The two are separate: PropProfessor rows never use Gambit's data and Gambit rows
+never use PropProfessor's. (`"both"` was removed; the app stops with a message if it's still set.)
 
 `--source propprofessor` on the command line does the same for one run.
 
@@ -369,7 +369,7 @@ tables your PropProfessor pages already show. It never calls PropProfessor itsel
 its own login going. A PropProfessor page shows either pre-game or live, so the extension keeps one tab
 for each table it needs: pre-game +EV, live +EV, and pre-game and live arbitrage when `arbProps` is on.
 It opens any missing tab in the background and clicks **Live** / **Pre-Match** on it. A table that
-hasn't updated for 30s (live) or 180s (pre-game) isn't used until it updates again.
+hasn't updated for 10 min (live) or 30 min (pre-game) gets its tab reloaded.
 
 **Your PropProfessor settings decide what it sends:** books, leagues, min EV, hours away, devig and
 comparison books. Keep them at least as wide as the app's rules, for example PropProfessor min EV at
@@ -385,7 +385,7 @@ links for each book. Arbitrage-table props are priced off `arbProps.refBooks` th
 ```json
 "propprofessor": { "live": true, "pregame": true, "arbPregame": true, "arbLive": true,
                    "openTabs": true, "liveMaxAgeSec": 600, "pregameMaxAgeSec": 1800,
-                   "pregameEverySec": 10, "preferInBoth": false }
+                   "pregameEverySec": 10 }
 ```
 On the first run, a sample of each table is saved next to the app
 (`propprofessor-sample-ev-pregame.json` and so on), to check how it was read.
