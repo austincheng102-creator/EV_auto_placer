@@ -23,8 +23,10 @@
 //    group.perBook (default on): each book gets its own maxBets/maxStake in the group, so the same side
 //    can go on BetRivers and Hard Rock once each. The other side waits out the cooldown (group.otherSide).
 //    group.pregameMaxBets (default 1): pre-game bets get this many per group (per book) instead of maxBets.
-//    group.cooldownSec (default 60): a repeat bet in the same group (same book with perBook) waits this
+//    group.cooldownSec (default 150): a repeat bet in the same group (same book with perBook) waits this
 //    long after the last one, and must still pass every rule. Different markets in one game don't wait.
+//    group.repeatMinChangePct (default 10): a repeat of the same bet (same book, side and line) is skipped
+//    while its odds are within 10% of an earlier one's (compared as profit per $1: +150 vs +160 is 7%).
 import { impliedProb } from './ev.js';
 
 // Gambit sportsbook ids. PS3838 is Pinnacle's feed. Polymarket has two listings.
@@ -87,7 +89,10 @@ export function applyFilterDefaults(cfg) {
   if (g.pregameMaxBets === undefined) g.pregameMaxBets = 1;
   if (g.bothSides === undefined) g.bothSides = false;
   if (g.perBook === undefined) g.perBook = true;
-  if (g.cooldownSec === undefined) g.cooldownSec = 60;
+  if (g.cooldownSec === undefined) g.cooldownSec = 150;
+  // Same bet again (same book, side and line): only when its payout differs by at least this % from every
+  // earlier one on that book (profit per $1 staked, so +150 -> +165 or better, -200 -> -181). 0/null = off.
+  if (g.repeatMinChangePct === undefined) g.repeatMinChangePct = 10;
   // The opposite side (Under after an Over, the other team): "afterCooldown" (default) lets it go once the
   // group's last bet, on any book, is cooldownSec old and it passes every rule; "block" = never that game.
   if (g.otherSide === undefined) g.otherSide = 'afterCooldown';
@@ -521,15 +526,41 @@ export function groupTotals(placed, now = Date.now()) {
   for (const p of placed) {
     if (now - Date.parse(p.at) > 24 * 3600e3) continue;
     const k = p.market != null ? groupKey(p) : p.group;   // recomputed, so older bets follow the current grouping
-    const g = out.get(k) || { bets: 0, staked: 0, lastAt: 0, byBook: new Map(), sides: new Set() };
+    const g = out.get(k) || { bets: 0, staked: 0, lastAt: 0, byBook: new Map(), sides: new Set(), same: new Map() };
     const stake = Number(p.stake) || 0, at = Date.parse(p.at) || 0;
     g.bets++; g.staked += stake; g.lastAt = Math.max(g.lastAt, at);
     const b = g.byBook.get(p.book) || { bets: 0, staked: 0, lastAt: 0 };
     b.bets++; b.staked += stake; b.lastAt = Math.max(b.lastAt, at); g.byBook.set(p.book, b);
     if (p.selection != null) g.sides.add(sideOf(p));
+    const sk = sameBetKey(p), o = Number(p.odds);
+    if (Number.isFinite(o)) { if (!g.same.has(sk)) g.same.set(sk, []); g.same.get(sk).push(o); }
     out.set(k, g);
   }
   return out;
+}
+
+/** Same bet: same book, side and line (the group key covers game + market). */
+const sameBetKey = (r) => `${r.book}|${sideOf(r)}|${r.line ?? ''}`;
+
+/** Profit per $1 staked at American odds (+150 -> 1.5, -200 -> 0.5). */
+const profitPer1 = (a) => (a > 0 ? a / 100 : 100 / -a);
+
+/**
+ * An earlier bet on the same book, side and line whose odds are within group.repeatMinChangePct of `odds`
+ * (default: the row's odds). Returns that bet's odds, or null when none is that close.
+ */
+export function sameOddsRepeat(cfg, totals, row, odds = row?.odds) {
+  const pct = Number(cfg.group.repeatMinChangePct) || 0;
+  const o = Number(odds);
+  if (!pct || !Number.isFinite(o) || !o) return null;
+  const prev = totals.get(groupKey(row))?.same?.get(sameBetKey(row)) || [];
+  const p = profitPer1(o);
+  for (const q of prev) {
+    if (!q) continue;
+    const pq = profitPer1(q);
+    if (Math.abs(p - pq) / pq * 100 < pct - 1e-9) return q;
+  }
+  return null;
 }
 
 /**
