@@ -63,7 +63,10 @@ One app runs either book; the Gambit feed, Novig check, EV math and limits are s
 **FanDuel (Colorado, co.sportsbook.fanduel.com)** is wired from recordings of a real $1 bet and a game page:
 - Gambit only carries FanDuel **New Jersey** (id 100). Selection ids are the same in every state
   but market ids aren't, so for each +EV row the app finds the game on FanDuel CO's league page
-  (NBA, NCAAB, NFL, NCAAF, NHL, MLB, WNBA; `"fanduel": {"leaguePages": {...}}` adds others) and
+  (NBA, NCAAB, NFL, NCAAF, NHL, MLB, WNBA; `"fanduel": {"leaguePages": {...}}` adds others), or for
+  any other league (tennis, soccer, UFC, boxing, other basketball/hockey/baseball leagues, ...) on
+  FanDuel's sport page and then FanDuel's own event search for that sport
+  (`"fanduel": {"eventTypes": {"<league>": <FanDuel sport id>}}` adds a league it doesn't know), and
   the matching Colorado market (same kind and period: spread, total, moneyline; full game,
   halves, quarters). Alternate lines, 3-way and team markets are never used.
 - **Colorado prices for EV**: every scan the app reads FanDuel CO's own price (no login needed)

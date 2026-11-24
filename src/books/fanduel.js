@@ -184,6 +184,61 @@ export function pickAlt(markets, eventId, sel, selection, want, line) {
   return null;
 }
 
+// FanDuel's sport ids (eventTypeId, the same ids as Betfair's), so a league with no page of its
+// own can still be found: by the league's name, or the sport name PropProfessor/Gambit send.
+// "fanduel": {"eventTypes": {"<league>": <id>}} adds or overrides one.
+const SPORT_IDS = [
+  [/^golf|^pga|^lpga|^liv|dp world/i, 3],
+  [/tennis|^atp|^wta|^itf|challenger|davis cup|billie jean|united cup|laver cup|wimbledon|french open|roland garros|australian open/i, 2],
+  [/^(nba|wnba|ncaab|ncaaw|wncaab|cbb|euroleague|eurocup|nbl|cba|acb|g ?league|fiba|basketball|bball)/i, 7522],
+  [/^(nhl|ahl|khl|shl|liiga|del|nla|iihf|hockey|ice hockey)/i, 7524],
+  [/^(mlb|kbo|npb|cpbl|wbc|baseball|ncaa ?baseball)/i, 7511],
+  [/^(nfl|ncaaf|cfb|cfl|ufl|xfl|football|american football)$/i, 6423],
+  [/^(ufc|mma|pfl|bellator|one championship|lfa)/i, 26420387],
+  [/^boxing/i, 6],
+  [/soccer|^epl|premier league|^championship$|efl championship|la ?liga|bundesliga|serie [ab]|ligue [12]|^mls|uefa|^ucl|^uel|champions league|europa|conference league|eredivisie|liga mx|primeira|super lig|world cup|copa|fa cup|carabao|efl|^nwsl|scottish|a-league|j1|k league|brasileir|argentin|saudi/i, 1],
+  [/cricket|^ipl|big bash|^t20|^odi/i, 4],
+  [/darts|^pdc/i, 3503],
+  [/snooker/i, 6422],
+  [/rugby league|^nrl|super league/i, 1477],
+  [/rugby|six nations|super rugby|premiership rugby|top 14/i, 5],
+  [/aussie rules|^afl/i, 61420],
+  [/volleyball/i, 998917],
+  [/handball/i, 468328],
+  [/esports|^lol|league of legends|^cs2?$|counter-strike|dota|valorant/i, 27454571],
+];
+export function eventTypeFor(league, extra = {}) {
+  const lg = String(league || '').trim();
+  const own = Object.entries(extra || {}).find(([k]) => k.toUpperCase() === lg.toUpperCase());
+  if (own) return Number(own[1]) || null;
+  return SPORT_IDS.find(([re]) => re.test(lg))?.[1] || null;
+}
+// FanDuel names tennis, soccer and fight events "A v B" (US leagues "Away @ Home"); same for both.
+export const atName = (s) => String(s || '').replace(/\s+(?:v|vs\.?|versus)\s+/i, ' @ ');
+
+/** Our game among a page's (or search's) events: by team selection id or names and start time. */
+export function matchEvent(rawEvents, markets, row, sel) {
+  const event = atName(row.event);
+  // Real games only (not virtual ones), with "(OH)"-style states spelled out like Gambit does.
+  const events = rawEvents.map((e) => ({ ...e, name: atName(e.name) })).filter((e) => / @ /.test(e.name || '') && !isVirtual(e.name))
+    .map((e) => ({ ...e, name: fdTeamName(e.name) }));
+  const start = parseStart(row.startDate);
+  const near = (e) => !Number.isFinite(start) || Math.abs(Date.parse(e.openDate) - start) < 12 * 3600e3;
+  const byTeam = sel == null ? [] : events.filter((e) => near(e) && markets.some((m) => m.eventId === e.eventId && (m.runners || []).some((r) => String(r.selectionId) === String(sel)) && !/OVER|UNDER/i.test(r0(m, sel)?.runnerName || '')));
+  const byName = events.filter((e) => near(e) && sameGame(e.name, event));
+  // Names FanDuel shortens ("NC State" for North Carolina State): one side matching, the other
+  // sharing a word, and the same start (within 30 min), if that is a single game.
+  const oneSide = (e) => { const a = String(e.name).split(' @ '), b = String(event).split(' @ ');
+    const inside = (x, y) => { const wy = new Set(words(y)); const wx = words(x); return wx.length > 0 && wx.every((w) => wy.has(w)); };
+    const share = (x, y) => { const wy = new Set(words(y)); return words(x).some((w) => wy.has(w)); };
+    const one = (bb) => [0, 1].some((i) => (inside(a[i], bb[i]) || inside(bb[i], a[i])) && share(a[1 - i], bb[1 - i]));
+    return a.length === 2 && b.length === 2 && (one(b) || one([b[1], b[0]])); };
+  const soon = (e) => Number.isFinite(start) && Math.abs(Date.parse(e.openDate) - start) <= 30 * 60e3;
+  const byHalf = events.filter((e) => soon(e) && oneSide(e));
+  return (byName.length === 1 ? byName[0] : byTeam.length === 1 ? byTeam[0] : byName.find((e) => byTeam.includes(e))
+    || (byName.length === 0 && byHalf.length === 1 ? byHalf[0] : null)) || null;
+}
+
 export function makeFanDuel(name, label, cfg, bridge) {
   const f = cfg.fanduel || {};
   const st = String(cfg.region || 'CO').toLowerCase();
@@ -228,30 +283,41 @@ export function makeFanDuel(name, label, cfg, bridge) {
     return res.json;
   }
 
+  // Leagues without a page above (Tennis, soccer, UFC, ...) are found through FanDuel's sport:
+  // first its sport page, then FanDuel's own event search for every game of that sport.
+  const sportPage = (t) => `${api}/content-managed-page?page=SPORT&eventTypeId=${t}&pbHorizontal=false&_ak=${appKey}&timezone=America%2FDenver`;
+  const facetUrl = `${host('scan')}/api/sports/navigation/facet/v1.0/search`;
+  async function searchSport(t) {
+    const c = cache.get(`facet:${t}`);
+    if (c && Date.now() - c.at < 120e3) return c.json;
+    const body = (max) => ({ filter: { eventTypeIds: [Number(t)], contentGroup: { language: 'en', regionCode: 'NAMERICA' },
+      marketLevels: ['AVB_EVENT'], maxResults: 0, productTypes: ['SPORTSBOOK'], selectBy: 'FIRST_TO_START' },
+      facets: [{ type: 'EVENT', ...(max ? { maxValues: 1000 } : {}) }], currencyCode: 'USD' });
+    let res = await send('recheck', facetUrl, 'POST', body(true), {}, 30000, false);
+    if (res.status === 400) res = await send('recheck', facetUrl, 'POST', body(false), {}, 30000, false);
+    if (res.status >= 400 || !res.json) throw new Error(`FanDuel event search HTTP ${res.status}: ${String(res.text || '').slice(0, 120)}`);
+    cache.set(`facet:${t}`, { at: Date.now(), json: res.json });
+    return res.json;
+  }
+
   async function findEvent(row, sel) {
-    const page = pages[String(row.league || '').toUpperCase()];
-    if (!page) throw new Error(`no FanDuel page known for league ${row.league} (set "fanduel": {"leaguePages": {"${row.league}": "<page id>"}})`);
-    const j = await getJson(`${api}/content-managed-page?page=CUSTOM&customPageId=${page}&pbHorizontal=false&_ak=${appKey}&timezone=America%2FDenver`, 120e3);
-    // Real games only (not virtual ones), with "(OH)"-style states spelled out like Gambit does.
-    const events = Object.values(j.attachments?.events || {}).filter((e) => / @ /.test(e.name || '') && !isVirtual(e.name))
-      .map((e) => ({ ...e, name: fdTeamName(e.name) }));
-    const markets = Object.values(j.attachments?.markets || {});
-    const start = parseStart(row.startDate);
-    const near = (e) => !Number.isFinite(start) || Math.abs(Date.parse(e.openDate) - start) < 12 * 3600e3;
-    const byTeam = events.filter((e) => near(e) && markets.some((m) => m.eventId === e.eventId && (m.runners || []).some((r) => String(r.selectionId) === String(sel)) && !/OVER|UNDER/i.test(r0(m, sel)?.runnerName || '')));
-    const byName = events.filter((e) => near(e) && sameGame(e.name, row.event));
-    // Names FanDuel shortens ("NC State" for North Carolina State): one side matching, the other
-    // sharing a word, and the same start (within 30 min), if that is a single game.
-    const oneSide = (e) => { const a = String(e.name).split(' @ '), b = String(row.event).split(' @ ');
-      const inside = (x, y) => { const wy = new Set(words(y)); const wx = words(x); return wx.length > 0 && wx.every((w) => wy.has(w)); };
-      const share = (x, y) => { const wy = new Set(words(y)); return words(x).some((w) => wy.has(w)); };
-      const one = (bb) => [0, 1].some((i) => (inside(a[i], bb[i]) || inside(bb[i], a[i])) && share(a[1 - i], bb[1 - i]));
-      return a.length === 2 && b.length === 2 && (one(b) || one([b[1], b[0]])); };
-    const soon = (e) => Number.isFinite(start) && Math.abs(Date.parse(e.openDate) - start) <= 30 * 60e3;
-    const byHalf = events.filter((e) => soon(e) && oneSide(e));
-    const hit = byName.length === 1 ? byName[0] : byTeam.length === 1 ? byTeam[0] : byName.find((e) => byTeam.includes(e))
-      || (byName.length === 0 && byHalf.length === 1 ? byHalf[0] : null);
-    if (!hit) throw new Error(`FanDuel CO: game "${row.event}" not found on its ${row.league} page`);
+    const lg = String(row.league || '');
+    const page = pages[lg.toUpperCase()] || Object.entries(f.leaguePages || {}).find(([k]) => k.toUpperCase() === lg.toUpperCase())?.[1];
+    const type = eventTypeFor(lg, f.eventTypes);
+    if (!page && !type) throw new Error(`no FanDuel page known for league ${row.league} (set "fanduel": {"leaguePages": {"${row.league}": "<page id>"}} or {"eventTypes": {"${row.league}": <FanDuel sport id>}})`);
+    const tried = [];
+    const look = async (what, read) => {
+      try {
+        const j = await read();
+        const hit = matchEvent(Object.values(j.attachments?.events || {}), Object.values(j.attachments?.markets || {}), row, sel);
+        tried.push(`${what}: ${hit ? 'found' : 'not there'}`);
+        return hit;
+      } catch (e) { tried.push(`${what}: ${e.message}`); return null; }
+    };
+    const hit = (page && await look(`${row.league} page`, () => getJson(`${api}/content-managed-page?page=CUSTOM&customPageId=${page}&pbHorizontal=false&_ak=${appKey}&timezone=America%2FDenver`, 120e3)))
+      || (type && await look('sport page', () => getJson(sportPage(type), 120e3)))
+      || (type && await look('event search', () => searchSport(type)));
+    if (!hit) throw new Error(`FanDuel CO: game "${row.event}" not found (${row.league}; ${tried.join(', ')})`);
     return hit.eventId;
   }
 
