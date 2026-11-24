@@ -98,8 +98,8 @@ export function makeDraftKings(name, label, cfg, bridge) {
   const authFail = (r) => r.status === 401 || r.status === 403;
   // DraftKings' bot filter answers price checks HTTP 403 when they come too often (Austin, 2026-11-23:
   // "Failed to fetch (Chrome: net::ERR_FAILED after an HTTP 403 answer)"). Price checks go out at most
-  // one every minGapSec (default 2) across all bets, and after a 403 they stop for a while (1 min,
-  // doubling up to 10 min while it keeps refusing; back to 1 min after a check goes through).
+  // one every minGapSec (default 2) across all bets, and after a 403 they stop for a while (1 min, then
+  // 2 min while it keeps refusing (maxPauseMin, Austin chose 2); back to 1 min after a check goes through).
   // Bets are never sent without a price check, so nothing is placed while paused.
   const minGap = Number(k.minGapSec ?? 2) * 1000;
   let gate = Promise.resolve(), lastAt = 0, blockedUntil = 0, blockMs = 0;
@@ -116,7 +116,7 @@ export function makeDraftKings(name, label, cfg, bridge) {
   };
   const refused403 = (msg) => /HTTP 403/.test(String(msg || ''));
   const noteBlocked = () => {
-    blockMs = Math.min(Math.max(blockMs * 2, 60e3), 600e3);
+    blockMs = Math.min(Math.max(blockMs * 2, 60e3), Number(k.maxPauseMin ?? 2) * 60e3);
     blockedUntil = Date.now() + blockMs;
     log.warn(`DraftKings refused a price check with HTTP 403 (its bot filter): no DraftKings price checks or bets for ${Math.round(blockMs / 60e3)} min, until ${new Date(blockedUntil).toLocaleTimeString()}`);
   };
