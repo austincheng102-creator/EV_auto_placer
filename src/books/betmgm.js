@@ -328,7 +328,7 @@ export function makeBetMGM(name, label, cfg, bridge) {
     // If a page brings nothing new (BetMGM ignoring the page number), one big page is read instead,
     // so bets further down the list aren't missed.
     async settled(from) {
-      const per = b.settledPageSize || 50;
+      let per = b.settledPageSize || 50;
       const seen = new Map();
       const take = (list) => { let n = 0; for (const x of list) if (x?.betSlipNumber && !seen.has(x.betSlipNumber)) { seen.set(x.betSlipNumber, x); n++; } return n; };
       for (let page = 1; page <= 20; page++) {
@@ -340,8 +340,12 @@ export function makeBetMGM(name, label, cfg, bridge) {
           log.debug(`BetMGM settled list: page ${page} repeated earlier pages; read one page of ${per * 10} instead (${big.length} slips, ${more} new)`);
           break;
         }
+        // A short page doesn't mean the end: BetMGM may hand back fewer than asked (2026-11-24: settled
+        // bets further down, e.g. 20UU806YZT, were never read). Stop at an empty page or once past `from`.
+        // If page 1 came back short, ask for that many from then on, so page N starts where page N-1 ended.
+        if (page === 1 && list.length && list.length < per) { log.debug(`BetMGM settled list: asked ${per} a page, got ${list.length}; using ${list.length} a page`); per = list.length; }
         const oldest = Math.min(...list.map((x) => Date.parse(x.conclusionDateUtc)).filter(Number.isFinite));
-        if (list.length < per || (Number.isFinite(oldest) && oldest < from)) break;
+        if (!list.length || (Number.isFinite(oldest) && oldest < from)) break;
       }
       return [...seen.values()].map(settledSlip).filter(Boolean);
     },
@@ -357,7 +361,7 @@ export function makeBetMGM(name, label, cfg, bridge) {
           for (const x of list) if (ids.includes(String(x.betSlipNumber)) && !where.has(String(x.betSlipNumber))) {
             where.set(String(x.betSlipNumber), `${type} list, state ${x.state}, ${(x.bets || []).length} bets, outcome ${(x.bets || []).map((y) => y.state || y.outcome).join('/')}`);
           }
-          if (list.length < per) break;
+          if (!list.length) break;
         }
       }
       return ids.map((id) => `${id}: ${where.get(id) || 'not in the open or settled list (first pages)'}`);
