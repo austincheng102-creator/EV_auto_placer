@@ -1784,6 +1784,8 @@ async function ppRead(req) {
       continue;
     }
     used.add(t.id);
+    // Keep it from being discarded by Chrome's Memory Saver (a discarded tab has no table).
+    if (!ppRole.has(t.id)) chrome.tabs.update(t.id, { autoDiscardable: false }).catch(() => {});
     ppRole.set(t.id, role);
     // Showing the other half (or reloaded back to Pre-Match): click it over, at most every 10s.
     if ((t.showsLive != null && t.showsLive !== live) || (t.live != null && t.live !== live)) {

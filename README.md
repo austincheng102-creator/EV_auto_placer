@@ -369,7 +369,10 @@ tables your PropProfessor pages already show. It never calls PropProfessor itsel
 its own login going. A PropProfessor page shows either pre-game or live, so the extension keeps one tab
 for each table it needs: pre-game +EV, live +EV, and pre-game and live arbitrage when `arbProps` is on.
 It opens any missing tab in the background and clicks **Live** / **Pre-Match** on it. A table that
-hasn't updated for 10 min (live) or 30 min (pre-game) gets its tab reloaded.
+hasn't changed for a while gets its tab reloaded, in case the page lost its feed: 2 min (live) or 5 min
+(pre-game) for a table of 50+ rows, 10 / 30 min for a smaller one. Live tables are read on every scan;
+pre-game ones every 10s (`"pregameEverySec"`, 0 = every scan).
+bets.csv says which source found each bet ("odds source").
 
 **Your PropProfessor settings decide what it sends:** books, leagues, min EV, hours away, devig and
 comparison books. Keep them at least as wide as the app's rules, for example PropProfessor min EV at

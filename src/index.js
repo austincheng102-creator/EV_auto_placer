@@ -226,6 +226,8 @@ const ppSource = usePP ? makePropProfessorSource(cfg, bridge, { root, log }) : n
 const sourceError = (n, e) => (n === 'propprofessor' ? session.propprofessor(e) : session.gambit(e));
 const source = useMock ? Object.assign(makeMockSource(cfg), { label: 'mock feed' })
   : gambitSource || ppSource;
+// The odds source's name for log lines ("PropProfessor priced 2.5", "Gambit still shows +120").
+const feedName = ppSource ? 'PropProfessor' : 'Gambit';
 const books = makeBooks(cfg, bridge, dryRun);
 for (const b of Object.values(books)) {
   if (b.ready === false) { log.err(`${b.label}: ${b.notReadyReason}`); process.exit(1); }
@@ -405,7 +407,7 @@ async function tryBet(row, ctx) {
   if (quote.suspended) { ctx.outcome = 'suspended'; lg.warn(`${book.label}: market suspended — skipped`); return false; }
   if (row.line != null && quote.line != null && quote.line !== row.line) {
     ctx.outcome = 'line moved';
-    lg.warn(`${BOOK_LABELS[row.book]}: line moved (Gambit priced ${row.line}, ${book.label} line is now ${quote.line}) — skipped, nothing placed`);
+    lg.warn(`${BOOK_LABELS[row.book]}: line moved (${feedName} priced ${row.line}, ${book.label} line is now ${quote.line}) — skipped, nothing placed`);
     return false;
   }
   // Price that only just jumped our way (Austin, 2026-11-20): when the book changed its price under
@@ -425,7 +427,7 @@ async function tryBet(row, ctx) {
   const gb = gambitBehind(row, quote);
   if (gb) {
     ctx.outcome = 'Gambit behind';
-    lg.warn(`${book.label}: price is ${fmtAmerican(quote.odds)} but Gambit still shows ${fmtAmerican(gb.gambitOdds)}, so its fair ${fmtAmerican(row.fairOdds)} is from before the move — skipped, checking again once Gambit catches up`);
+    lg.warn(`${book.label}: price is ${fmtAmerican(quote.odds)} but ${feedName} still shows ${fmtAmerican(gb.gambitOdds)}, so its fair ${fmtAmerican(row.fairOdds)} is from before the move — skipped, checking again once ${feedName} catches up`);
     return false;
   }
   return placeAt(row, book, quote, ctx);
@@ -547,7 +549,7 @@ async function placeAt(row, book, quote, ctx, retries = 0) {
         let next = row;
         if (book.freshFairOnRetry && lastScan && lastScan.scanAt > (ctx.scanAt ?? 0)) {
           const fresh = lastScan.rows.find((r) => r.id === row.id);
-          if (!fresh) { lg.warn(`${book.label}: price moved ${fmtAmerican(quote.odds)} → ${fmtAmerican(e.newOdds)}; Gambit no longer lists this bet — skipped, nothing placed`); return false; }
+          if (!fresh) { lg.warn(`${book.label}: price moved ${fmtAmerican(quote.odds)} → ${fmtAmerican(e.newOdds)}; ${feedName} no longer lists this bet — skipped, nothing placed`); return false; }
           if (sharpTooOld(fresh)) { ctx.outcome = 'price moved'; lg.warn(`${book.label}: price moved ${fmtAmerican(quote.odds)} → ${fmtAmerican(e.newOdds)}; no fresh sharp price to check it against — skipped, nothing placed`); return false; }
           next = { ...fresh };
           if (next.fairOdds !== row.fairOdds) lg.info(`${book.label}: fair price is now ${fmtAmerican(next.fairOdds)} (was ${fmtAmerican(row.fairOdds)} before ${book.label}'s hold)`);
@@ -664,7 +666,7 @@ async function tick() {
   if (source.fairIndex) {
     const closed = betLog.track(source.fairIndex(), Date.now(), source.arbFairIndex?.());
     for (const b of closed) {
-      if (b.clv == null) log.info(`CLV: ${betLog.describe(b)}: Gambit stopped listing it after we bet, no close to compare`);
+      if (b.clv == null) log.info(`CLV: ${betLog.describe(b)}: ${feedName} stopped listing it after we bet, no close to compare`);
       else log.info(`CLV: ${betLog.describe(b)} vs close ${fmtAmerican(b.closeFairOdds)} (${b.closeKind}) -> ${fmtPct(b.clv)}`);
     }
     if (closed.length) log.info(betLog.summaryLine());
@@ -748,8 +750,9 @@ async function tick() {
   for (const b of Object.keys(books)) {
     if (!warnedNoRows.has(b) && !rows.some((r) => r.book === b)) {
       warnedNoRows.add(b);
-      log.warn(`Gambit's feed has no ${BOOK_LABELS[b] || b} rows yet. If this stays, tick ${BOOK_LABELS[b] || b} in Gambit's sportsbook filter and copy the new evs.json link into config.json`);
-      if (seenBooks.size) {
+      if (source.name === 'propprofessor') log.warn(`PropProfessor shows no ${BOOK_LABELS[b] || b} rows yet. If this stays, tick ${BOOK_LABELS[b] || b} in your PropProfessor sportsbooks settings`);
+      else log.warn(`Gambit's feed has no ${BOOK_LABELS[b] || b} rows yet. If this stays, tick ${BOOK_LABELS[b] || b} in Gambit's sportsbook filter and copy the new evs.json link into config.json`);
+      if (seenBooks.size && source.name !== 'propprofessor') {
         const host = (l) => { try { return new URL(l).hostname; } catch { return String(l).slice(0, 40) || 'no link'; } };
         log.warn(`Gambit sportsbook ids in the feed: ${[...seenBooks].map(([id, l]) => `${id} (${host(l)})`).join(', ')}`);
       }

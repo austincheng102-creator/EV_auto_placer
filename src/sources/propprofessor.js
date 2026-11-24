@@ -299,10 +299,14 @@ export function makePropProfessorSource(cfg, bridge, { root = null, log = null }
   // in case the page lost its feed. A quiet table is normal (few rows, nothing moving), so its rows
   // are still used meanwhile: every bet's price is re-checked at the book first, and a live bet also
   // needs a sharp price that just moved (the live timing rule), which a frozen table never shows.
-  const maxAge = { live: (Number(p.liveMaxAgeSec) || 600) * 1000, pre: (Number(p.pregameMaxAgeSec) || 1800) * 1000 };
+  // A big table (50+ rows) is never quiet for long while its feed works, so it gets 2 min (live) /
+  // 5 min (pre-game) before a reload; a small one liveMaxAgeSec / pregameMaxAgeSec (10 / 30 min).
+  const maxAge = { live: (Number(p.liveMaxAgeSec) || 600) * 1000, pre: (Number(p.pregameMaxAgeSec) || 1800) * 1000,
+    bigLive: (Number(p.bigLiveMaxAgeSec) || 120) * 1000, bigPre: (Number(p.bigPregameMaxAgeSec) || 300) * 1000 };
+  const ageLimit = (w, t) => ((t.rows || []).length >= 50 ? (w.live ? maxAge.bigLive : maxAge.bigPre) : (w.live ? maxAge.live : maxAge.pre));
   // Pre-game tables are read every pregameEverySec (default 10s) and their rows reused in between;
-  // live tables every poll. Reading a big table out of a tab every 2s costs Chrome time for nothing.
-  const preEvery = (Number(p.pregameEverySec) || 10) * 1000;
+  // live tables every poll. Pre-game prices move slowly, and reading a big table every 2s costs Chrome.
+  const preEvery = (Number(p.pregameEverySec ?? 10) || 0) * 1000;
   const ppNames = Object.entries(PP_BOOKS).filter(([, b]) => ourBooks.includes(b) || arbBooks.includes(b)).map(([n]) => n);
   const sampled = new Set();
   const arbState = { error: null, rows: 0 };
@@ -322,7 +326,7 @@ export function makePropProfessorSource(cfg, bridge, { root = null, log = null }
       if (!bridge?.connected()) throw new Error('Chrome extension not connected (needed to read PropProfessor)');
       const now = Date.now();
       const due = wants.filter((w) => w.live || !last.has(roleOf(w)) || now - last.get(roleOf(w)).at >= preEvery);
-      const reload = due.filter((w) => { const l = last.get(roleOf(w)); return l && now - tableFreshAt(l.table) > (w.live ? maxAge.live : maxAge.pre); });
+      const reload = due.filter((w) => { const l = last.get(roleOf(w)); return l && now - tableFreshAt(l.table) > ageLimit(w, l.table); });
       for (const w of reload) warn(`old:${roleOf(w)}`, `PropProfessor ${what(w)} hasn't changed for ${Math.round((now - tableFreshAt(last.get(roleOf(w)).table)) / 60e3)} min: reloading its tab in case the page lost its feed`);
       const timeoutMs = Number(p.timeoutSec || 15) * 1000;
       const res = due.length ? await bridge.send('propprofessor', { kind: 'ppRead', wants: due, books: ppNames, timeoutMs,
