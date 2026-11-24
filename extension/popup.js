@@ -51,6 +51,21 @@ $('mgmsave').onclick = async () => {
 };
 $('mgmforget').onclick = async () => { await chrome.storage.local.remove('mgmLogin'); mgmPw(); };
 mgmPw();
+async function tsPw() {
+  const { tsLogin } = await chrome.storage.local.get('tsLogin');
+  const s = await chrome.runtime.sendMessage('status').catch(() => ({}));
+  const l = s?.thescoreLogin;
+  const last = l ? `last try ${Math.round((Date.now() - l.at) / 60000)} min ago: ${l.ok ? 'worked' : l.why}` : 'uses Chrome\'s saved login';
+  $('tspwst').textContent = `${last}${tsLogin?.pass ? ' (backup password saved)' : ''}`; $('tspwst').className = !l || l.ok ? 'on' : 'off';
+}
+$('tssave').onclick = async () => {
+  const pass = $('tspass').value, email = $('tsemail').value.trim();
+  if (!pass) return;
+  await chrome.storage.local.set({ tsLogin: { pass, email } });
+  $('tspass').value = ''; tsPw();
+};
+$('tsforget').onclick = async () => { await chrome.storage.local.remove('tsLogin'); tsPw(); };
+tsPw();
 $('toggle').onclick = async () => {
   const { armed = false } = await chrome.storage.local.get('armed');
   await chrome.storage.local.set({ armed: !armed }); render();
