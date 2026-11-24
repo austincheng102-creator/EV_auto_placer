@@ -159,5 +159,11 @@
       "to": 250,
       "minEvPct": 12
     }
-  ]
+  ],
+  "longOddsProps": {
+    "betrivers": {
+      "minEvPct": 15,
+      "maxOdds": null
+    }
+  }
 }
