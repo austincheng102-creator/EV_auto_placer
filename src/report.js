@@ -686,8 +686,10 @@ if (LIVE) setInterval(async () => {
       ': ' + esc(pct1(ev)) + ' EV at ' + esc(fmt(sent)) + (sent !== mine && mine != null ? ', ' + esc(pct1(evAt(mine, b.fairProb))) + ' at ' + esc(fmt(mine)) : '') + '.</div>';
     const acc = b.timing?.acceptedAt;
     let when = r.gambitAt ? 'Prices below are from ' + feed + ' at ' + clock(r.gambitAt) + (acc && gap(r.gambitAt, acc) ? ', ' + gap(r.gambitAt, acc) + ' before ' + esc(bookName) + ' accepted the bet' : '') : 'Prices below are from the ' + feed + ' read the bet was checked on';
-    if (b.live && Number.isFinite(r.sharpAgeSec)) when += '. The sharp price had last moved about ' + Math.round(r.sharpAgeSec) + 's before that';
-    else if (b.live && r.gambitAt) when += ". The sharp price hadn't been seen moving yet";
+    // Game lines priced off PropProfessor's own fair (no Pinnacle): the timing rule watched that fair.
+    const sharpWord = /^PropProfessor's own/.test(r.how || '') ? "PropProfessor's fair" : 'The sharp price';
+    if (b.live && Number.isFinite(r.sharpAgeSec)) when += '. ' + sharpWord + ' had last moved about ' + Math.round(r.sharpAgeSec) + 's before that';
+    else if (b.live && r.gambitAt) when += '. ' + sharpWord + " hadn't been seen moving yet";
     h += '<div class="ts">' + esc(when) + '.</div>';
     const hasLiq = r.books.some((x) => x.liq != null || x.oppLiq != null);
     h += '<table><tr><th>Book</th><th class="n">Our side</th><th class="n">Other side</th><th class="n">Win % used</th>' + (hasLiq ? '<th class="n">Liquidity</th>' : '') + '</tr>';
@@ -698,7 +700,7 @@ if (LIVE) setInterval(async () => {
       const cls = x.role === 'fair' ? ' class="set"' : x.role === 'not used' ? ' class="off"' : '';
       const tip = x.why ? ' title="' + esc(x.why) + '"' : '';
       const cell = used ? pc(x.noVig) + (x.role === 'fair' ? ' (fair)' : '') : x.role === 'not used' ? 'not used' : '';
-      h += '<tr' + cls + tip + '><td>' + esc(x.name) + '</td><td class="n' + (better ? ' better' : '') + '">' + esc(fmt(x.odds)) + '</td><td class="n">' + esc(fmt(x.oppOdds)) + '</td><td class="n">' + esc(cell) + '</td>' +
+      h += '<tr' + cls + tip + '><td>' + esc(x.name) + '</td><td class="n' + (better ? ' better' : '') + '">' + (x.odds == null && x.oppOdds == null ? '' : esc(fmt(x.odds))) + '</td><td class="n">' + (x.odds == null && x.oppOdds == null ? '' : esc(fmt(x.oppOdds))) + '</td><td class="n">' + esc(cell) + '</td>' +
         (hasLiq ? '<td class="n' + (x.role === 'not used' && x.liq != null ? ' thin' : '') + '">' + (x.liq != null || x.oppLiq != null ? esc('$' + Math.round(x.liq ?? 0) + ' / $' + Math.round(x.oppLiq ?? 0)) : '') + '</td>' : '') + '</tr>';
     }
     h += '</table>';
