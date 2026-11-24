@@ -273,17 +273,21 @@ export function makeDraftKings(name, label, cfg, bridge) {
   // Returns {found: bet} or {found: null} (DraftKings didn't take it) or {error} (My Bets couldn't be read).
   async function confirmInMyBets(selId, stake, sentAt, delaySec) {
     const waits = [Math.max(0, sentAt + (delaySec + 3) * 1000 - Date.now()), 5000, 10000];
-    let lastErr = null, reads = 0;
+    let lastErr = null, reads = 0, last = [];
     for (const w of waits) {
       if (w) await sleep(w);
       try {
         const list = await myBets({ status: 'All' });
-        reads++;
+        reads++; last = list;
         const hit = findPlacedBet(list, selId, stake, sentAt);
         if (hit) return { found: hit };
       } catch (e) { lastErr = e; }
     }
-    return reads ? { found: null } : { error: lastErr };
+    // Not found: say in debug.log what My Bets did show (newest few), so a bet that DraftKings took
+    // but this match missed (another selection id, clock, stake) can be told apart from a real decline.
+    const seen = last.slice(0, 5).map((b) => ({ betId: b.betId, status: b.status, sel: (b.selections || [])[0]?.selectionId,
+      stake: b.stake, odds: b.displayOdds, at: b.placementDate }));
+    return reads ? { found: null, seen } : { error: lastErr };
   }
 
   // DraftKings' answer to placeBets or acceptPurchase: placed, refused, or a counter-offer (in the
@@ -307,9 +311,16 @@ export function makeDraftKings(name, label, cfg, bridge) {
           // first status other than LiveDelay (extension 0.8.2), or at the time limit.
           const ms = ((Number(b0.delayPeriod) || 3) + 15) * 1000;
           const wid = String(j.waitingBetId).replace(/[^0-9A-Za-z-]/g, '');
+          // Sent the way the site's own EventSource sends it: the login is the jwt in the address, so
+          // no cookies, and only the plain Accept header. Before, the app added cookies and a
+          // Cache-Control header, which made Chrome run a cross-site pre-check (OPTIONS) first, and
+          // the stream then failed on every live bet ("pre-check passed with HTTP 200, then the
+          // request itself got no answer", 2026-11-24): Chrome refused the answer's cross-site
+          // headers for a request with cookies. So the app never saw DraftKings' decision, and a
+          // counter-offer at the end of the live delay was never seen (or checked and accepted).
           const w = await send('status', `${gateway}/waitingBets?jwt=${encodeURIComponent(jwt)}`, 'GET', null,
-            { accept: 'text/event-stream', 'cache-control': 'no-cache' }, ms + 5000,
-            { timeoutMs: ms, streamUntil: `"waitingBetId":"${wid}"[^\\n]*"status":"(?!LiveDelay|Active|Pending|Waiting)[A-Za-z]+"[^\\n]*\\n` });
+            { accept: 'text/event-stream' }, ms + 5000,
+            { credentials: 'omit', timeoutMs: ms, streamUntil: `"waitingBetId":"${wid}"[^\\n]*"status":"(?!LiveDelay|Active|Pending|Waiting)[A-Za-z]+"[^\\n]*\\n` });
           const o = waitingOutcome(w.text ?? JSON.stringify(w.json), j.waitingBetId);
           if (o?.status) { status = o.status; betId = o.betId || betId; odds = o.odds ?? odds; final = o.raw; }
           waitNote = `waitingBets: HTTP ${w.status}${w.error ? `, ${w.error}` : ''}${w.matched === false ? ', no decision in the stream' : ''}, ${String(w.text || '').length} chars: ${String(w.text || '').slice(-600)}`;
@@ -325,7 +336,7 @@ export function makeDraftKings(name, label, cfg, bridge) {
           }
           if (c.found === null) {
             const err = new Error('rejected: DraftKings didn\'t take it (not in My Bets after the live delay)');
-            err.detail = `${detail} (not in My Bets ~20s after the live delay; ${waitNote})`;
+            err.detail = `${detail} (not in My Bets ~20s after the live delay; looked for selection ${q.id}, stake ${b0.stake}, sent ${new Date(sentAt).toISOString()}; newest in My Bets: ${JSON.stringify(c.seen)}; ${waitNote})`;
             throw err;
           }
           // My Bets couldn't be read either: it may still go through, so record it (never bet twice) and say so.
