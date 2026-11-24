@@ -12,7 +12,7 @@
 // showed while the bet was still listed (marked "live, last seen").
 import fs from 'node:fs';
 import path from 'node:path';
-import { americanToDecimal, decimalToAmerican, fmtAmerican, fmtPct } from './ev.js';
+import { americanToDecimal, decimalToAmerican, fmtAmerican, fmtPct, evMovedTo } from './ev.js';
 
 const norm = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9.+-]/g, '');
 /** Same selection across books: event | market | selection | line. */
@@ -108,7 +108,7 @@ const COLUMNS = [
   ['fairSetBy', 'fair set by (win % used)'], ['refAt', 'Gambit prices fetched at (UTC)'], ['refToAcceptSec', 'secs from those prices to bet accepted'],
   ['otherBooks', "other books' odds (our side/other side) [$ liquidity our side/other side]"], ['sharpNoVig', 'sharp books simple no-vig win %, for the 3-point check (arb: reference books)'], ['sharpSpreadPts', 'sharp spread pts (arb: reference books)'],
   ['acceptFairOdds', 'fair odds in first Gambit prices after accepted'], ['acceptEv', 'EV vs that fair %'],
-  ['gambitEv', 'EV at Gambit price %'], ['ev', 'EV at placed price %'],
+  ['gambitEv', 'EV at Gambit price %'], ['ev', 'EV at price we checked %'], ['gotEv', 'EV at price the book accepted %'],
   ['novigOdds', 'Novig odds'], ['novigOppOdds', 'Novig other side'], ['novigEv', 'Novig EV %'],
   ['stake', 'stake $'], ['maxStake', 'book max stake $'],
   ['closeFairOdds', 'closing fair odds'], ['closeKind', 'close type'], ['closeAt', 'close seen at (UTC)'], ['clv', 'CLV %'],
@@ -125,6 +125,7 @@ const cellOf = (b, k) => {
   if (k === 'refToAcceptSec') return secs(b.ref?.gambitAt, b.timing?.acceptedAt);
   if (k === 'acceptFairOdds') return b.atAccept ? (b.atAccept.gone ? 'Gambit no longer listed it' : b.atAccept.none || b.atAccept.fairOdds) : null;
   if (k === 'acceptEv') return b.atAccept?.ev ?? null;
+  if (k === 'gotEv') return Number.isFinite(b.ev) ? evMovedTo(b.ev, b.sentOdds, b.confirmedOdds ?? b.sentOdds) : null;
   return b[k];
 };
 const csvCell = (v) => {

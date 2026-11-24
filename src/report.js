@@ -680,10 +680,11 @@ if (LIVE) setInterval(async () => {
     const feed = b.feed || 'Gambit';
     let h = '<div class="tt">' + esc((b.event || '') + ': ' + (b.market || '') + ' ' + (b.selection || '') + (b.line != null ? ' ' + b.line : '')) + '</div>';
     h += '<div class="ts">We got ' + esc(fmt(mine)) + ' on ' + esc(bookName) + (sent != null && sent !== mine ? ' (we checked ' + esc(fmt(sent)) + ')' : '') + '.</div>';
-    // The EV the bet was placed on (as logged), not recomputed here.
-    const ev = Number.isFinite(b.ev) ? b.ev : evAt(sent, b.fairProb);
+    // EV at the price we got (the +EV% column), then the logged EV at the price we checked when the book accepted another.
+    const ev = Number.isFinite(b.ev) ? b.ev : evAt(mine ?? sent, b.fairProb);
+    const evChecked = Number.isFinite(b.checkedEv) ? b.checkedEv : evAt(sent, b.fairProb);
     h += '<div class="fair">Fair ' + esc(fmt(b.fairOdds)) + ' (' + pc(b.fairProb) + ' win)' + (setBy.length ? ', set by ' + esc(setBy.join(' + ')) : '') +
-      ': ' + esc(pct1(ev)) + ' EV at ' + esc(fmt(sent)) + (sent !== mine && mine != null ? ', ' + esc(pct1(evAt(mine, b.fairProb))) + ' at ' + esc(fmt(mine)) : '') + '.</div>';
+      ': ' + esc(pct1(ev)) + ' EV at ' + esc(fmt(mine ?? sent)) + (sent != null && mine != null && sent !== mine ? ' (the price we got); ' + esc(pct1(evChecked)) + ' at ' + esc(fmt(sent)) + ' (the price we checked)' : '') + '.</div>';
     const acc = b.timing?.acceptedAt;
     let when = r.gambitAt ? 'Prices below are from ' + feed + ' at ' + clock(r.gambitAt) + (acc && gap(r.gambitAt, acc) ? ', ' + gap(r.gambitAt, acc) + ' before ' + esc(bookName) + ' accepted the bet' : '') : 'Prices below are from the ' + feed + ' read the bet was checked on';
     // Game lines priced off PropProfessor's own fair (no Pinnacle): the timing rule watched that fair.
@@ -725,7 +726,9 @@ if (LIVE) setInterval(async () => {
     }).filter(Boolean).filter((r, i, all) => all.findIndex((q) => q.name === r.name && q.ours === r.ours && q.other === r.other) === i);  // Gambit lists some books under several ids
     const mine = num(b.odds);
     let h = '<div class="tt">' + esc((b.event || '') + ': ' + (b.market || '') + ' ' + (b.selection || '') + (b.line != null ? ' ' + b.line : '')) + '</div>';
-    h += '<div class="ts">Odds when placed. We got ' + esc(fmt(mine)) + ' on ' + esc(BOOKS[b.book] || b.book || '?') + '.</div>';
+    const sentOld = num(b.sentOdds);
+    h += '<div class="ts">Odds when placed. We got ' + esc(fmt(mine)) + ' on ' + esc(BOOKS[b.book] || b.book || '?') +
+      (sentOld != null && mine != null && sentOld !== mine && Number.isFinite(b.checkedEv) ? ' (' + esc(pct1(b.ev)) + ' EV); we checked ' + esc(fmt(sentOld)) + ' (' + esc(pct1(b.checkedEv)) + ' EV)' : '') + '.</div>';
     if (rows.length) {
       const hasLiq = rows.some((r) => r.liq);
       h += '<table><tr><th>Book</th><th class="n">Our side</th><th class="n">Other side</th>' + (hasLiq ? '<th class="n">Liquidity</th>' : '') + '</tr>';

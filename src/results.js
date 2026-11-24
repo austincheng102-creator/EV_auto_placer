@@ -9,7 +9,7 @@
 // payout and odds). Anything can also be marked by hand on the chart page.
 import fs from 'node:fs';
 import path from 'node:path';
-import { americanToDecimal } from './ev.js';
+import { americanToDecimal, evMovedTo } from './ev.js';
 import { betSource } from './betlog.js';
 
 // 'not placed': the app logged a bet the book never took (DraftKings declined it after the live delay).
@@ -115,14 +115,17 @@ export function loadBets(dir, { dryRun = false } = {}) {
       // The book's own record of the price wins over what placeBets said.
       const odds = r?.odds ?? b.confirmedOdds ?? b.sentOdds;
       const stake = Number(b.stake) || 0;
+      // bets.json "ev" is the EV at the price we checked and sent. The book can accept a different
+      // price (Hard Rock checked +110, accepted +115): EV here is at the price we got, vs the same fair.
+      const ev = Number.isFinite(b.ev) ? evMovedTo(b.ev, b.sentOdds, odds) : null;
       return {
         key, placedAt: b.placedAt, book: b.book, event: b.event, market: b.market, selection: b.selection, line: b.line,
         live: b.live, source: betSource(b), feed: b.feed ?? null, otherBooks: b.otherBooks ?? null, sharpNoVig: b.sharpNoVig ?? null,
         // For the hover popup: the fair price and reference prices the EV was judged on, and when.
         fairOdds: b.fairOdds ?? null, fairProb: b.fairProb ?? null, fairSource: b.fairSource ?? null, sentOdds: b.sentOdds ?? null,
-        ref: b.ref ?? null, timing: b.timing ?? null, atAccept: b.atAccept ?? null, odds, stake, ev: b.ev ?? null, clv: b.clv ?? null,
-        // Expected profit: what the bet is worth on average at the fair price we had.
-        expected: r?.result === 'not placed' ? 0 : Number.isFinite(b.ev) ? stake * b.ev / 100 : null,
+        ref: b.ref ?? null, timing: b.timing ?? null, atAccept: b.atAccept ?? null, odds, stake, ev, checkedEv: b.ev ?? null, clv: b.clv ?? null,
+        // Expected profit: what the bet is worth on average at the fair price we had, at the price we got.
+        expected: r?.result === 'not placed' ? 0 : Number.isFinite(ev) ? stake * ev / 100 : null,
         result: r?.result || null, resultSource: r?.source || null, settledAt: r?.settledAt || null,
         // The book's own stake when it reported one (a bet it took for less than we sent).
         profit: r ? profitOf({ result: r.result, stake: r.stake ?? stake, odds, payout: r.payout }) : null,
