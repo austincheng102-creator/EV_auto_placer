@@ -11,3 +11,14 @@ export function evPct(odds, fairOdds) {
 
 export const fmtAmerican = (a) => (a > 0 ? `+${a}` : `${a}`);
 export const fmtPct = (p) => `${p >= 0 ? '+' : ''}${p.toFixed(2)}%`;
+
+/**
+ * EV % at `toOdds`, given the EV % at `fromOdds` against the same fair price (EV scales with the payout).
+ * Used to show EV at the price the book accepted when the bet was checked at another price.
+ */
+export function evMovedTo(ev, fromOdds, toOdds) {
+  const f = Number(fromOdds), t = Number(toOdds);
+  if (!Number.isFinite(ev) || !Number.isFinite(f) || !Number.isFinite(t) || f === 0 || t === 0) return ev;
+  if (f === t) return ev;
+  return ((1 + ev / 100) * americanToDecimal(t) / americanToDecimal(f) - 1) * 100;
+}
