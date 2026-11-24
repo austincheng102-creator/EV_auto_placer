@@ -408,7 +408,7 @@ async function tryBet(row, ctx) {
   // (the "fair") are from that same old snapshot. 873 settled bets: those won 41 of 64.3 expected
   // (-$34.75 vs +$17.29 expected); the rest were on model. Skipped and checked again on later scans:
   // once Gambit shows the book's new price, its fair has caught up too and the bet goes ahead.
-  const gb = gambitBehind(row, quote);
+  const gb = gambitBehind(row, quote, ctx);
   if (gb) {
     ctx.outcome = 'Gambit behind';
     lg.warn(`${book.label}: price is ${fmtAmerican(quote.odds)} but Gambit still shows ${fmtAmerican(gb.gambitOdds)}, so its fair ${fmtAmerican(row.fairOdds)} is from before the move — skipped, checking again once Gambit catches up`);
@@ -417,12 +417,17 @@ async function tryBet(row, ctx) {
   return placeAt(row, book, quote, ctx);
 }
 
-// Config "gambitBehind": { books, maxPts }; false turns it off. Defaults: every book except Hard Rock
-// (its moves away from Gambit's copy were on model: 330 bets), any change (0 points of win chance).
-function gambitBehind(row, quote) {
-  const g = cfg.gambitBehind === false ? null : { exceptBooks: ['hardrock'], maxPts: 0, ...(cfg.gambitBehind || {}) };
+// Config "gambitBehind": { books, maxPts, fastAllBooks }; false turns it off. Defaults: every book
+// except Hard Rock (its moves away from Gambit's copy were on model: 330 bets), any change (0 points
+// of win chance). Bets found by the fast price check (between Gambit polls) are checked on EVERY
+// book, Hard Rock too (fastAllBooks, default true): those are by definition a book price that moved
+// after Gambit's snapshot, and on 11/23 the 47 Hard Rock ones won 15 of 23.7 expected (-$14.68 vs
+// +$5.98 expected) while Hard Rock's scan-found bets were on model.
+function gambitBehind(row, quote, ctx) {
+  const g = cfg.gambitBehind === false ? null : { exceptBooks: ['hardrock'], maxPts: 0, fastAllBooks: true, ...(cfg.gambitBehind || {}) };
   if (!g || !row.isLive) return null;
-  if (Array.isArray(g.books) ? !g.books.includes(row.book) : (g.exceptBooks || []).includes(row.book)) return null;
+  const allBooks = ctx?.via === 'fast' && g.fastAllBooks !== false;
+  if (!allBooks && (Array.isArray(g.books) ? !g.books.includes(row.book) : (g.exceptBooks || []).includes(row.book))) return null;
   const gambitOdds = row.gambitOdds ?? row.odds;
   if (!Number.isFinite(gambitOdds) || !Number.isFinite(quote.odds) || gambitOdds === quote.odds) return null;
   const pts = Math.abs(impliedProb(gambitOdds) - impliedProb(quote.odds)) * 100;
