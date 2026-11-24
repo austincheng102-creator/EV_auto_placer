@@ -15,6 +15,7 @@
 //    than 3 points above the median no-vig of the soft books on the row (DraftKings, FanDuel, Caesars, BetMGM,
 //    theScore, Hard Rock, ...; not the book we're betting). Needs 3+ soft books priced, otherwise it passes.
 //  - odds bands (minEvByOdds): +201 to +250 needs 12% EV, everything else minEvPct
+//  - longOddsProps: BetRivers player props above +250 are allowed at 15% EV or more
 //  - live timing: a sharp price for the selection changed within the last 5 seconds (30 for props)
 //  - groups: same game + market (period is part of the market) share group.maxBets bets and group.maxStake $.
 //    Both sides count as one group (Over and Under, either team's spread), unless group.bothSides is true.
@@ -114,12 +115,27 @@ export function applyFilterDefaults(cfg) {
   if (mc.arb === undefined) mc.arb = false;
   // Higher minimum EV for long odds: first band whose odds range holds the price wins (if above minEvPct).
   if (cfg.minEvByOdds === undefined) cfg.minEvByOdds = [{ from: 201, to: 250, minEvPct: 12 }];
+  // Player props above maxOdds (+250) on these books: allowed, but only at this EV or more
+  // (Austin 2026-11-24: BetRivers props over +250 need 15% EV). maxOdds here = optional upper
+  // limit (null = none). Everything else keeps the maxOdds cap. {} turns it off.
+  if (cfg.longOddsProps === undefined) cfg.longOddsProps = { betrivers: { minEvPct: 15, maxOdds: null } };
   return cfg;
 }
 
+/** The longOddsProps rule that lets this prop past the maxOdds cap at these odds, or null. */
+export function longPropRule(cfg, row, odds = row?.odds) {
+  if (!row || cfg.maxOdds == null || !Number.isFinite(odds) || odds <= cfg.maxOdds) return null;
+  const r = cfg.longOddsProps?.[row.book];
+  if (!r || !Number.isFinite(Number(r.minEvPct)) || !isPropBet(row)) return null;
+  if (r.maxOdds != null && odds > Number(r.maxOdds)) return null;
+  return r;
+}
+
 /** Minimum EV for a price: the base minimum, raised by a matching minEvByOdds band. */
-export function minEvFor(cfg, base, odds) {
+export function minEvFor(cfg, base, odds, row) {
   let m = base;
+  const lp = longPropRule(cfg, row, odds);
+  if (lp) m = Math.max(m, Number(lp.minEvPct));
   for (const b of cfg.minEvByOdds || []) {
     if (Number.isFinite(odds) && odds >= (b.from ?? -Infinity) && odds <= (b.to ?? Infinity)) m = Math.max(m, Number(b.minEvPct) || 0);
   }
