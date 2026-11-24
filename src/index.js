@@ -25,7 +25,7 @@ import { makeBetLog, parseTime } from './betlog.js';
 import { makePriceLog, makeSpreadSkipLog, makeTimingLog } from './skiplog.js';
 import { makePropFunnel } from './propfunnel.js';
 import { writeSnapshot, serveReport, openInBrowser } from './report.js';
-import { applyFilterDefaults, tooShort, evTooHigh, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom, groupClash, groupCoolingDown, groupMaxBets, isPropBet, playerStats, tooManyStats, playerKey, statKey, minEvFor, longPropRule, softCheck, fmtSoft, marketCheck, fmtMarket, sharpFair } from './filters.js';
+import { applyFilterDefaults, tooShort, evTooHigh, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom, groupClash, groupCoolingDown, groupMaxBets, isPropBet, playerStats, tooManyStats, playerKey, statKey, minEvFor, longPropRule, softCheck, fmtSoft, marketCheck, fmtMarket, sharpFair, fairBreakdown } from './filters.js';
 
 const root = appDir;
 let args = process.argv.slice(2);
@@ -243,6 +243,25 @@ const geoSaid = new Map(); // row.id -> when we last said FanDuel's location che
 const shown = new Map(); // row.id -> { odds, since }: when our polls first saw Gambit show this price
 const priceLog = makePriceLog(root, { dryRun });
 const timingLog = makeTimingLog(root, { dryRun });
+// Bets waiting for the first Gambit prices fetched after the book accepted them (bets.json atAccept).
+const afterAccept = [];
+function checkAfterAccept(rows, tickAt, scanAt) {
+  let changed = false;
+  for (let i = afterAccept.length - 1; i >= 0; i--) {
+    const a = afterAccept[i];
+    if (tickAt < a.acceptedAt) {
+      if (scanAt - a.acceptedAt > 120e3) { a.rec.atAccept = { none: 'no Gambit prices fetched within 2 min' }; afterAccept.splice(i, 1); changed = true; }
+      continue;   // this poll started before the bet was accepted
+    }
+    const r = rows.find((x) => x.id === a.id);
+    a.rec.atAccept = r && r.fairProb > 0 && r.fairProb < 1
+      ? { gambitAt: new Date(scanAt).toISOString(), fairProb: r.fairProb, fairOdds: r.fairOdds, ev: evPct(a.odds, r.fairOdds),
+          setBy: fairBreakdown(cfg, r).books.filter((b) => b.role === 'fair').map((b) => b.name) }
+      : { gambitAt: new Date(scanAt).toISOString(), gone: true };
+    afterAccept.splice(i, 1); changed = true;
+  }
+  if (changed) betLog.save();
+}
 let lastScan = null;   // the last Gambit scan's rows, for the fast price check
 const spreadLog = makeSpreadSkipLog(root, { dryRun });
 const spreadLogged = new Map(); // row.id -> { at, odds }: last sharp-skips.csv line for that bet
@@ -462,7 +481,11 @@ async function placeAt(row, book, quote, ctx, retries = 0) {
     state.staked += stake; save();
     // Paper trail: what we checked vs what the book says it accepted, plus Gambit's fair odds.
     // Dry runs: the simulated book "confirms" the price we sent.
-    betLog.record({ row, quote, stake, betId, confirmedOdds: dryRun ? quote.odds : confirmedOdds, ev, novig: novigCheck, sharp: sharpSpread(cfg, row) });
+    // ref: the exact reference prices and fair behind this EV, and when Gambit showed them (Show bets popup).
+    const rec = betLog.record({ row, quote, stake, betId, confirmedOdds: dryRun ? quote.odds : confirmedOdds, ev, novig: novigCheck, sharp: sharpSpread(cfg, row),
+      ref: fairBreakdown(cfg, row), timing: { checkedAt: ctx.checkedAt, sentAt: attempt.sentAt, acceptedAt: attempt.answeredAt } });
+    // Then the first Gambit prices fetched after the book accepted it: did the fair hold during the book's hold?
+    afterAccept.push({ rec, id: row.id, acceptedAt: attempt.answeredAt ?? Date.now(), odds: rec.confirmedOdds ?? quote.odds });
     lg.ok(`${BOOK_LABELS[row.book]} PLACED $${stake} @ ${fmtAmerican(quote.odds)} (${fmtPct(ev)} EV) bet_id=${betId}${dryRun ? ' [DRY RUN]' : ''}`);
     if (!dryRun) {
       if (confirmedOdds == null) lg.bet(`${book.label} didn't report the accepted price; check bet ${betId} in your bet history (raw reply in debug.log)`);
@@ -627,6 +650,8 @@ async function tick() {
     const sf = sharpFair(cfg, r);
     if (!sf) return true;
     if (sf.prob == null || !(sf.prob > 0 && sf.prob < 1)) { noSharpFair++; return false; }
+    // Kept for the bet log: each sharp book's win % as the fair calculation saw it (fairBreakdown).
+    r.fairCalc = { probs: sf.probs, books: sf.books.length ? sf.books : sf.gambitPinnacle ? ['pinnacle'] : [], gambitPinnacle: sf.gambitPinnacle };
     if (sf.changed) {
       r.gambitFairProb ??= r.fairProb;
       r.fairProb = sf.prob; r.fairOdds = decimalToAmerican(1 / sf.prob); r.ev = (sf.prob * americanToDecimal(r.odds) - 1) * 100;
@@ -636,6 +661,9 @@ async function tick() {
   });
   const scanAt = Date.now();
   sharpClock.update(rows);
+  // When these Gambit prices were fetched, and (live) how long ago the watched sharp price last
+  // moved: saved with a bet so Show bets can say how old the reference prices were when it was placed.
+  for (const r of rows) { r.gambitAt = scanAt; if (r.isLive) r.sharpAgeSec = sharpClock.ageSec(r, scanAt); }
   { const ids = new Set();
     for (const r of rows) { ids.add(r.id); const s = shown.get(r.id); if (!s || s.odds !== r.odds) shown.set(r.id, { odds: r.odds, since: scanAt }); }
     for (const id of shown.keys()) if (!ids.has(id)) shown.delete(id);
@@ -727,6 +755,7 @@ async function tick() {
     log.warn(`scan took ${(tookMs / 1000).toFixed(1)}s (Gambit ${((scanAt - tickAt) / 1000).toFixed(1)}s, book prices ${(directTook / 1000).toFixed(1)}s)`);
   }
   lastScan = { rows, gambitRows, tickAt, scanAt, doneAt: Date.now() };
+  checkAfterAccept(rows, tickAt, scanAt);
   if (!ev.length) return;
   if (!dryRun && !bridge.connected()) { log.warn('Chrome extension not connected — not placing'); return; }
 

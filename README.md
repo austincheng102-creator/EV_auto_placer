@@ -294,6 +294,16 @@ data is in `bets.json`). Dry runs go to `bets.dry.csv`. Each row has:
   (Power, Multiplicative, Additive, Shin) and how many books are behind it. If Gambit's page shows a
   higher EV than the log, it's using a different method than the lowest one; find it in those columns.
 - EV at Gambit's price and at the placed price, Novig's odds and EV, stake, and Hard Rock's max stake.
+- **Fair set by**, **Gambit prices fetched at** and **secs from those prices to bet accepted**: which
+  book(s) set the fair price and the win % taken from them, and how old the Gambit prices behind the
+  EV were when the book took the bet. Then **fair odds in the first Gambit prices after accepted** and
+  the EV against that, to see whether the fair price held during the book's hold.
+
+In **Show bets**, hover a bet (tap on a phone) to see the same thing: the fair price and which book
+set it, every book's two sides with the win % the fair calculation used from each (or why it was left
+out, e.g. a prediction market with too little money), the time of those Gambit prices, how long
+before the bet was accepted they were, how long since the sharp price last moved (live), and the
+fair price right after the bet was accepted. Bets placed before this was added show the older popup.
 
 **Closing line value (CLV).** After a bet is placed the app keeps watching Gambit's fair price for
 the same selection. At game start it saves the last pre-game fair price (the "close") and works out

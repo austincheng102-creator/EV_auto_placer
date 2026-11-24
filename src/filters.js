@@ -328,10 +328,57 @@ export function sharpFair(cfg, row) {
   const fromPinnacle = row.fairSource === 'PS3838';
   if (fromPinnacle && Number.isFinite(row.fairProb)) probs.pinnacle = row.fairProb;
   const vals = Object.values(probs);
-  if (!vals.length) return { prob: fromPinnacle ? row.fairProb : null, books: [], probs, changed: !fromPinnacle };
+  const gambitPinnacle = fromPinnacle && Number.isFinite(row.fairProb);
+  if (!vals.length) return { prob: fromPinnacle ? row.fairProb : null, books: [], probs, changed: !fromPinnacle, gambitPinnacle };
   const prob = Math.min(...vals);
   const books = Object.keys(probs).filter((n) => probs[n] === prob);
-  return { prob, books, probs, changed: !fromPinnacle || prob < row.fairProb };
+  return { prob, books, probs, changed: !fromPinnacle || prob < row.fairProb, gambitPinnacle };
+}
+
+/**
+ * What set a row's fair price, book by book, for the bet log and the Show bets popup (Austin,
+ * 2026-11-24: the hover has to show the reference prices that were really used for the EV).
+ * Returns { how, books: [{ name, id, noVig, role, why }] }:
+ *   role 'fair' = set the fair price (the lowest, or part of the average on Arb-table rows),
+ *        'used' = counted, but another book was lower, 'not used' = left out (why says why).
+ * noVig = that book's win % for our side exactly as the fair calculation saw it.
+ */
+export function fairBreakdown(cfg, row) {
+  const books = [];
+  const firstId = (list) => list.map(Number).find((id) => row.prices?.[id]?.odds != null) ?? list.map(Number)[0] ?? null;
+  const same = (a, b) => Math.abs(a - b) < 1e-12;
+  if (row.arb && row.refProbs) {
+    const used = new Set(row.refUsed || String(row.fairSource || '').replace(/^arb table: /, '').split('/'));
+    const avg = row.refMode === 'average';
+    for (const [n, p] of Object.entries(row.refProbs)) {
+      const id = firstId([].concat(row.refIds?.[n] ?? []).filter((x) => Number(x) !== Number(row.gambitBookId)));
+      const role = !used.has(n) ? 'not used' : avg || same(p, row.fairProb) ? 'fair' : 'used';
+      books.push({ name: n, id, noVig: p, role, why: role === 'not used' ? 'too far from the other reference books' : null });
+    }
+    return { how: `${avg ? 'Average' : 'Lowest'} no-vig win % of the reference books that agree (simple no-vig of each book's two sides)`, books };
+  }
+  const fc = row.fairCalc;
+  if (fc) {
+    const pm = pmState(cfg, row);
+    for (const [n, p] of Object.entries(fc.probs || {})) {
+      const id = pm.used[n] ?? firstId(ids(cfg, n));
+      books.push({ name: n, id, noVig: p, role: fc.books.includes(n) ? 'fair' : 'used',
+        why: n === 'pinnacle' && fc.gambitPinnacle ? "Gambit's own Pinnacle fair (lowest of its 4 no-vig methods)" : null });
+    }
+    for (const b of pm.bad) if (!books.some((x) => x.id === Number(b.id))) books.push({ name: b.name, id: Number(b.id), noVig: null, role: 'not used', why: b.why });
+    for (const n of ['pinnacle', ...(row.isProp ? ['fanduel'] : [])]) {
+      if (fc.probs?.[n] != null) continue;
+      const id = firstId(ids(cfg, n));
+      if (row.prices?.[id]?.odds != null) books.push({ name: n, id, noVig: null, role: 'not used', why: 'other side missing or the two sides don\'t fit one line' });
+    }
+    return { how: 'Lowest win % of the sharp books: Pinnacle, prediction markets with enough money behind them' + (row.isProp ? ', FanDuel' : '') +
+      '. Sportsbooks: lowest of 3 no-vig methods; prediction markets: lower of the mid and the money-weighted mid', books };
+  }
+  if (row.fairSource === 'PS3838') {
+    books.push({ name: 'pinnacle', id: firstId(ids(cfg, 'pinnacle')), noVig: row.fairProb, role: 'fair', why: "Gambit's own Pinnacle fair (lowest of its 4 no-vig methods)" });
+    return { how: "Gambit's Pinnacle fair, lowest of its 4 no-vig methods", books };
+  }
+  return { how: `Gambit's ${row.fairSource || 'market'} fair from ${row.fairBooks ?? '?'} book prices, lowest of its 4 no-vig methods`, books };
 }
 
 /** No-vig win probability from one book's two sides; null if one side is missing or they don't fit one line. */

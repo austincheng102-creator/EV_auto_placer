@@ -179,6 +179,8 @@ export function arbsToRows(json, g, a, fairOut = null) {
           devig: Object.fromEntries(Object.entries(rf.probs).map(([n, p]) => [n, p])),
           fairBooks: rf.books.length, fairSource: `arb table: ${rf.books.join('/')}`,
           refSpread: rf.spread, refProbs: rf.probs, minEv: a.minEvPct, arb: true, isProp: true,
+          // Which reference books set the fair (the agreeing set), how (lowest/average) and their Gambit ids: for the bet log.
+          refUsed: rf.books, refMode: a.fair, refIds: a.refBooks,
           sharpKey: fairKey({ event: ev.event_name, marketKey: marketName, selection: parts.selection, line: parts.line }),
         });
       }

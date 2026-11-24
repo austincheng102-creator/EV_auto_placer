@@ -162,7 +162,7 @@ select { font: inherit; font-size: 12px; background: var(--surface); color: var(
 .info { display: inline-block; margin-left: 6px; font-size: 12px; color: var(--text-3); }
 tr.hasodds { cursor: default; }
 tr.hasodds:hover td { background: var(--chip); }
-#oddsTip { position: fixed; z-index: 50; display: none; max-width: 440px; background: var(--surface); color: var(--text);
+#oddsTip { position: fixed; z-index: 50; display: none; max-width: 520px; background: var(--surface); color: var(--text);
   border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; font-size: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.18); pointer-events: none; }
 #oddsTip.on { display: block; }
 #oddsTip .tt { font-weight: 600; margin-bottom: 2px; }
@@ -175,6 +175,9 @@ tr.hasodds:hover td { background: var(--chip); }
 #oddsTip td.better { color: var(--good); font-weight: 600; }
 #oddsTip td.thin { color: var(--text-3); text-decoration: line-through; }
 #oddsTip .tf { margin-top: 8px; color: var(--text-2); }
+#oddsTip .fair { font-weight: 600; margin-bottom: 4px; }
+#oddsTip tr.set td { font-weight: 600; }
+#oddsTip tr.off td { color: var(--text-3); }
 </style>
 </head>
 <body>
@@ -572,7 +575,7 @@ function table(list) {
         td.textContent = (b.event || '') + ': ' + (b.market || '') + ' ' + (b.selection || '') + (b.line != null ? ' ' + b.line : '');
         if (b.live) { const p = document.createElement('span'); p.className = 'pill'; p.textContent = 'live'; td.append(' ', p); }
         // Hover anywhere on the row: every book's odds at the time of the bet (popup below the table code).
-        if (b.otherBooks || b.sharpNoVig) {
+        if (b.otherBooks || b.sharpNoVig || b.ref) {
           const i = document.createElement('span'); i.className = 'info'; i.textContent = 'ⓘ'; td.append(i);
           tr.classList.add('hasodds'); tr.dataset.tip = '1'; tr._bet = b;
         }
@@ -636,7 +639,55 @@ if (LIVE) setInterval(async () => {
   const dec = (o) => (o > 0 ? 1 + o / 100 : 1 + 100 / -o);
   const BOOKS = { hardrock: 'Hard Rock', betrivers: 'BetRivers', fanduel: 'FanDuel', betmgm: 'BetMGM', draftkings: 'DraftKings', thescore: 'theScore' };
   const fmt = (o) => (o == null ? '?' : (o > 0 ? '+' : '') + o);
+  const pc = (p) => (Number.isFinite(p) ? (p * 100).toFixed(1) + '%' : '?');
+  const clock = (t) => { const d = new Date(t); return isNaN(d) ? '?' : d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' }); };
+  const gap = (a, z) => { const s = (Date.parse(z) - Date.parse(a)) / 1000; return Number.isFinite(s) ? (Math.abs(s) < 10 ? s.toFixed(1) : Math.round(s)) + 's' : null; };
+  const evAt = (o, p) => (o != null && Number.isFinite(p) ? (p * dec(o) - 1) * 100 : null);
+  const pct1 = (v) => (Number.isFinite(v) ? (v >= 0 ? '+' : '') + v.toFixed(1) + '%' : '?');
+  // Bets logged with the exact reference prices behind their EV (bets.json "ref"): the fair price,
+  // which book set it, each book's two sides and the win % the fair calculation took from it, all
+  // from the one Gambit fetch the bet was judged on, with how old those prices were.
+  function refHtml(b) {
+    const r = b.ref, mine = num(b.odds), sent = num(b.sentOdds) ?? mine, bookName = BOOKS[b.book] || b.book || '?';
+    const setBy = r.books.filter((x) => x.role === 'fair').map((x) => x.name);
+    let h = '<div class="tt">' + esc((b.event || '') + ': ' + (b.market || '') + ' ' + (b.selection || '') + (b.line != null ? ' ' + b.line : '')) + '</div>';
+    h += '<div class="ts">We got ' + esc(fmt(mine)) + ' on ' + esc(bookName) + (sent != null && sent !== mine ? ' (we checked ' + esc(fmt(sent)) + ')' : '') + '.</div>';
+    // The EV the bet was placed on (as logged), not recomputed here.
+    const ev = Number.isFinite(b.ev) ? b.ev : evAt(sent, b.fairProb);
+    h += '<div class="fair">Fair ' + esc(fmt(b.fairOdds)) + ' (' + pc(b.fairProb) + ' win)' + (setBy.length ? ', set by ' + esc(setBy.join(' + ')) : '') +
+      ': ' + esc(pct1(ev)) + ' EV at ' + esc(fmt(sent)) + (sent !== mine && mine != null ? ', ' + esc(pct1(evAt(mine, b.fairProb))) + ' at ' + esc(fmt(mine)) : '') + '.</div>';
+    const acc = b.timing?.acceptedAt;
+    let when = r.gambitAt ? 'Prices below are from Gambit at ' + clock(r.gambitAt) + (acc && gap(r.gambitAt, acc) ? ', ' + gap(r.gambitAt, acc) + ' before ' + esc(bookName) + ' accepted the bet' : '') : 'Prices below are from the Gambit fetch the bet was checked on';
+    if (b.live && Number.isFinite(r.sharpAgeSec)) when += '. The sharp price had last moved about ' + Math.round(r.sharpAgeSec) + 's before that';
+    else if (b.live && r.gambitAt) when += ". The sharp price hadn't been seen moving yet";
+    h += '<div class="ts">' + esc(when) + '.</div>';
+    const hasLiq = r.books.some((x) => x.liq != null || x.oppLiq != null);
+    h += '<table><tr><th>Book</th><th class="n">Our side</th><th class="n">Other side</th><th class="n">Win % used</th>' + (hasLiq ? '<th class="n">Liquidity</th>' : '') + '</tr>';
+    h += '<tr class="mine"><td>' + esc(bookName) + ' (bet)</td><td class="n">' + esc(fmt(mine)) + '</td><td class="n"></td><td class="n"></td>' + (hasLiq ? '<td class="n"></td>' : '') + '</tr>';
+    for (const x of r.books) {
+      const better = mine != null && x.odds != null && dec(x.odds) > dec(mine) + 1e-9;
+      const used = x.role === 'fair' || x.role === 'used';
+      const cls = x.role === 'fair' ? ' class="set"' : x.role === 'not used' ? ' class="off"' : '';
+      const tip = x.why ? ' title="' + esc(x.why) + '"' : '';
+      const cell = used ? pc(x.noVig) + (x.role === 'fair' ? ' (fair)' : '') : x.role === 'not used' ? 'not used' : '';
+      h += '<tr' + cls + tip + '><td>' + esc(x.name) + '</td><td class="n' + (better ? ' better' : '') + '">' + esc(fmt(x.odds)) + '</td><td class="n">' + esc(fmt(x.oppOdds)) + '</td><td class="n">' + esc(cell) + '</td>' +
+        (hasLiq ? '<td class="n' + (x.role === 'not used' && x.liq != null ? ' thin' : '') + '">' + (x.liq != null || x.oppLiq != null ? esc('$' + Math.round(x.liq ?? 0) + ' / $' + Math.round(x.oppLiq ?? 0)) : '') + '</td>' : '') + '</tr>';
+    }
+    h += '</table>';
+    const why = r.books.filter((x) => x.why).map((x) => x.name + ': ' + x.why);
+    if (why.length) h += '<div class="tf">' + why.map(esc).join('<br>') + '</div>';
+    if (r.how) h += '<div class="tf">How the fair is set: ' + esc(r.how) + '.</div>';
+    const a = b.atAccept;
+    if (a?.gone) h += '<div class="tf">First Gambit prices after the bet was accepted (' + clock(a.gambitAt) + '): Gambit no longer listed it (it may no longer have been +EV).</div>';
+    else if (a?.none) h += '<div class="tf">After the bet was accepted: ' + esc(a.none) + '.</div>';
+    else if (a) h += '<div class="tf">First Gambit prices after the bet was accepted (' + clock(a.gambitAt) + (acc ? ', ' + gap(acc, a.gambitAt) + ' later' : '') + '): fair ' + esc(fmt(a.fairOdds)) + ' (' + pc(a.fairProb) + ')' +
+      (a.setBy?.length ? ' from ' + esc(a.setBy.map((n) => n[0].toUpperCase() + n.slice(1)).join(' + ')) : '') + ', so ' + esc(pct1(a.ev)) + ' EV at our price.</div>';
+    else if (acc) h += '<div class="tf">Waiting for the first Gambit prices after the bet was accepted.</div>';
+    if (b.sharpNoVig) h += '<div class="tf">' + (b.source === 'arb' ? 'Reference books' : 'Sharp books') + ' simple no-vig win %, for the 3-point agreement check only: ' + esc(b.sharpNoVig) + '</div>';
+    return h;
+  }
   function html(b) {
+    if (b.ref && Array.isArray(b.ref.books)) return refHtml(b);
     const rows = String(b.otherBooks || '').split('; ').filter(Boolean).map((part) => {
       // "Kalshi -112/-107 [$950/$420]": the [..] part is $ liquidity (our side/other side), prediction markets only.
       const m = part.match(/^(.*?) (\S+)\/(\S+?)(?: \[\$(\S+)\/\$(\S+)\])?$/);
@@ -666,7 +717,9 @@ if (LIVE) setInterval(async () => {
       }
       h += '</table>';
     } else h += '<div class="ts">No other books were saved for this bet.</div>';
-    if (b.sharpNoVig) h += '<div class="tf">' + (b.source === 'arb' ? 'Reference books' : 'Sharp books') + ' no-vig win %: ' + esc(b.sharpNoVig) + '</div>';
+    if (b.fairOdds != null) h += '<div class="tf">Fair used: ' + esc(fmt(b.fairOdds)) + (Number.isFinite(b.fairProb) ? ' (' + pc(b.fairProb) + ' win)' : '') + (b.fairSource ? ', ' + esc(b.fairSource) : '') + '.</div>';
+    if (b.sharpNoVig) h += '<div class="tf">' + (b.source === 'arb' ? 'Reference books' : 'Sharp books') + ' simple no-vig win % (3-point check, not always the fair method): ' + esc(b.sharpNoVig) + '</div>';
+    h += '<div class="tf">Older bet: which book set the fair and how old the prices were was not saved yet.</div>';
     return h;
   }
   function place(x, y) {
