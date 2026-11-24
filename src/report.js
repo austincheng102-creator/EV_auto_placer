@@ -191,7 +191,7 @@ tr.hasodds:hover td { background: var(--chip); }
   <div class="controls">
     <div class="seg" id="bookSeg" role="group" aria-label="Book"></div>
     <div class="seg" id="kindSeg" role="group" aria-label="Live or pre-game"></div>
-    <div class="seg" id="srcSeg" role="group" aria-label="Gambit table"></div>
+    <div class="seg" id="srcSeg" role="group" aria-label="Odds table"></div>
     <div class="seg" id="rangeSeg" role="group" aria-label="Time range"></div>
     <div class="daychip" id="dayChip"><span id="dayChipText"></span><button type="button" id="dayClear">Show all days</button></div>
   </div>
@@ -202,8 +202,8 @@ tr.hasodds:hover td { background: var(--chip); }
     <div class="tablewrap"><table id="kindTable"></table></div>
   </section>
   <section class="card" id="srcCard" hidden>
-    <h2>By Gambit table</h2>
-    <p class="desc">Where each bet came from on Gambit: the +EV table or the arbitrage table (player props priced off DraftKings, FanDuel and Caesars). Follows the book, time range and day picked.</p>
+    <h2>By odds table</h2>
+    <p class="desc">Where each bet came from on its odds source (Gambit or PropProfessor): the +EV table or the arbitrage table (player props priced off the reference books). Follows the book, time range and day picked.</p>
     <div class="tablewrap"><table id="srcTable"></table></div>
   </section>
   <section class="card" id="calCard">
@@ -676,6 +676,8 @@ if (LIVE) setInterval(async () => {
   function refHtml(b) {
     const r = b.ref, mine = num(b.odds), sent = num(b.sentOdds) ?? mine, bookName = BOOKS[b.book] || b.book || '?';
     const setBy = r.books.filter((x) => x.role === 'fair').map((x) => x.name);
+    // Which odds source the bet came from (bets.json "feed"; bets from before it was saved are Gambit's).
+    const feed = b.feed || 'Gambit';
     let h = '<div class="tt">' + esc((b.event || '') + ': ' + (b.market || '') + ' ' + (b.selection || '') + (b.line != null ? ' ' + b.line : '')) + '</div>';
     h += '<div class="ts">We got ' + esc(fmt(mine)) + ' on ' + esc(bookName) + (sent != null && sent !== mine ? ' (we checked ' + esc(fmt(sent)) + ')' : '') + '.</div>';
     // The EV the bet was placed on (as logged), not recomputed here.
@@ -683,7 +685,7 @@ if (LIVE) setInterval(async () => {
     h += '<div class="fair">Fair ' + esc(fmt(b.fairOdds)) + ' (' + pc(b.fairProb) + ' win)' + (setBy.length ? ', set by ' + esc(setBy.join(' + ')) : '') +
       ': ' + esc(pct1(ev)) + ' EV at ' + esc(fmt(sent)) + (sent !== mine && mine != null ? ', ' + esc(pct1(evAt(mine, b.fairProb))) + ' at ' + esc(fmt(mine)) : '') + '.</div>';
     const acc = b.timing?.acceptedAt;
-    let when = r.gambitAt ? 'Prices below are from Gambit at ' + clock(r.gambitAt) + (acc && gap(r.gambitAt, acc) ? ', ' + gap(r.gambitAt, acc) + ' before ' + esc(bookName) + ' accepted the bet' : '') : 'Prices below are from the Gambit fetch the bet was checked on';
+    let when = r.gambitAt ? 'Prices below are from ' + feed + ' at ' + clock(r.gambitAt) + (acc && gap(r.gambitAt, acc) ? ', ' + gap(r.gambitAt, acc) + ' before ' + esc(bookName) + ' accepted the bet' : '') : 'Prices below are from the ' + feed + ' read the bet was checked on';
     if (b.live && Number.isFinite(r.sharpAgeSec)) when += '. The sharp price had last moved about ' + Math.round(r.sharpAgeSec) + 's before that';
     else if (b.live && r.gambitAt) when += ". The sharp price hadn't been seen moving yet";
     h += '<div class="ts">' + esc(when) + '.</div>';
@@ -704,11 +706,11 @@ if (LIVE) setInterval(async () => {
     if (why.length) h += '<div class="tf">' + why.map(esc).join('<br>') + '</div>';
     if (r.how) h += '<div class="tf">How the fair is set: ' + esc(r.how) + '.</div>';
     const a = b.atAccept;
-    if (a?.gone) h += '<div class="tf">First Gambit prices after the bet was accepted (' + clock(a.gambitAt) + '): Gambit no longer listed it (it may no longer have been +EV).</div>';
+    if (a?.gone) h += '<div class="tf">First ' + esc(feed) + ' prices after the bet was accepted (' + clock(a.gambitAt) + '): ' + esc(feed) + ' no longer listed it (it may no longer have been +EV).</div>';
     else if (a?.none) h += '<div class="tf">After the bet was accepted: ' + esc(a.none) + '.</div>';
-    else if (a) h += '<div class="tf">First Gambit prices after the bet was accepted (' + clock(a.gambitAt) + (acc ? ', ' + gap(acc, a.gambitAt) + ' later' : '') + '): fair ' + esc(fmt(a.fairOdds)) + ' (' + pc(a.fairProb) + ')' +
+    else if (a) h += '<div class="tf">First ' + esc(feed) + ' prices after the bet was accepted (' + clock(a.gambitAt) + (acc ? ', ' + gap(acc, a.gambitAt) + ' later' : '') + '): fair ' + esc(fmt(a.fairOdds)) + ' (' + pc(a.fairProb) + ')' +
       (a.setBy?.length ? ' from ' + esc(a.setBy.map((n) => n[0].toUpperCase() + n.slice(1)).join(' + ')) : '') + ', so ' + esc(pct1(a.ev)) + ' EV at our price.</div>';
-    else if (acc) h += '<div class="tf">Waiting for the first Gambit prices after the bet was accepted.</div>';
+    else if (acc) h += '<div class="tf">Waiting for the first ' + esc(feed) + ' prices after the bet was accepted.</div>';
     if (b.sharpNoVig) h += '<div class="tf">' + (b.source === 'arb' ? 'Reference books' : 'Sharp books') + ' simple no-vig win %, for the 3-point agreement check only: ' + esc(b.sharpNoVig) + '</div>';
     return h;
   }

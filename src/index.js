@@ -371,7 +371,7 @@ function quietLog() {
 
 const headerText = (row) => {
   const startIn = row.isLive === false ? (parseTime(row.startDate) - Date.now()) / 3600e3 : NaN;
-  const was = row.gambitOdds != null && row.gambitOdds !== row.odds ? `, Gambit showed ${fmtAmerican(row.gambitOdds)}` : '';
+  const was = row.gambitOdds != null && row.gambitOdds !== row.odds ? `, ${feedName} showed ${fmtAmerican(row.gambitOdds)}` : '';
   return `${desc(row)} ${fmtAmerican(row.odds)} (${fmtPct(row.ev)} EV${was}) — ${row.event}${row.isLive ? ' [live]' : Number.isFinite(startIn) ? ` [pre-game, starts in ${startIn < 1 ? `${Math.max(0, Math.round(startIn * 60))}m` : `${startIn.toFixed(1)}h`}]` : ''}${row.book === 'hardrock' && row.gambitBookId ? ` [Gambit book ${row.gambitBookId}]` : ''}`;
 };
 
@@ -416,7 +416,7 @@ async function tryBet(row, ctx) {
   const fj = freshJump(row, quote, ctx);
   if (fj) {
     ctx.outcome = 'fresh jump';
-    lg.warn(`${book.label}: price jumped to ${fmtAmerican(quote.odds)} ${fj.sec.toFixed(1)}s ago (${fmtPct(fj.ev)} EV vs ${fmtPct(fj.gambitEv)} at Gambit's ${fmtAmerican(row.gambitOdds ?? row.odds)}), fair price may not have caught up — skipped, nothing placed`);
+    lg.warn(`${book.label}: price jumped to ${fmtAmerican(quote.odds)} ${fj.sec.toFixed(1)}s ago (${fmtPct(fj.ev)} EV vs ${fmtPct(fj.gambitEv)} at ${feedName}'s ${fmtAmerican(row.gambitOdds ?? row.odds)}), fair price may not have caught up — skipped, nothing placed`);
     return false;
   }
   // Gambit behind the book (Austin, 2026-11-24): on a live bet, when the book's real price is no longer
@@ -593,7 +593,7 @@ let slowWarnAt = 0;
 function directSlow(n, b) {
   if (directSlowAt[n] > Date.now() - 5 * 60e3) return;
   directSlowAt[n] = Date.now();
-  log.warn(`${b.label}: reading its prices directly takes longer than the scan waits (${cfg.directWaitSec ?? 1.5}s${directMs[n] ? `, last read ${(directMs[n] / 1000).toFixed(1)}s` : ''}), so some scans use Gambit's ${b.label} prices; every bet is still checked at ${b.label} first`);
+  log.warn(`${b.label}: reading its prices directly takes longer than the scan waits (${cfg.directWaitSec ?? 1.5}s${directMs[n] ? `, last read ${(directMs[n] / 1000).toFixed(1)}s` : ''}), so some scans use ${feedName}'s ${b.label} prices; every bet is still checked at ${b.label} first`);
 }
 
 /**
@@ -738,7 +738,7 @@ async function tick() {
     clearTimeout(timer);
     if (!res) { directSlow(n, b); return; }
     if (res.e) {
-      if (!(directWarnAt[n] > Date.now() - 60e3)) { directWarnAt[n] = Date.now(); log.warn(`${b.label}: couldn't read its prices directly (${res.e.message}), using Gambit's prices for now`); }
+      if (!(directWarnAt[n] > Date.now() - 60e3)) { directWarnAt[n] = Date.now(); log.warn(`${b.label}: couldn't read its prices directly (${res.e.message}), using ${feedName}'s prices for now`); }
       return;
     }
     mine.forEach((r, i) => Object.assign(r, copies[i]));
@@ -798,7 +798,7 @@ async function tick() {
   const tookMs = Date.now() - tickAt;
   if (tookMs > Math.max(5000, 2 * pollSeconds * 1000) && !(slowWarnAt > Date.now() - 5 * 60e3)) {
     slowWarnAt = Date.now();
-    log.warn(`scan took ${(tookMs / 1000).toFixed(1)}s (Gambit ${((scanAt - tickAt) / 1000).toFixed(1)}s, book prices ${(directTook / 1000).toFixed(1)}s)`);
+    log.warn(`scan took ${(tookMs / 1000).toFixed(1)}s (${feedName} ${((scanAt - tickAt) / 1000).toFixed(1)}s, book prices ${(directTook / 1000).toFixed(1)}s)`);
   }
   lastScan = { rows, gambitRows, tickAt, scanAt, doneAt: Date.now() };
   checkAfterAccept(rows, tickAt, scanAt);
@@ -899,7 +899,7 @@ function logTiming(row, book, ctx) {
   };
   const delay = Number(ctx.quote?.betDelaySec);
   const bookDelaySec = Number.isFinite(delay) && delay > 0 ? delay : null;
-  log.info(`timing: ${desc(row)} (${ctx.outcome || '?'}): found ${secs(t.findMs)} after ${fast ? 'the fast price check started' : `the Gambit poll (Gambit ${secs(t.gambitMs)}, book prices ${secs(t.bookPricesMs)})`}, re-check ${secs(t.checkMs)}, our rules ${secs(t.rulesMs)}, ${book.label} answered ${secs(t.answerMs)} after we sent it${bookDelaySec ? ` (its live bet delay is ${bookDelaySec}s)` : ''}${ctx.attempts.length > 1 ? `, ${ctx.attempts.length - 1} price-moved re-tr${ctx.attempts.length > 2 ? 'ies' : 'y'}` : ''}, total ${secs(t.totalMs)}`);
+  log.info(`timing: ${desc(row)} (${ctx.outcome || '?'}): found ${secs(t.findMs)} after ${fast ? 'the fast price check started' : `the ${feedName} poll (${feedName} ${secs(t.gambitMs)}, book prices ${secs(t.bookPricesMs)})`}, re-check ${secs(t.checkMs)}, our rules ${secs(t.rulesMs)}, ${book.label} answered ${secs(t.answerMs)} after we sent it${bookDelaySec ? ` (its live bet delay is ${bookDelaySec}s)` : ''}${ctx.attempts.length > 1 ? `, ${ctx.attempts.length - 1} price-moved re-tr${ctx.attempts.length > 2 ? 'ies' : 'y'}` : ''}, total ${secs(t.totalMs)}`);
   timingLog.record({
     time: new Date().toISOString(), book: row.book, live: row.isLive ? 'live' : 'pre-game', event: row.event, market: row.market,
     selection: row.selection, line: row.line, odds: a0.odds, outcome: ctx.outcome || '', foundBy: ctx.via,
@@ -948,7 +948,7 @@ async function fastTick() {
     const { ev } = pickBets(fresh, { quiet: true });
     const batch = ev.slice(0, Math.max(0, maxInFlight - inflight.size));
     if (!batch.length) return;
-    log.autoev(`Fast price check, next ${batch.length}: ${batch.map((r) => `${desc(r)} ${fmtAmerican(r.odds)} (${fmtPct(r.ev)} EV${r.gambitOdds != null && r.gambitOdds !== r.odds ? `, Gambit showed ${fmtAmerican(r.gambitOdds)}` : ''})`).join(', ')}`);
+    log.autoev(`Fast price check, next ${batch.length}: ${batch.map((r) => `${desc(r)} ${fmtAmerican(r.odds)} (${fmtPct(r.ev)} EV${r.gambitOdds != null && r.gambitOdds !== r.odds ? `, ${feedName} showed ${fmtAmerican(r.gambitOdds)}` : ''})`).join(', ')}`);
     for (const r of batch) startBet(r, startedAt, { pollAt: startedAt, via: 'fast' });
   } finally { fastRunning = false; }
 }

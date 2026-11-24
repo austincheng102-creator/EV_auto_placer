@@ -39,6 +39,11 @@ export const PP_IDS = {
   FanDuel: 100, DraftKings: 200, Caesars: 300, BetMGM: 400, theScore: 700, BetRivers: 1004, Hardrock: DEFAULT_BOOK_IDS.hardrock,
   BallyBet: 500, BetParx: 1005, Fliff: 800, Bovada: 1006, BetOnline: 613, PrizePicks: 385,
 };
+// How each PropProfessor book is shown in the bet log and the Show bets popup. Saved with each price
+// (prices[id].name), because the 90000+ ids are handed out as books first appear in a run and mean
+// nothing afterwards, and Bally Bet shares Kambi's id (same Kambi prices as BetRivers).
+const PP_NAMES = { Hardrock: 'Hard Rock', NoVigApp: 'Novig', Prophet: 'ProphetX', PolymarketUS: 'Polymarket US', BallyBet: 'Bally Bet' };
+export const ppName = (name) => PP_NAMES[name] || String(name || '?');
 const otherIds = new Map();
 export function ppId(name) {
   if (PP_IDS[name] != null) return PP_IDS[name];
@@ -143,6 +148,7 @@ function pricesOf(list, flip = false, absLine = null) {
     prices[id] = {
       odds: Number.isFinite(a) && a !== 0 ? a : null, oppOdds: Number.isFinite(b) && b !== 0 ? b : null,
       liq: Number.isFinite(la) ? la : null, oppLiq: Number.isFinite(lb) ? lb : null,
+      name: ppName(s.book),
     };
   }
   return prices;

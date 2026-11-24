@@ -48,7 +48,7 @@ export function otherBooksText(prices, ownId) {
   return ids.map((id) => {
     const pr = prices[id];
     const liq = pr.liq > 0 || pr.oppLiq > 0 ? ` [${usd(pr.liq)}/${usd(pr.oppLiq)}]` : '';
-    return `${GAMBIT_BOOK_NAMES[id] || `book ${id}`} ${am(pr.odds)}/${am(pr.oppOdds)}${liq}`;
+    return `${pr.name || GAMBIT_BOOK_NAMES[id] || `book ${id}`} ${am(pr.odds)}/${am(pr.oppOdds)}${liq}`;
   }).join('; ') || null;
 }
 
@@ -74,12 +74,13 @@ export function refSnapshot(row, breakdown) {
   ids.sort((a, b) => rank(a) - rank(b) || ((SHARP_FIRST.indexOf(a) + 1 || 99) - (SHARP_FIRST.indexOf(b) + 1 || 99)) || a - b);
   const books = ids.map((id) => {
     const pr = prices[id] || {}, b = byId.get(id);
-    const name = GAMBIT_BOOK_NAMES[id] || (b ? refName(b.name) : `book ${id}`);
+    // PropProfessor rows carry each book's own name (its 90000+ ids mean nothing after the run).
+    const name = pr.name || GAMBIT_BOOK_NAMES[id] || (b ? refName(b.name) : `book ${id}`);
     return {
       name, id, odds: Number.isFinite(pr.odds) ? pr.odds : null, oppOdds: Number.isFinite(pr.oppOdds) ? pr.oppOdds : null,
       liq: pr.liq > 0 || pr.oppLiq > 0 ? pr.liq ?? null : null, oppLiq: pr.liq > 0 || pr.oppLiq > 0 ? pr.oppLiq ?? null : null,
       noVig: b?.noVig ?? null, role: b?.role ?? null,
-      why: b?.why ?? (name === ownName ? "Gambit's copy of the book we bet, under another id" : null),
+      why: b?.why ?? (name === ownName ? 'another copy of the book we bet, under another id' : null),
     };
   });
   // A book in the fair calculation that Gambit has no price row for (Gambit's own Pinnacle fair) still shows.
