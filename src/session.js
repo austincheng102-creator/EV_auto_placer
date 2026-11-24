@@ -28,8 +28,9 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
   // Gambit: log back in (the extension reloads the tab first if the page still looks logged in).
   const fixGambit = (why) => bridge?.tell({ type: 'login', book: 'gambit', why });
   const down = new Map();   // site -> { since, why, remindedAt }
-  const label = (site) => (site === 'gambit' ? 'Gambit' : labels[site] || site);
+  const label = (site) => (site === 'gambit' ? 'Gambit' : site === 'propprofessor' ? 'PropProfessor' : labels[site] || site);
   const howToFix = (site) => site === 'gambit' ? (s.gambitAutoLogin !== false ? 'The extension is logging back in with your Chrome-saved password; if that keeps failing, log in again in the Gambit tab' : 'Log in again in the Gambit tab')
+    : site === 'propprofessor' ? 'Log in again in a PropProfessor tab (the extension reads the tables from it)'
     : site === 'hardrock' ? 'Log in again in the Hard Rock tab, then place one small bet by hand for the location check'
     : `Log in again in the ${label(site)} tab`;
 
@@ -95,7 +96,7 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
   }
 
   let timer = null;
-  let gambitFailSince = 0;
+  let gambitFailSince = 0, ppFailSince = 0;
   const gambitGraceMs = Number(s.gambitAlertSeconds ?? 20) * 1000;
   return {
     start() {
@@ -113,6 +114,13 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
       if (!/HTTP 40[13]|log in|no Gambit login|no open Gambit tab/i.test(err.message)) return;
       if (!gambitFailSince) gambitFailSince = Date.now();
       if (Date.now() - gambitFailSince >= gambitGraceMs) bad('gambit', err.message);
+    },
+    /** The PropProfessor read's result: an Error, or null when it worked. Same grace period as Gambit. */
+    propprofessor(err) {
+      if (!err) { ppFailSince = 0; return ok('propprofessor'); }
+      if (!/log in|logged out|no open PropProfessor|HTTP 40[13]/i.test(err.message)) return;
+      if (!ppFailSince) ppFailSince = Date.now();
+      if (Date.now() - ppFailSince >= gambitGraceMs) bad('propprofessor', err.message);
     },
     /** A book's request that needs the login just worked: it isn't logged out. */
     bookOk(name) { ok(name); },

@@ -10,6 +10,7 @@ const BOOK_HOSTS = {
   draftkings: [/^sportsbook\.draftkings\.com$/],
   thescore: [/^sportsbook\.thescore\.bet$/],
   gambit: [/(^|\.)gambitodds\.com$/],
+  propprofessor: [/(^|\.)propprofessor\.com$/],
 };
 
 // Saved logins: kept in memory-only storage (gone when Chrome restarts or the extension reloads)
@@ -1665,11 +1666,123 @@ async function runInTab(tabId, request) {
   return r.result;
 }
 
+
+// ---- PropProfessor: read the +EV / arbitrage tables your open PropProfessor tabs already show ----
+// Nothing is requested from PropProfessor here: the page keeps its own table up to date (and its own
+// login), and this only reads that table out of the page. A page shows pre-game or live, not both, and
+// goes back to Pre-Match when it reloads, so each table gets its own tab: a missing one is opened in
+// the background, and a tab showing the wrong one gets its Live / Pre-Match button clicked.
+const PP_PAGES = { ev: 'https://www.propprofessor.com/positive_ev', arb: 'https://www.propprofessor.com/arbitrage' };
+const ppRole = new Map();      // tabId -> 'ev:false' etc. (the table this tab is kept on)
+const ppOpenedAt = {};         // role -> when a tab was opened for it
+const ppClickedAt = new Map(); // tabId -> when its Live / Pre-Match button was last clicked
+
+// Runs in the page (MAIN world). Must be self-contained. Reads the page's own query cache.
+function ppReadPage(books, clickLive) {
+  const path = location.pathname.replace(/\/$/, '');
+  const page = path === '/positive_ev' ? 'ev' : path === '/arbitrage' ? 'arb' : null;
+  const out = { path, page };
+  const btn = (re) => [...document.querySelectorAll('button')].find((b) => re.test((b.textContent || '').trim()));
+  const live = btn(/^Live$/i), pre = btn(/^Pre-?Match$/i);
+  const on = (b) => !!b && (b.getAttribute('aria-selected') === 'true' || b.getAttribute('data-state') === 'active' || b.getAttribute('aria-pressed') === 'true');
+  out.showsLive = on(live) ? true : on(pre) ? false : null;
+  if (clickLive != null && page && (clickLive ? live : pre) && out.showsLive !== clickLive) { (clickLive ? live : pre).click(); out.clicked = true; }
+  if (btn(/^Log in \/ Sign up/i)) out.loggedOut = 'the page shows Log in / Sign up';
+  if (!page) return out;
+  const root = document.getElementById('__next');
+  let client = window.__evppQC;
+  if (!client || typeof client.getQueryCache !== 'function') {
+    client = null;
+    const k = root && Object.keys(root).find((x) => x.startsWith('__reactContainer'));
+    const stack = k ? [root[k]] : [];
+    for (let n = 0; stack.length && n < 60000; n++) {
+      const f = stack.pop();
+      if (!f) continue;
+      const p = f.memoizedProps;
+      if (p && p.client && typeof p.client === 'object' && typeof p.client.getQueryCache === 'function') { client = p.client; break; }
+      if (f.child) stack.push(f.child);
+      if (f.sibling) stack.push(f.sibling);
+    }
+    window.__evppQC = client;
+  }
+  if (!client) { out.error = 'the page\'s table isn\'t loaded yet'; return out; }
+  const want = page === 'ev' ? 'ev-prof' : 'arbitrage';
+  let best = null;
+  for (const q of client.getQueryCache().getAll()) {
+    const key = q.queryKey;
+    if (!Array.isArray(key) || key[0] !== 'backend' || key[1] !== want || !key[2] || !key[2].settings) continue;
+    if (!Array.isArray(q.state.data)) continue;
+    if (!best || q.state.dataUpdatedAt > best.state.dataUpdatedAt) best = q;
+  }
+  if (!best) { out.error = 'no table in the page yet (still loading, or no subscription for it)'; return out; }
+  out.live = !!best.queryKey[2].isLive;
+  out.updatedAt = best.state.dataUpdatedAt;
+  const ours = new Set(books || []);
+  // Rows on our books in full; the rest only what closing line value needs (their fair price).
+  const keep = (r) => (page === 'ev' ? ours.has(r.book) : (ours.has(r.site1) || ours.has(r.site2)));
+  out.rows = [];
+  for (const r of best.state.data) {
+    if (keep(r)) out.rows.push(r);
+    else if (page === 'ev') out.rows.push({ id: r.id, gameId: r.gameId, start: r.start, isLive: r.isLive, league: r.league, homeTeam: r.homeTeam, awayTeam: r.awayTeam,
+      market: r.market, marketType: r.marketType, participant: r.participant, selection: r.selection, line: r.line, book: r.book, noVigOdds: r.noVigOdds, pageUrl: r.pageUrl });
+  }
+  out.total = best.state.data.length;
+  return out;
+}
+
+async function ppRead(req) {
+  const tabs = (await bookTabs()).filter((t) => t.book === 'propprofessor');
+  for (const id of ppRole.keys()) if (!tabs.some((t) => t.id === id)) ppRole.delete(id);
+  const roles = (req.wants || []).map((w) => `${w.page}:${!!w.live}`);
+  const read = async (t, click) => {
+    const run = chrome.scripting.executeScript({ target: { tabId: t.id }, world: 'MAIN', func: ppReadPage, args: [req.books || [], click] });
+    const [r] = await Promise.race([run, sleep(req.timeoutMs || 15000).then(() => [{ result: { error: 'the tab didn\'t answer (frozen or still loading)' } }])]).catch((e) => [{ result: { error: String(e?.message || e) } }]);
+    return { id: t.id, ...(r?.result || { error: 'could not read that tab' }) };
+  };
+  let seen = await Promise.all(tabs.map((t) => read(t, null)));
+  const notes = [];
+  if (seen.length && seen.every((x) => x.loggedOut)) return { loggedOut: seen[0].loggedOut };
+  // Give each wanted table a tab: one already showing it, else a free tab on the same page (click it
+  // over to live / pre-game), else open a new tab (at most once a minute per table).
+  const used = new Set();
+  const tables = [];
+  let opening = false;
+  for (const role of roles) {
+    const [page, l] = role.split(':'), live = l === 'true';
+    let t = seen.find((x) => !used.has(x.id) && ppRole.get(x.id) === role && x.page === page)
+      || seen.find((x) => !used.has(x.id) && !ppRole.has(x.id) && x.page === page && x.live === live && !x.error)
+      || seen.find((x) => !used.has(x.id) && !ppRole.has(x.id) && x.page === page);
+    if (!t) {
+      if (req.openTabs !== false && Date.now() - (ppOpenedAt[role] || 0) > 60e3) {
+        ppOpenedAt[role] = Date.now();
+        const nt = await chrome.tabs.create({ url: PP_PAGES[page], active: false }).catch(() => null);
+        if (nt) { ppRole.set(nt.id, role); chrome.tabs.update(nt.id, { autoDiscardable: false }).catch(() => {}); notes.push(`opened a tab for the ${page === 'ev' ? 'Positive EV' : 'Arbitrage'} ${live ? 'live' : 'pre-game'} table`); }
+      }
+      opening = true;
+      continue;
+    }
+    used.add(t.id);
+    ppRole.set(t.id, role);
+    // Showing the other half (or reloaded back to Pre-Match): click it over, at most every 10s.
+    if ((t.showsLive != null && t.showsLive !== live) || (t.live != null && t.live !== live)) {
+      if (Date.now() - (ppClickedAt.get(t.id) || 0) > 10e3) {
+        ppClickedAt.set(t.id, Date.now());
+        await read({ id: t.id }, live);
+        notes.push(`switched a ${page === 'ev' ? 'Positive EV' : 'Arbitrage'} tab to ${live ? 'Live' : 'Pre-Match'}`);
+      }
+      continue;
+    }
+    tables.push({ page, live, updatedAt: t.updatedAt, rows: t.rows, total: t.total, error: t.error });
+  }
+  return { tables, notes, opening };
+}
+
 async function handle(msg) {
   const reply = (o) => ws?.readyState === 1 && ws.send(JSON.stringify({ id: msg.id, ...o }));
   try {
     const { armed = false } = await chrome.storage.local.get('armed');
     if (msg.request.kind === 'place' && !armed) return reply({ error: 'extension is DISARMED (open the popup to arm)' });
+    if (msg.book === 'propprofessor' && msg.request.kind === 'ppRead') return reply(await ppRead(msg.request));
     if (msg.request.kind === 'place') placing[msg.book] = (placing[msg.book] || 0) + 1;
     const matches = (await bookTabs()).filter((t) => t.book === msg.book);
     const tab = matches.find((t) => /^https:\/\/(www\.)?[^/]+\/?/.test(t.url || '') && !/api/.test(new URL(t.url).hostname)) || matches[0];

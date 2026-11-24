@@ -1,4 +1,5 @@
 {
+  "source": "gambit",
   "books": [
     "betrivers"
   ],
@@ -171,5 +172,15 @@
       "minEvPct": 15,
       "maxOdds": null
     }
+  },
+  "propprofessor": {
+    "live": true,
+    "pregame": true,
+    "arbPregame": true,
+    "arbLive": true,
+    "openTabs": true,
+    "liveMaxAgeSec": 30,
+    "pregameMaxAgeSec": 180,
+    "preferInBoth": false
   }
 }

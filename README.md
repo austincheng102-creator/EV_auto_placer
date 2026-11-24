@@ -351,6 +351,44 @@ from `bets.json`, so the running placer never overwrites them.
 - A read-only copy is saved as `bets.html` and opens on its own later.
 - Bets placed before the bet log existed (from `state.json`) are included.
 
+## Odds source: Gambit, PropProfessor or both
+Where the +EV rows come from is one line in config.json:
+```json
+"source": "gambit"
+```
+- `"gambit"` (default): Gambit's +EV and arbitrage tables, as before.
+- `"propprofessor"`: PropProfessor's Positive EV and Arbitrage tables instead.
+- `"both"`: both at once. The same bet listed by both is tried once (Gambit's row, or PropProfessor's with
+  `"propprofessor": {"preferInBoth": true}`). PropProfessor's games take Gambit's game names, so "one bet
+  per game and market" still holds across the two. If one of them fails, the other keeps going.
+
+`--source propprofessor` on the command line does the same for one run.
+
+**How PropProfessor is read:** stay logged in to propprofessor.com in Chrome. The extension reads the
+tables your PropProfessor pages already show. It never calls PropProfessor itself, so the page keeps
+its own login going. A PropProfessor page shows either pre-game or live, so the extension keeps one tab
+for each table it needs: pre-game +EV, live +EV, and pre-game and live arbitrage when `arbProps` is on.
+It opens any missing tab in the background and clicks **Live** / **Pre-Match** on it. A table that
+hasn't updated for 30s (live) or 180s (pre-game) isn't used until it updates again.
+
+**Your PropProfessor settings decide what it sends:** books, leagues, min EV, hours away, devig and
+comparison books. Keep them at least as wide as the app's rules, for example PropProfessor min EV at
+or below the app's `minEvPct`, its books including the ones you bet, and its hours away covering
+`pregameMaxHours`.
+
+**The rules are the same as for Gambit.** Each PropProfessor row becomes a Gambit-style row: every
+book's price for both sides (Pinnacle, Kalshi, Polymarket, Novig, ProphetX, FanDuel, DraftKings,
+Caesars, ...) is mapped to the Gambit ids the rules use. The fair price is PropProfessor's no-vig fair,
+then replaced by the sharp-book fair exactly as for Gambit rows. The bet ids come from PropProfessor's
+links for each book. Arbitrage-table props are priced off `arbProps.refBooks` the same way as Gambit's.
+
+```json
+"propprofessor": { "live": true, "pregame": true, "arbPregame": true, "arbLive": true,
+                   "openTabs": true, "liveMaxAgeSec": 30, "pregameMaxAgeSec": 180, "preferInBoth": false }
+```
+On the first run, a sample of each table is saved next to the app
+(`propprofessor-sample-ev-pregame.json` and so on), to check how it was read.
+
 ## Staying logged in (Gambit, BetRivers, Hard Rock)
 Why the sites logged out during long runs: each site's own page keeps your login alive (Hard
 Rock's token lasts 28 minutes and its page renews it every 10 seconds; Gambit's lasts about an
