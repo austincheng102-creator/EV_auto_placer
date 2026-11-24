@@ -26,7 +26,7 @@ import { makeBetLog, parseTime } from './betlog.js';
 import { makePriceLog, makeSpreadSkipLog, makeTimingLog } from './skiplog.js';
 import { makePropFunnel } from './propfunnel.js';
 import { writeSnapshot, serveReport, openInBrowser } from './report.js';
-import { applyFilterDefaults, tooShort, evTooHigh, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom, groupClash, groupCoolingDown, groupMaxBets, sameOddsRepeat, isPropBet, playerStats, tooManyStats, playerKey, statKey, minEvFor, longPropRule, softCheck, fmtSoft, marketCheck, fmtMarket, sharpFair, fairBreakdown } from './filters.js';
+import { applyFilterDefaults, tooShort, evTooHigh, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom, groupClash, groupCoolingDown, groupMaxBets, sameEvRepeat, isPropBet, playerStats, tooManyStats, playerKey, statKey, minEvFor, longPropRule, softCheck, fmtSoft, marketCheck, fmtMarket, sharpFair, fairBreakdown } from './filters.js';
 
 const root = appDir;
 let args = process.argv.slice(2);
@@ -342,7 +342,7 @@ function propStage(r, { groups, perEvent, stats, now }) {
   const lim = liveAgeLimit(cfg, r);
   if (!freeLive(r) && r.isLive && lim != null && r.prices) { const a = sharpClock.ageSec(r); if (a == null || a > lim) return 'stale'; }
   if (groupRoom(cfg, groups, r) == null) return groupCoolingDown(cfg, groups, r) ? 'groupCooldown' : 'group';
-  if (sameOddsRepeat(cfg, groups, r) != null) return 'sameOdds';
+  if (sameEvRepeat(cfg, groups, r) != null) return 'sameEv';
   if ([...inflight.values()].some((f) => groupClash(cfg, r, f))) return 'groupInFlight';
   if ((cooldown.get(r.id) || 0) >= now) return 'cooldown';
   if (overEventCap(r, perEvent)) return 'perEvent';
@@ -505,8 +505,8 @@ async function placeAt(row, book, quote, ctx, retries = 0) {
   const room = groupRoom(cfg, groupTotals(state.placed), row);
   if (room == null && groupCoolingDown(cfg, groupTotals(state.placed), row)) { ctx.outcome = 'group cooldown'; lg.warn(`group cooldown: bet on (${row.event}, ${row.market}) on ${BOOK_LABELS[row.book]} less than ${cfg.group.cooldownSec}s ago — skipped`); return false; }
   if (room == null) { ctx.outcome = 'group full'; lg.warn(`group full: ${groupMaxBets(cfg, row) ?? 'any'}${row.isLive === false ? ' pre-game' : ''} bets / $${cfg.group.maxStake ?? 'any'} already on (${row.event}, ${row.market}, ${row.selection}) — skipped`); return false; }
-  const sameAt = sameOddsRepeat(cfg, groupTotals(state.placed), row, quote.odds);
-  if (sameAt != null) { ctx.outcome = 'same odds'; lg.warn(`same bet already placed on ${BOOK_LABELS[row.book]} at ${fmtAmerican(sameAt)}; ${fmtAmerican(quote.odds)} is within ${cfg.group.repeatMinChangePct}% — skipped`); return false; }
+  const sameAt = sameEvRepeat(cfg, groupTotals(state.placed), row, ev);
+  if (sameAt != null) { ctx.outcome = 'same EV'; lg.warn(`same bet already placed on ${BOOK_LABELS[row.book]} at ${fmtPct(sameAt)} EV; ${fmtPct(ev)} is within ${cfg.group.repeatMinEvPts} pts — skipped`); return false; }
   const stake = Math.floor(Math.min(stakeFor(quote), room) * 100 + 1e-6) / 100;
   if (stake <= 0) { ctx.outcome = 'stake 0'; lg.warn('stake is 0 — skipped'); return false; }
   if (cfg.dailyStakeLimit && state.staked + pendingStake + stake > cfg.dailyStakeLimit) {
@@ -613,7 +613,7 @@ function pickBets(rows, { quiet = false } = {}) {
   for (const p of [...state.placed, ...inflight.values()]) if (inEventCap(p)) perEvent[p.event] = (perEvent[p.event] || 0) + 1;
   const now = Date.now();
   let farOff = 0;
-  const why = { noProps: 0, odds: 0, evCap: 0, sharpSpread: 0, softBooks: 0, pinnacleOff: 0, noSharp: 0, stale: 0, staleProp: 0, group: 0, groupCooldown: 0, sameOdds: 0, playerStats: 0 };
+  const why = { noProps: 0, odds: 0, evCap: 0, sharpSpread: 0, softBooks: 0, pinnacleOff: 0, noSharp: 0, stale: 0, staleProp: 0, group: 0, groupCooldown: 0, sameEv: 0, playerStats: 0 };
   const drop = (k) => (why[k]++, false);
   const groups = groupTotals(state.placed);
   let ev = rows
@@ -628,7 +628,7 @@ function pickBets(rows, { quiet = false } = {}) {
     .filter((r) => { const mc = marketCheck(cfg, r); if (mc.ok) return true; if (!quiet) logMarketSkip(r, mc); return drop('pinnacleOff'); })
     .filter((r) => !sharpTooOld(r) || drop(r.isProp ? 'staleProp' : 'stale'))
     .filter((r) => groupRoom(cfg, groups, r) != null || drop(groupCoolingDown(cfg, groups, r) ? 'groupCooldown' : 'group'))
-    .filter((r) => sameOddsRepeat(cfg, groups, r) == null || drop('sameOdds'))
+    .filter((r) => sameEvRepeat(cfg, groups, r) == null || drop('sameEv'))
     .filter((r) => ![...inflight.values()].some((f) => groupClash(cfg, r, f)))
     .filter((r) => (cooldown.get(r.id) || 0) < now)   // repeats on one side are capped by the group rule
     .filter((r) => !overEventCap(r, perEvent))
@@ -796,7 +796,7 @@ async function tick() {
     why.staleProp && `${why.staleProp} live props with no FanDuel move in the last ${cfg.sharp.livePropMaxAgeSec}s`,
     why.group && `${why.group} group already bet`,
     why.groupCooldown && `${why.groupCooldown} group bet <${cfg.group.cooldownSec}s ago`,
-    why.sameOdds && `${why.sameOdds} same bet already placed at odds within ${cfg.group.repeatMinChangePct}%`,
+    why.sameEv && `${why.sameEv} same bet already placed at EV within ${cfg.group.repeatMinEvPts} pts`,
     why.playerStats && `${why.playerStats} player already has ${cfg.maxPropStatsPerPlayer} stats bet`,
   ].filter(Boolean).join(', ');
 
@@ -950,7 +950,7 @@ async function fastTick() {
       if (!b.livePrices || directBusy[n] || fastBusy[n]) return;
       const hot = lastScan.rows.filter((r) => r.book === n && r.direct !== 'gone' && Number.isFinite(r.ev)
           && r.ev >= minEv(r) - fastCfg.marginPts && !(r.isProp && propsOff(cfg, r.book)) && !tooEarly(r) && !sharpTooOld(r)
-          && groupRoom(cfg, groups, r) != null && sameOddsRepeat(cfg, groups, r) == null && (cooldown.get(r.id) || 0) < now
+          && groupRoom(cfg, groups, r) != null && sameEvRepeat(cfg, groups, r) == null && (cooldown.get(r.id) || 0) < now
           && ![...inflight.values()].some((f) => groupClash(cfg, r, f)))
         .sort((x, y) => y.ev - x.ev).slice(0, fastCfg.max);
       if (!hot.length) return;

@@ -11,7 +11,7 @@ import path from 'node:path';
 
 /** Steps in funnel order. Labels are filled in from the config (EV and timing numbers). */
 export const STAGES = ['gone', 'evLow', 'evNear', 'odds', 'evCap', 'pregameFar', 'noSharp', 'sharpSpread', 'stale',
-  'group', 'sameOdds', 'groupInFlight', 'cooldown', 'perEvent', 'playerStats', 'noTab', 'novig', 'dupInScan', 'sent'];
+  'group', 'sameEv', 'groupInFlight', 'cooldown', 'perEvent', 'playerStats', 'noTab', 'novig', 'dupInScan', 'sent'];
 
 export function stageLabels(cfg) {
   const near = cfg.minEvPct - 3;
@@ -26,7 +26,7 @@ export function stageLabels(cfg) {
     sharpSpread: `sharp books more than ${cfg.sharp.maxSpreadPts} pts apart`,
     stale: `live, no ${(cfg.sharp.livePropNeeds || []).join('/')} move in ${cfg.sharp.livePropMaxAgeSec ?? cfg.sharp.liveMaxAgeSec}s`,
     group: 'group already bet',
-    sameOdds: `same bet already placed at odds within ${cfg.group.repeatMinChangePct}%`,
+    sameEv: `same bet already placed at EV within ${cfg.group.repeatMinEvPts} pts`,
     groupInFlight: 'same group being checked',
     cooldown: 'waiting after a failed try',
     perEvent: `game already has ${cfg.maxBetsPerEvent} bets (maxBetsPerEvent)`,

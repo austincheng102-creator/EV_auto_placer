@@ -25,8 +25,8 @@
 //    group.pregameMaxBets (default 1): pre-game bets get this many per group (per book) instead of maxBets.
 //    group.cooldownSec (default 150): a repeat bet in the same group (same book with perBook) waits this
 //    long after the last one, and must still pass every rule. Different markets in one game don't wait.
-//    group.repeatMinChangePct (default 10): a repeat of the same bet (same book, side and line) is skipped
-//    while its odds are within 10% of an earlier one's (compared as profit per $1: +150 vs +160 is 7%).
+//    group.repeatMinEvPts (default 10): a repeat of the same bet (same book, side and line) is skipped
+//    while its EV is within 10 points of an earlier one's (10.1% then 19.9% = skipped, 20.1% = allowed).
 import { impliedProb } from './ev.js';
 
 // Gambit sportsbook ids. PS3838 is Pinnacle's feed. Polymarket has two listings.
@@ -90,9 +90,9 @@ export function applyFilterDefaults(cfg) {
   if (g.bothSides === undefined) g.bothSides = false;
   if (g.perBook === undefined) g.perBook = true;
   if (g.cooldownSec === undefined) g.cooldownSec = 150;
-  // Same bet again (same book, side and line): only when its payout differs by at least this % from every
-  // earlier one on that book (profit per $1 staked, so +150 -> +165 or better, -200 -> -181). 0/null = off.
-  if (g.repeatMinChangePct === undefined) g.repeatMinChangePct = 10;
+  // Same bet again (same book, side and line): only when its EV differs by at least this many points from
+  // every earlier one on that book in the last 24h (10.1% EV first -> 20.1%+ for a repeat). 0/null = off.
+  if (g.repeatMinEvPts === undefined) g.repeatMinEvPts = 10;
   // The opposite side (Under after an Over, the other team): "afterCooldown" (default) lets it go once the
   // group's last bet, on any book, is cooldownSec old and it passes every rule; "block" = never that game.
   if (g.otherSide === undefined) g.otherSide = 'afterCooldown';
@@ -532,8 +532,8 @@ export function groupTotals(placed, now = Date.now()) {
     const b = g.byBook.get(p.book) || { bets: 0, staked: 0, lastAt: 0 };
     b.bets++; b.staked += stake; b.lastAt = Math.max(b.lastAt, at); g.byBook.set(p.book, b);
     if (p.selection != null) g.sides.add(sideOf(p));
-    const sk = sameBetKey(p), o = Number(p.odds);
-    if (Number.isFinite(o)) { if (!g.same.has(sk)) g.same.set(sk, []); g.same.get(sk).push(o); }
+    const sk = sameBetKey(p), e = Number(p.ev);
+    if (p.ev != null && Number.isFinite(e)) { if (!g.same.has(sk)) g.same.set(sk, []); g.same.get(sk).push(e); }
     out.set(k, g);
   }
   return out;
@@ -542,24 +542,16 @@ export function groupTotals(placed, now = Date.now()) {
 /** Same bet: same book, side and line (the group key covers game + market). */
 const sameBetKey = (r) => `${r.book}|${sideOf(r)}|${r.line ?? ''}`;
 
-/** Profit per $1 staked at American odds (+150 -> 1.5, -200 -> 0.5). */
-const profitPer1 = (a) => (a > 0 ? a / 100 : 100 / -a);
-
 /**
- * An earlier bet on the same book, side and line whose odds are within group.repeatMinChangePct of `odds`
- * (default: the row's odds). Returns that bet's odds, or null when none is that close.
+ * An earlier bet on the same book, side and line whose EV is within group.repeatMinEvPts points of `ev`
+ * (default: the row's EV). Returns that bet's EV, or null when none is that close.
  */
-export function sameOddsRepeat(cfg, totals, row, odds = row?.odds) {
-  const pct = Number(cfg.group.repeatMinChangePct) || 0;
-  const o = Number(odds);
-  if (!pct || !Number.isFinite(o) || !o) return null;
+export function sameEvRepeat(cfg, totals, row, ev = row?.ev) {
+  const pts = Number(cfg.group.repeatMinEvPts) || 0;
+  const e = Number(ev);
+  if (!pts || !Number.isFinite(e)) return null;
   const prev = totals.get(groupKey(row))?.same?.get(sameBetKey(row)) || [];
-  const p = profitPer1(o);
-  for (const q of prev) {
-    if (!q) continue;
-    const pq = profitPer1(q);
-    if (Math.abs(p - pq) / pq * 100 < pct - 1e-9) return q;
-  }
+  for (const q of prev) if (Math.abs(e - q) < pts - 1e-9) return q;
   return null;
 }
 

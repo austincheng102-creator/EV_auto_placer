@@ -160,7 +160,7 @@ setting in `config.json`; one that isn't there gets the default below, and `null
 | Live: a sharp price changed within the last 5 seconds | 5 | `"sharp": {"liveMaxAgeSec"}` |
 | Live player props: FanDuel's price changed within the last 30 seconds | 30 | `"sharp": {"livePropMaxAgeSec"}` |
 | Same game + market + period = one group (both sides): up to 3 bets live (1 pre-game), $3 per book, at least 150s apart on one book | 3 live / 1 pre-game, $3, 150s, per book | `"group": {"maxBets", "pregameMaxBets", "maxStake", "cooldownSec", "bothSides", "perBook"}` |
-| Same bet again (same book, side and line) only if its odds differ by 10% or more from each earlier one | 10 | `"group": {"repeatMinChangePct"}` |
+| Same bet again (same book, side and line) only if its EV differs by 10 points or more from each earlier one | 10 | `"group": {"repeatMinEvPts"}` |
 
 - **Sharp agreement:** each sharp book with both sides listed is de-vigged on its own (Pinnacle comes
   through Gambit as PS3838). For player props FanDuel counts as a sharp book too. If fewer than two
@@ -178,11 +178,10 @@ setting in `config.json`; one that isn't there gets the default below, and `null
   last one (a Warriors total placed, another Warriors total 2s later is skipped), and it must still pass every
   rule (EV, sharp books, re-check) at that moment. A different market on the same game (a Curry prop, the
   spread) doesn't wait. `0` turns the wait off.
-  `repeatMinChangePct` (default 10): the same bet again (same book, same side, same line) is skipped while its
-  odds are within 10% of any earlier bet on it in the last 24 hours. Odds are compared as profit per $1 staked:
-  after +150, the repeat needs +165 or better (or +135 or worse); after -200 it needs -181 or better. A different
-  line (Over 214.5 after Over 212.5) isn't the same bet. The `[SCAN]` line counts these as "same bet already
-  placed at odds within 10%". `0` turns it off.
+  `repeatMinEvPts` (default 10): the same bet again (same book, same side, same line) is skipped while its
+  EV is within 10 points of any earlier bet on it in the last 24 hours: after a 10.1% EV bet, a repeat needs
+  20.1% EV or more. Each book only looks at its own bets. A different line (Over 214.5 after Over 212.5) isn't
+  the same bet. The `[SCAN]` line counts these as "same bet already placed at EV within 10 pts". `0` turns it off.
   `maxBetsPerEvent` caps game lines (spreads, totals, moneylines, any period) per game. Player props don't
   count toward it: each player + stat is its own group, so Trae Young points, points + rebounds and steals
   can each get one bet, but points Under can't go twice. `maxPropStatsPerPlayer` (default 2) caps how many
