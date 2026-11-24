@@ -79,7 +79,7 @@ const PAGE = String.raw`<!doctype html>
   --bg: #f6f6f4; --surface: #fcfcfb; --border: #e4e3de; --grid: #ecebe7;
   --text: #0b0b0b; --text-2: #52514e; --text-3: #7a7974;
   --hardrock: #2a78d6; --betrivers: #eb6834; --fanduel: #0f9488; --betmgm: #a8811c; --draftkings: #3f8f1f; --thescore: #c2185b; --other: #6250d6; --all: #0b0b0b;
-  --good: #0a7d3b; --bad: #c4322f; --chip: #efeee9;
+  --good: #0a7d3b; --bad: #c4322f; --chip: #efeee9; --live: #c2410c; --pre: #52514e;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -87,7 +87,7 @@ const PAGE = String.raw`<!doctype html>
     --bg: #121211; --surface: #1a1a19; --border: #2d2d2b; --grid: #262624;
     --text: #f0efec; --text-2: #c3c2b7; --text-3: #8f8e86;
     --hardrock: #3987e5; --betrivers: #d95926; --fanduel: #2bb7a9; --betmgm: #d1a63a; --draftkings: #62b83a; --thescore: #e0528a; --other: #9085e9; --all: #f0efec;
-    --good: #3fbf6f; --bad: #e66767; --chip: #252523;
+    --good: #3fbf6f; --bad: #e66767; --chip: #252523; --live: #f0844c; --pre: #c3c2b7;
   }
 }
 :root[data-theme="dark"] {
@@ -95,7 +95,7 @@ const PAGE = String.raw`<!doctype html>
   --bg: #121211; --surface: #1a1a19; --border: #2d2d2b; --grid: #262624;
   --text: #f0efec; --text-2: #c3c2b7; --text-3: #8f8e86;
   --hardrock: #3987e5; --betrivers: #d95926; --fanduel: #2bb7a9; --betmgm: #d1a63a; --draftkings: #62b83a; --thescore: #e0528a; --other: #9085e9; --all: #f0efec;
-  --good: #3fbf6f; --bad: #e66767; --chip: #252523;
+  --good: #3fbf6f; --bad: #e66767; --chip: #252523; --live: #f0844c; --pre: #c3c2b7;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
@@ -158,6 +158,10 @@ select { font: inherit; font-size: 12px; background: var(--surface); color: var(
 .daychip.on { display: inline-flex; }
 .cal .short { display: none; }
 @media (max-width: 520px) { .cal .day { min-height: 52px; padding: 3px 4px; } .cal .p { font-size: 11px; } .cal .c { font-size: 10px; } .cal .long { display: none; } .cal .short { display: block; } }
+.kind { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 10px; letter-spacing: .02em; }
+.kind.live { background: color-mix(in srgb, var(--live) 16%, var(--surface)); color: var(--live); }
+.kind.live::before { content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--live); margin-right: 5px; vertical-align: 1px; }
+.kind.pre { background: var(--chip); color: var(--text-2); }
 .pill { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 10px; background: var(--chip); color: var(--text-2); }
 .info { display: inline-block; margin-left: 6px; font-size: 12px; color: var(--text-3); }
 tr.hasodds { cursor: default; }
@@ -186,11 +190,17 @@ tr.hasodds:hover td { background: var(--chip); }
   <p class="sub" id="sub"></p>
   <div class="controls">
     <div class="seg" id="bookSeg" role="group" aria-label="Book"></div>
+    <div class="seg" id="kindSeg" role="group" aria-label="Live or pre-game"></div>
     <div class="seg" id="srcSeg" role="group" aria-label="Gambit table"></div>
     <div class="seg" id="rangeSeg" role="group" aria-label="Time range"></div>
     <div class="daychip" id="dayChip"><span id="dayChipText"></span><button type="button" id="dayClear">Show all days</button></div>
   </div>
   <div class="tiles" id="tiles"></div>
+  <section class="card" id="kindCard">
+    <h2>Live vs pre-game</h2>
+    <p class="desc">Bets placed while the game was on, next to bets placed before it started. Follows the book, table, time range and day picked.</p>
+    <div class="tablewrap"><table id="kindTable"></table></div>
+  </section>
   <section class="card" id="srcCard" hidden>
     <h2>By Gambit table</h2>
     <p class="desc">Where each bet came from on Gambit: the +EV table or the arbitrage table (player props priced off DraftKings, FanDuel and Caesars). Follows the book, time range and day picked.</p>
@@ -228,9 +238,13 @@ tr.hasodds:hover td { background: var(--chip); }
 let DATA = __DATA__;
 const LIVE = __LIVE__;
 const NS = 'http://www.w3.org/2000/svg';
-const state = { book: 'all', range: 'all', src: 'all' };
-try { const v = JSON.parse(localStorage.getItem('evp-view') || '{}'); state.book = v.book || 'all'; state.range = v.range || 'all'; state.src = v.src || 'all'; } catch {}
-const saveView = () => { try { localStorage.setItem('evp-view', JSON.stringify({ book: state.book, range: state.range, src: state.src })); } catch {} };
+const state = { book: 'all', range: 'all', src: 'all', kind: 'all' };
+try { const v = JSON.parse(localStorage.getItem('evp-view') || '{}'); state.book = v.book || 'all'; state.range = v.range || 'all'; state.src = v.src || 'all'; state.kind = v.kind || 'all'; } catch {}
+const saveView = () => { try { localStorage.setItem('evp-view', JSON.stringify({ book: state.book, range: state.range, src: state.src, kind: state.kind })); } catch {} };
+// Live (placed while the game was on) or pre-game.
+const KIND = { live: 'Live', pre: 'Pre-game' };
+const kindOf = (b) => b.live ? 'live' : 'pre';
+const kindBadge = (b) => { const s = document.createElement('span'); s.className = 'kind ' + kindOf(b); s.textContent = KIND[kindOf(b)]; return s; };
 // Which Gambit table a bet came from. Bets from before this was logged are all +EV table bets.
 const SRC = { ev: '+EV', arb: 'Arb' };
 const srcOf = (b) => b.source === 'arb' ? 'arb' : 'ev';
@@ -250,9 +264,9 @@ const when = (t) => new Date(t).toLocaleString(undefined, { month: 'short', day:
 
 function booksPresent() { return [...new Set(DATA.bets.map((b) => b.book))].sort((a, b) => ['hardrock', 'betrivers', 'fanduel', 'betmgm', 'draftkings', 'thescore'].indexOf(a) - ['hardrock', 'betrivers', 'fanduel', 'betmgm', 'draftkings', 'thescore'].indexOf(b) || a.localeCompare(b)); }
 // A picked day wins over the time range.
-function filtered(book = state.book, { day = state.day, range = !day, src = state.src } = {}) {
+function filtered(book = state.book, { day = state.day, range = !day, src = state.src, kind = state.kind } = {}) {
   const cut = !range || state.range === 'all' ? 0 : Date.now() - Number(state.range) * 864e5;
-  return DATA.bets.filter((b) => (book === 'all' || b.book === book) && (src === 'all' || srcOf(b) === src) && Date.parse(b.placedAt) >= cut && (!day || dayKey(b.placedAt) === day));
+  return DATA.bets.filter((b) => (book === 'all' || b.book === book) && (src === 'all' || srcOf(b) === src) && (kind === 'all' || kindOf(b) === kind) && Date.parse(b.placedAt) >= cut && (!day || dayKey(b.placedAt) === day));
 }
 
 function pickDay(k) {
@@ -376,24 +390,34 @@ function stats(list) {
   };
 }
 
-// Side by side: +EV table vs arbitrage table, for the book / range / day picked.
-function srcTable() {
-  const all = filtered(state.book, { src: 'all' });
-  const tb = document.getElementById('srcTable');
-  tb.innerHTML = '<tr><th>Table</th><th class="num">Bets</th><th class="num">Staked</th><th class="num">Settled</th><th class="num">Profit</th><th class="num">ROI</th><th class="num">Expected</th><th class="num">Avg EV</th><th class="num">Avg CLV</th></tr>';
-  for (const k of ['ev', 'arb']) {
-    const s = stats(all.filter((b) => srcOf(b) === k));
+// Side by side comparison rows (stats per group) for the book / range / day picked.
+function compareTable(id, head, groups) {
+  const tb = document.getElementById(id);
+  tb.innerHTML = '<tr><th>' + head + '</th><th class="num">Bets</th><th class="num">Staked</th><th class="num">Settled</th><th class="num">Profit</th><th class="num">ROI</th><th class="num">Expected</th><th class="num">Avg EV</th><th class="num">Avg CLV</th></tr>';
+  for (const [name, list, badge] of groups) {
+    const s = stats(list);
     const tr = document.createElement('tr');
-    const cells = [[SRC[k] + ' table'], [String(s.n)], [money(s.staked)], [s.settled ? s.settled + ' (' + s.record[0] + '-' + s.record[1] + (s.record[2] ? '-' + s.record[2] : '') + ')' : '0'],
+    const cells = [[name], [String(s.n)], [money(s.staked)], [s.settled ? s.settled + ' (' + s.record[0] + '-' + s.record[1] + (s.record[2] ? '-' + s.record[2] : '') + ')' : '0'],
       [money(s.settled ? s.pnl : null, true), s.pnl], [pct(s.roi), s.roi], [money(s.n ? s.expected : null, true)], [pct(s.avgEv)], [pct(s.clv), s.clv]];
     cells.forEach(([t, v], i) => {
       const td = document.createElement('td');
       if (i) td.className = 'num';
       if (v != null && cls(v)) td.classList.add(cls(v));
-      td.textContent = t; tr.append(td);
+      if (!i && badge) td.append(badge); else td.textContent = t;
+      tr.append(td);
     });
     tb.append(tr);
   }
+}
+// +EV table vs arbitrage table.
+function srcTable() {
+  const all = filtered(state.book, { src: 'all' });
+  compareTable('srcTable', 'Table', ['ev', 'arb'].map((k) => [SRC[k] + ' table', all.filter((b) => srcOf(b) === k)]));
+}
+// Live vs pre-game.
+function kindTable() {
+  const all = filtered(state.book, { kind: 'all' });
+  compareTable('kindTable', 'Type', ['live', 'pre'].map((k) => [KIND[k], all.filter((b) => kindOf(b) === k), kindBadge({ live: k === 'live' })]));
 }
 
 function tiles(list) {
@@ -477,7 +501,7 @@ function pnlChart(list) {
     row('Actual P&L', money(best.act, true), cls(best.act));
     row('Expected', money(best.exp, true));
     const what = document.createElement('div'); what.className = 'note'; what.style.marginTop = '6px';
-    what.textContent = label(b.book) + ': ' + b.selection + (b.line != null ? ' ' + b.line : '') + ' ' + odds(b.odds) + ', $' + b.stake + ' → ' + (b.result ? b.result + ' ' + money(b.profit, true) : 'no result yet');
+    what.textContent = label(b.book) + ' (' + KIND[kindOf(b)].toLowerCase() + '): ' + b.selection + (b.line != null ? ' ' + b.line : '') + ' ' + odds(b.odds) + ', $' + b.stake + ' → ' + (b.result ? b.result + ' ' + money(b.profit, true) : 'no result yet');
     tip.append(what);
     tip.style.display = 'block';
     const px = X(best.t) * r.width / W;
@@ -562,24 +586,24 @@ function table(list) {
   document.getElementById('tableNote').textContent = LIVE
     ? 'Results fill in by themselves from Hard Rock, BetRivers and FanDuel while the placer runs. You can also pick one by hand; it saves to results.json and the charts update.'
     : 'Read-only copy. Run Show bets to mark results.';
-  const head = '<tr><th>Placed</th><th>Book</th><th>Table</th><th>Bet</th><th class="num">Odds</th><th class="num">Stake</th><th class="num">EV</th><th class="num">CLV</th><th>Result</th><th class="num">Profit</th></tr>';
+  const head = '<tr><th>Placed</th><th>Book</th><th>Type</th><th>Table</th><th>Bet</th><th class="num">Odds</th><th class="num">Stake</th><th class="num">EV</th><th class="num">CLV</th><th>Result</th><th class="num">Profit</th></tr>';
   tb.innerHTML = head;
   for (const b of [...list].reverse()) {
     const tr = document.createElement('tr');
-    const cells = [when(b.placedAt), label(b.book), SRC[srcOf(b)], '', odds(b.odds), '$' + b.stake, pct(b.ev), pct(b.clv), '', money(b.profit, true)];
+    const cells = [when(b.placedAt), label(b.book), '', SRC[srcOf(b)], '', odds(b.odds), '$' + b.stake, pct(b.ev), pct(b.clv), '', money(b.profit, true)];
     cells.forEach((c, i) => {
       const td = document.createElement('td');
-      if ([4, 5, 6, 7, 9].includes(i)) td.className = 'num';
-      if (i === 3) {
+      if ([5, 6, 7, 8, 10].includes(i)) td.className = 'num';
+      if (i === 2) td.append(kindBadge(b));
+      else if (i === 4) {
         td.className = 'what';
         td.textContent = (b.event || '') + ': ' + (b.market || '') + ' ' + (b.selection || '') + (b.line != null ? ' ' + b.line : '');
-        if (b.live) { const p = document.createElement('span'); p.className = 'pill'; p.textContent = 'live'; td.append(' ', p); }
         // Hover anywhere on the row: every book's odds at the time of the bet (popup below the table code).
         if (b.otherBooks || b.sharpNoVig || b.ref) {
           const i = document.createElement('span'); i.className = 'info'; i.textContent = 'ⓘ'; td.append(i);
           tr.classList.add('hasodds'); tr.dataset.tip = '1'; tr._bet = b;
         }
-      } else if (i === 8) {
+      } else if (i === 9) {
         if (LIVE) {
           const sel = document.createElement('select');
           for (const [v, t] of [['', 'not settled'], ['won', 'won'], ['lost', 'lost'], ['push', 'push'], ['void', 'void'], ['half-won', 'half won'], ['half-lost', 'half lost'], ['cashout', 'cashed out']]) {
@@ -589,7 +613,7 @@ function table(list) {
           td.append(sel);
         } else td.textContent = b.result || 'not settled';
       } else td.textContent = c;
-      if (i === 9 && b.profit != null) td.classList.add(cls(b.profit) || 'num');
+      if (i === 10 && b.profit != null) td.classList.add(cls(b.profit) || 'num');
       tr.append(td);
     });
     tb.append(tr);
@@ -603,6 +627,8 @@ function render() {
   // The table picker only shows once there are arbitrage-table bets to compare with.
   const hasArb = DATA.bets.some((b) => srcOf(b) === 'arb');
   if (!hasArb) state.src = 'all';
+  seg(document.getElementById('kindSeg'), [['all', 'Live + pre-game'], ['live', 'Live (' + filtered(state.book, { kind: 'live' }).length + ')', 'var(--live)'], ['pre', 'Pre-game (' + filtered(state.book, { kind: 'pre' }).length + ')', 'var(--pre)']], state.kind, (v) => { state.kind = v; saveView(); render(); });
+  kindTable();
   const srcEl = document.getElementById('srcSeg');
   srcEl.hidden = !hasArb;
   if (hasArb) seg(srcEl, [['all', 'All tables'], ['ev', '+EV table (' + filtered(state.book, { src: 'ev' }).length + ')'], ['arb', 'Arb table (' + filtered(state.book, { src: 'arb' }).length + ')']], state.src, (v) => { state.src = v; saveView(); render(); });
