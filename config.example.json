@@ -179,8 +179,8 @@
     "arbPregame": true,
     "arbLive": true,
     "openTabs": true,
-    "liveMaxAgeSec": 30,
-    "pregameMaxAgeSec": 180,
-    "preferInBoth": false
+    "liveMaxAgeSec": 600,
+    "pregameMaxAgeSec": 1800,
+    "pregameEverySec": 10
   }
 }

@@ -1674,8 +1674,10 @@ async function runInTab(tabId, request) {
 // the background, and a tab showing the wrong one gets its Live / Pre-Match button clicked.
 const PP_PAGES = { ev: 'https://www.propprofessor.com/positive_ev', arb: 'https://www.propprofessor.com/arbitrage' };
 const ppRole = new Map();      // tabId -> 'ev:false' etc. (the table this tab is kept on)
-const ppOpenedAt = {};         // role -> when a tab was opened for it
+const ppOpenedAt = {};         // role -> when a tab was last opened or sent back for it
+const ppCreatedAt = {};        // role -> when a new tab was opened for it
 const ppClickedAt = new Map(); // tabId -> when its Live / Pre-Match button was last clicked
+const ppReloadedAt = new Map(); // tabId -> when it was last reloaded for a table that stopped changing
 
 // Runs in the page (MAIN world). Must be self-contained. Reads the page's own query cache.
 function ppReadPage(books, clickLive) {
@@ -1688,6 +1690,12 @@ function ppReadPage(books, clickLive) {
   out.showsLive = on(live) ? true : on(pre) ? false : null;
   if (clickLive != null && page && (clickLive ? live : pre) && out.showsLive !== clickLive) { (clickLive ? live : pre).click(); out.clicked = true; }
   if (btn(/^Log in \/ Sign up/i)) out.loggedOut = 'the page shows Log in / Sign up';
+  // The page's own Auto Refresh switch off: its table stops updating.
+  try { if (localStorage.getItem('autoRefreshEnabled') === 'false') out.warning = 'Auto Refresh is off on this page, so its table doesn\'t update: turn it back on'; } catch {}
+  // PropProfessor limits how many of its tabs/devices get the live feed; past that it updates every 10s instead.
+  for (const el of document.querySelectorAll('[role="status"], [role="alert"], li[data-state="open"]')) {
+    if (/too many (open )?tabs|too many PropProfessor tabs/i.test(el.textContent || '')) { out.warning = 'PropProfessor says too many of its tabs or devices are open, so this one only updates every 10s. Close PropProfessor on other devices, or set "propprofessor": {"arbLive": false} (or arbPregame) to use fewer tabs'; break; }
+  }
   if (!page) return out;
   const root = document.getElementById('__next');
   let client = window.__evppQC;
@@ -1739,7 +1747,8 @@ async function ppRead(req) {
     const [r] = await Promise.race([run, sleep(req.timeoutMs || 15000).then(() => [{ result: { error: 'the tab didn\'t answer (frozen or still loading)' } }])]).catch((e) => [{ result: { error: String(e?.message || e) } }]);
     return { id: t.id, ...(r?.result || { error: 'could not read that tab' }) };
   };
-  let seen = await Promise.all(tabs.map((t) => read(t, null)));
+  // Only tabs this read can use: ones kept on a table asked for now, and ones not kept on any table.
+  let seen = await Promise.all(tabs.filter((t) => !ppRole.has(t.id) || roles.includes(ppRole.get(t.id))).map((t) => read(t, null)));
   const notes = [];
   if (seen.length && seen.every((x) => x.loggedOut)) return { loggedOut: seen[0].loggedOut };
   // Give each wanted table a tab: one already showing it, else a free tab on the same page (click it
@@ -1753,15 +1762,30 @@ async function ppRead(req) {
       || seen.find((x) => !used.has(x.id) && !ppRole.has(x.id) && x.page === page && x.live === live && !x.error)
       || seen.find((x) => !used.has(x.id) && !ppRole.has(x.id) && x.page === page);
     if (!t) {
-      if (req.openTabs !== false && Date.now() - (ppOpenedAt[role] || 0) > 60e3) {
+      const label = `${page === 'ev' ? 'Positive EV' : 'Arbitrage'} ${live ? 'live' : 'pre-game'}`;
+      const recent = Date.now() - (ppOpenedAt[role] || 0) <= 60e3;
+      // The tab kept for this table went to another page (a login page, the user clicked away): send it
+      // back, never open more tabs for it. New tabs only when none is kept for it, and never more
+      // PropProfessor tabs than tables + 2 in all, so a login problem can't fill Chrome with tabs.
+      const kept = seen.find((x) => !used.has(x.id) && ppRole.get(x.id) === role);
+      if (!recent && req.openTabs !== false) {
         ppOpenedAt[role] = Date.now();
-        const nt = await chrome.tabs.create({ url: PP_PAGES[page], active: false }).catch(() => null);
-        if (nt) { ppRole.set(nt.id, role); chrome.tabs.update(nt.id, { autoDiscardable: false }).catch(() => {}); notes.push(`opened a tab for the ${page === 'ev' ? 'Positive EV' : 'Arbitrage'} ${live ? 'live' : 'pre-game'} table`); }
+        if (kept) {
+          used.add(kept.id);
+          chrome.tabs.update(kept.id, { url: PP_PAGES[page] }).catch(() => {});
+          notes.push(`sent the ${label} tab back to its page (it was on ${kept.path || 'another page'})`);
+        } else if (tabs.length < roles.length + 2) {
+          const nt = await chrome.tabs.create({ url: PP_PAGES[page], active: false }).catch(() => null);
+          if (nt) { ppRole.set(nt.id, role); ppCreatedAt[role] = Date.now(); tabs.push({ id: nt.id }); chrome.tabs.update(nt.id, { autoDiscardable: false }).catch(() => {}); notes.push(`opened a tab for the ${label} table`); }
+        }
       }
-      opening = true;
+      // Only a tab opened in the last minute counts as still opening (no alarm yet).
+      opening = opening || Date.now() - (ppCreatedAt[role] || 0) <= 60e3;
       continue;
     }
     used.add(t.id);
+    // Keep it from being discarded by Chrome's Memory Saver (a discarded tab has no table).
+    if (!ppRole.has(t.id)) chrome.tabs.update(t.id, { autoDiscardable: false }).catch(() => {});
     ppRole.set(t.id, role);
     // Showing the other half (or reloaded back to Pre-Match): click it over, at most every 10s.
     if ((t.showsLive != null && t.showsLive !== live) || (t.live != null && t.live !== live)) {
@@ -1772,7 +1796,14 @@ async function ppRead(req) {
       }
       continue;
     }
-    tables.push({ page, live, updatedAt: t.updatedAt, rows: t.rows, total: t.total, error: t.error });
+    // The app saw this table unchanged for a long time: reload the tab (at most every 5 min), in case
+    // the page lost its feed. It comes back on Pre-Match; the next read clicks it back if needed.
+    if ((req.reload || []).includes(role) && Date.now() - (ppReloadedAt.get(t.id) || 0) > 5 * 60e3) {
+      ppReloadedAt.set(t.id, Date.now());
+      chrome.tabs.reload(t.id).catch(() => {});
+      notes.push(`reloaded the ${page === 'ev' ? 'Positive EV' : 'Arbitrage'} ${live ? 'live' : 'pre-game'} tab (its table hadn't changed in a long time)`);
+    }
+    tables.push({ page, live, updatedAt: t.updatedAt, rows: t.rows, total: t.total, error: t.error, warning: t.warning });
   }
   return { tables, notes, opening };
 }

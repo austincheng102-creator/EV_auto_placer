@@ -1,5 +1,5 @@
-// PropProfessor (propprofessor.com) as a source of +EV rows, next to or instead of Gambit.
-// config.json: "source": "gambit" (default) | "propprofessor" | "both".
+// PropProfessor (propprofessor.com) as a source of +EV rows, instead of Gambit (never both at once:
+// the two run separately and share nothing). config.json: "source": "gambit" (default) | "propprofessor".
 //
 // How the rows get here: PropProfessor's own pages (Positive EV, Arbitrage) keep their table in the
 // page, fed live by PropProfessor's servers. The Chrome extension reads that table out of your open,
@@ -101,25 +101,13 @@ function startOf(r) {
 }
 
 /**
- * "Away @ Home" like Gambit and the books. PropProfessor's home/away fields aren't always the right
- * way round, so a FanDuel or DraftKings page link for the same game ("kansas-@-oklahoma-state")
- * decides the order when there is one.
+ * The game's name, "<first team> @ <second team>" in PropProfessor's own order (the order in its game
+ * id). That order isn't always away @ home, but it never changes for a game, so groups, the per-game cap
+ * and closing line value always see the same name. (Taking the order from a book's page link instead
+ * flipped the name whenever that book's row came and went, which would have let a game's group be
+ * bet twice.) FanDuel's game lookup accepts either order.
  */
-function eventNames(rows) {
-  const order = new Map();   // gameId -> true when homeTeam is listed first (away)
-  const slug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-  for (const r of rows) {
-    if (order.has(r.gameId)) continue;
-    for (const u of [r.pageUrl, r.site1Url, r.site2Url, r.site1PageUrl, r.site2PageUrl]) {
-      const m = /\/([a-z0-9%.'-]+?)-(?:%40|@)-([a-z0-9%.'-]+?)(?:-\d+|\/\d+)?(?:[/?#]|$)/i.exec(decodeURIComponent(String(u || '')).replace(/%40/g, '@'));
-      if (!m) continue;
-      const a = m[1].toLowerCase(), h = slug(r.homeTeam), w = slug(r.awayTeam);
-      if (h && a.startsWith(h.slice(0, Math.min(5, h.length)))) { order.set(r.gameId, true); break; }
-      if (w && a.startsWith(w.slice(0, Math.min(5, w.length)))) { order.set(r.gameId, false); break; }
-    }
-  }
-  return (r) => (order.get(r.gameId) === false ? `${r.awayTeam} @ ${r.homeTeam}` : `${r.homeTeam} @ ${r.awayTeam}`);
-}
+const eventOf = (r) => `${r.homeTeam} @ ${r.awayTeam}`;
 
 /** The ids each book needs to bet the row, from PropProfessor's link / extra data for that book. */
 export function refsOf(book, link, ad = {}, mobileLink = '') {
@@ -160,6 +148,20 @@ function pricesOf(list, flip = false, absLine = null) {
   return prices;
 }
 
+/**
+ * PropProfessor's fair win probability for a +EV row. Its no-vig odds are rounded to whole American
+ * odds (-103), which moves EV by up to about 0.3 points; its EV is given to 2 decimals, so the fair
+ * comes from that when the two agree (within 1 point), else from the no-vig odds.
+ */
+export function ppFairProb(r) {
+  const fairAm = Number(r.noVigOdds);
+  const fromOdds = Number.isFinite(fairAm) && Math.abs(fairAm) >= 100 ? impliedProb(fairAm) : null;
+  const ev = Number(r.ev), odds = Number(r.odds);
+  if (fromOdds == null || !Number.isFinite(ev) || !Number.isFinite(odds) || Math.abs(odds) < 100) return fromOdds;
+  const fromEv = (1 + ev / 100) / americanToDecimal(odds);
+  return fromEv > 0 && fromEv < 1 && Math.abs(fromEv - fromOdds) <= 0.01 ? fromEv : fromOdds;
+}
+
 /** Counts from the last read, for the scan line. */
 export const ppStats = { rows: 0, ours: 0, unknownMarket: 0, noRef: 0, noFair: 0 };
 
@@ -170,7 +172,6 @@ export const ppStats = { rows: 0, ours: 0, unknownMarket: 0, noRef: 0, noFair: 0
 export function ppEvToRows(list, { books = null, fairOut = null } = {}) {
   const st = { rows: 0, ours: 0, unknownMarket: 0, noRef: 0, noFair: 0 };
   const out = [];
-  const nameOf = eventNames(list || []);
   for (const r of list || []) {
     st.rows++;
     const book = PP_BOOKS[r.book];
@@ -179,9 +180,8 @@ export function ppEvToRows(list, { books = null, fairOut = null } = {}) {
     if (!marketKey) { if (ours) st.unknownMarket++; continue; }
     const sl = selectionOf(r, marketKey);
     if (!sl) { if (ours) st.unknownMarket++; continue; }
-    const fairAm = Number(r.noVigOdds);
-    const p = Number.isFinite(fairAm) && Math.abs(fairAm) >= 100 ? impliedProb(fairAm) : null;
-    const event = nameOf(r);
+    const p = ppFairProb(r);
+    const event = eventOf(r);
     const key = fairKey({ event, marketKey, selection: sl.selection, line: sl.line });
     if (fairOut && p != null) {
       const had = fairOut.get(key), own = !!ours;
@@ -219,7 +219,6 @@ export function ppEvToRows(list, { books = null, fairOut = null } = {}) {
 export function ppArbsToRows(list, a, fairOut = null, st = { events: 0, bets: 0, ours: 0, refsMissing: 0, refSpread: 0, passed: 0 }) {
   const rows = [];
   const seen = new Set();
-  const nameOf = eventNames(list || []);
   const games = new Set();
   for (const r of list || []) {
     const marketKey = marketKeyOf(r.market);
@@ -237,7 +236,7 @@ export function ppArbsToRows(list, a, fairOut = null, st = { events: 0, bets: 0,
       const prices = pricesOf(r.sportsbookData, n === 2, sl.line);
       const ownId = PP_IDS[ppBook] ?? null;
       const rf = refFair(a, prices, ours ? ownId : null);
-      const event = nameOf(r);
+      const event = eventOf(r);
       const key = fairKey({ event, marketKey, selection: sl.selection, line: sl.line });
       if (fairOut && rf.ok) { const had = fairOut.get(key); if (!had || rf.prob < had.prob) fairOut.set(key, { prob: rf.prob, isLive: !!r.isLive }); }
       if (!ours) continue;
@@ -283,20 +282,40 @@ export function ppWants(cfg, arb) {
   return w;
 }
 
+/** When a table last changed: the page's last update, or the newest row change in it. */
+export function tableFreshAt(t) {
+  let at = Number(t.updatedAt) || 0;
+  for (const r of t.rows || []) { const c = Number(r.lastChanged); if (Number.isFinite(c) && c > at && c <= Date.now() + 60e3) at = c; }
+  return at;
+}
+
 export function makePropProfessorSource(cfg, bridge, { root = null, log = null } = {}) {
   const p = cfg.propprofessor || {};
   const ourBooks = (cfg.books || []).filter((b) => Object.values(PP_BOOKS).includes(b));
   const arb = arbDefaults(cfg);
   const arbBooks = arb ? arb.books.filter((b) => (cfg.books || []).includes(b)) : [];
   const wants = ppWants(cfg, arb && arbBooks.length ? arb : null);
-  // A table the page hasn't refreshed for this long is treated as missing (the tab froze or lost its feed).
-  const maxAge = { live: (Number(p.liveMaxAgeSec) || 30) * 1000, pre: (Number(p.pregameMaxAgeSec) || 180) * 1000 };
+  // A table that hasn't changed for this long gets its tab reloaded (at most every 5 min per tab),
+  // in case the page lost its feed. A quiet table is normal (few rows, nothing moving), so its rows
+  // are still used meanwhile: every bet's price is re-checked at the book first, and a live bet also
+  // needs a sharp price that just moved (the live timing rule), which a frozen table never shows.
+  // A big table (50+ rows) is never quiet for long while its feed works, so it gets 2 min (live) /
+  // 5 min (pre-game) before a reload; a small one liveMaxAgeSec / pregameMaxAgeSec (10 / 30 min).
+  const maxAge = { live: (Number(p.liveMaxAgeSec) || 600) * 1000, pre: (Number(p.pregameMaxAgeSec) || 1800) * 1000,
+    bigLive: (Number(p.bigLiveMaxAgeSec) || 120) * 1000, bigPre: (Number(p.bigPregameMaxAgeSec) || 300) * 1000 };
+  const ageLimit = (w, t) => ((t.rows || []).length >= 50 ? (w.live ? maxAge.bigLive : maxAge.bigPre) : (w.live ? maxAge.live : maxAge.pre));
+  // Pre-game tables are read every pregameEverySec (default 10s) and their rows reused in between;
+  // live tables every poll. Pre-game prices move slowly, and reading a big table every 2s costs Chrome.
+  const preEvery = (Number(p.pregameEverySec ?? 10) || 0) * 1000;
   const ppNames = Object.entries(PP_BOOKS).filter(([, b]) => ourBooks.includes(b) || arbBooks.includes(b)).map(([n]) => n);
   const sampled = new Set();
   const arbState = { error: null, rows: 0 };
+  const last = new Map();   // 'ev:false' -> { at (read), table }
   let fair = new Map(), arbFair = new Map();
-  let warnAt = {};
-  const warn = (k, msg) => { if (Date.now() - (warnAt[k] || 0) > 60e3) { warnAt[k] = Date.now(); log?.warn(msg); } };
+  const warnAt = {};
+  const warn = (k, msg) => { if (Date.now() - (warnAt[k] || 0) > 5 * 60e3) { warnAt[k] = Date.now(); log?.warn(msg); } };
+  const roleOf = (w) => `${w.page}:${!!w.live}`;
+  const what = (w) => `${w.page === 'ev' ? 'Positive EV' : 'Arbitrage'} ${w.live ? 'live' : 'pre-game'} table`;
   return {
     name: 'propprofessor', label: 'PropProfessor',
     needsBridge: true,
@@ -305,35 +324,46 @@ export function makePropProfessorSource(cfg, bridge, { root = null, log = null }
     arb: arb && arbBooks.length ? { cfg: arb, books: arbBooks, state: arbState } : null,
     async fetchRows() {
       if (!bridge?.connected()) throw new Error('Chrome extension not connected (needed to read PropProfessor)');
+      const now = Date.now();
+      const due = wants.filter((w) => w.live || !last.has(roleOf(w)) || now - last.get(roleOf(w)).at >= preEvery);
+      const reload = due.filter((w) => { const l = last.get(roleOf(w)); return l && now - tableFreshAt(l.table) > ageLimit(w, l.table); });
+      for (const w of reload) warn(`old:${roleOf(w)}`, `PropProfessor ${what(w)} hasn't changed for ${Math.round((now - tableFreshAt(last.get(roleOf(w)).table)) / 60e3)} min: reloading its tab in case the page lost its feed`);
       const timeoutMs = Number(p.timeoutSec || 15) * 1000;
-      const res = await bridge.send('propprofessor', { kind: 'ppRead', wants, books: ppNames, timeoutMs,
-        openTabs: p.openTabs !== false }, timeoutMs + 5000);
+      const res = due.length ? await bridge.send('propprofessor', { kind: 'ppRead', wants: due, books: ppNames, timeoutMs,
+        openTabs: p.openTabs !== false, reload: reload.map(roleOf) }, timeoutMs + 5000) : { tables: [] };
       if (res.error) throw new Error(`PropProfessor: ${res.error}`);
       if (res.loggedOut) throw new Error(`PropProfessor: log in again in the PropProfessor tab (${res.loggedOut})`);
       for (const n of res.notes || []) log?.info(`PropProfessor: ${n}`);
-      const now = Date.now();
+      for (const w of due) {
+        const t = (res.tables || []).find((x) => x.page === w.page && !!x.live === w.live);
+        if (!t) { warn(`miss:${roleOf(w)}`, `PropProfessor: no tab showing the ${what(w)} yet${res.opening ? ' (opening one)' : ''}`); last.delete(roleOf(w)); continue; }
+        if (t.warning) warn(`warn:${roleOf(w)}`, `PropProfessor ${what(w)}: ${t.warning}`);
+        if (t.error) { warn(`err:${roleOf(w)}`, `PropProfessor ${what(w)}: ${t.error}`); last.delete(roleOf(w)); continue; }
+        last.set(roleOf(w), { at: now, table: t });
+        if (root && !sampled.has(roleOf(w)) && (t.rows || []).length) {
+          sampled.add(roleOf(w));
+          try { fs.writeFileSync(path.join(root, `propprofessor-sample-${w.page}-${w.live ? 'live' : 'pregame'}.json`), JSON.stringify(t.rows.slice(0, 200), null, 1)); } catch {}
+        }
+      }
       const nextFair = new Map(), nextArbFair = new Map();
       const out = [];
       const ast = { events: 0, bets: 0, ours: 0, refsMissing: 0, refSpread: 0, passed: 0 };
       let evTables = 0;
       for (const w of wants) {
-        const t = (res.tables || []).find((x) => x.page === w.page && !!x.live === w.live);
-        const what = `${w.page === 'ev' ? 'Positive EV' : 'Arbitrage'} ${w.live ? 'live' : 'pre-game'} table`;
-        if (!t) { warn(`miss:${w.page}${w.live}`, `PropProfessor: no tab showing the ${what} yet${res.opening ? ' (opening one)' : ''}`); continue; }
-        if (t.error) { warn(`err:${w.page}${w.live}`, `PropProfessor ${what}: ${t.error}`); continue; }
-        const age = now - Number(t.updatedAt || 0);
-        if (age > (w.live ? maxAge.live : maxAge.pre)) { warn(`old:${w.page}${w.live}`, `PropProfessor ${what} hasn't updated for ${Math.round(age / 1000)}s: not used until it does (the tab may be frozen)`); continue; }
-        if (root && !sampled.has(`${w.page}${w.live}`) && (t.rows || []).length) {
-          sampled.add(`${w.page}${w.live}`);
-          try { fs.writeFileSync(path.join(root, `propprofessor-sample-${w.page}-${w.live ? 'live' : 'pregame'}.json`), JSON.stringify(t.rows.slice(0, 200), null, 1)); } catch {}
-        }
-        if (w.page === 'ev') { evTables++; out.push(...ppEvToRows(t.rows, { books: ourBooks, fairOut: nextFair })); }
-        else out.push(...ppArbsToRows(t.rows, { ...arb, books: arbBooks }, nextArbFair, ast));
+        const l = last.get(roleOf(w));
+        if (!l) continue;
+        if (w.page === 'ev') { evTables++; out.push(...ppEvToRows(l.table.rows, { books: ourBooks, fairOut: nextFair })); }
+        else out.push(...ppArbsToRows(l.table.rows, { ...arb, books: arbBooks }, nextArbFair, ast));
       }
-      if (!evTables && wants.some((w) => w.page === 'ev')) throw new Error('PropProfessor: no up-to-date Positive EV table in any open tab');
+      // No +EV table at all: an error (the session watch raises the alarm if it lasts), except while
+      // the extension is still opening the tabs.
+      if (!evTables && wants.some((w) => w.page === 'ev') && !res.opening) throw new Error('PropProfessor: no Positive EV table in any open tab');
       fair = nextFair;
       arbFair = nextArbFair;
-      if (this.arb) { Object.assign(arbStats, ast); arbState.rows = out.filter((r) => r.arb).length; arbState.error = null; }
+      if (this.arb) {
+        arbState.rows = out.filter((r) => r.arb).length; arbState.error = null;
+        Object.assign(arbStats, ast);
+      }
       return out;
     },
   };

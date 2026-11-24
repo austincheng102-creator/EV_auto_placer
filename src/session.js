@@ -118,9 +118,12 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
     /** The PropProfessor read's result: an Error, or null when it worked. Same grace period as Gambit. */
     propprofessor(err) {
       if (!err) { ppFailSince = 0; return ok('propprofessor'); }
-      if (!/log in|logged out|no open PropProfessor|HTTP 40[13]/i.test(err.message)) return;
+      // No +EV table in any tab (tab closed, page stuck loading, subscription ended): nothing can be
+      // bet, so it raises the alarm too, after 2 min (tabs being opened or reloaded take a while).
+      const noTable = /no Positive EV table/i.test(err.message);
+      if (!noTable && !/log in|logged out|no open PropProfessor|HTTP 40[13]/i.test(err.message)) return;
       if (!ppFailSince) ppFailSince = Date.now();
-      if (Date.now() - ppFailSince >= gambitGraceMs) bad('propprofessor', err.message);
+      if (Date.now() - ppFailSince >= (noTable ? Math.max(gambitGraceMs, 120e3) : gambitGraceMs)) bad('propprofessor', err.message);
     },
     /** A book's request that needs the login just worked: it isn't logged out. */
     bookOk(name) { ok(name); },

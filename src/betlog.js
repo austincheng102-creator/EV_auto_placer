@@ -97,7 +97,7 @@ const MAX_TRACK_MS = 36 * 60 * 60 * 1000;    // give up on a close after this lo
 
 const COLUMNS = [
   ['placedAt', 'placed at (UTC)'], ['betId', 'bet id'], ['book', 'book'], ['gambitBookId', 'Gambit book id'],
-  ['sourceLabel', 'Gambit table'],
+  ['sourceLabel', 'Gambit table'], ['feed', 'odds source'],
   ['league', 'league'], ['event', 'event'], ['live', 'live'], ['startDate', 'game start'],
   ['market', 'market'], ['selection', 'selection'], ['line', 'line'],
   ['gambitOdds', 'Gambit listed odds'], ['sentOdds', 'odds we checked and sent'], ['confirmedOdds', 'book confirmed odds'],
@@ -162,6 +162,8 @@ export function makeBetLog(dir, { dryRun = false, log } = {}) {
       placedAt: new Date().toISOString(), betId, book: row.book, gambitBookId: row.gambitBookId ?? null,
       // Which Gambit table the bet came from (also shown on the Show bets page).
       source: row.arb ? 'arb' : 'ev',
+      // Which odds source found it: Gambit or PropProfessor (they run separately, one per run).
+      feed: row.src === 'propprofessor' ? 'PropProfessor' : 'Gambit',
       league: row.league ?? null, event: row.event, live: !!row.isLive, startDate: row.startDate ?? null,
       market: row.market, marketKey: row.marketKey ?? null, selection: row.selection, line: row.line ?? null,
       gambitOdds: row.odds, sentOdds: quote.odds, confirmedOdds: confirmedOdds ?? null,
