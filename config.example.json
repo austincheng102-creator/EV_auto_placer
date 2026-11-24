@@ -44,7 +44,7 @@
     "pregameMaxBets": 1,
     "maxStake": 3,
     "cooldownSec": 150,
-    "repeatMinEvPts": 10,
+    "repeatMinEvPts": 3,
     "otherSide": "afterCooldown",
     "bothSides": false,
     "perBook": true

@@ -25,8 +25,8 @@
 //    group.pregameMaxBets (default 1): pre-game bets get this many per group (per book) instead of maxBets.
 //    group.cooldownSec (default 150): a repeat bet in the same group (same book with perBook) waits this
 //    long after the last one, and must still pass every rule. Different markets in one game don't wait.
-//    group.repeatMinEvPts (default 10): a repeat of the same bet (same book, side and line) is skipped
-//    while its EV is within 10 points of an earlier one's (10.1% then 19.9% = skipped, 20.1% = allowed).
+//    group.repeatMinEvPts (default 3): a repeat of the same bet (same book, side and line) is skipped
+//    while its EV is within 3 points of an earlier one's (10.1% then 13.0% = skipped, 13.1% = allowed).
 import { impliedProb } from './ev.js';
 
 // Gambit sportsbook ids. PS3838 is Pinnacle's feed. Polymarket has two listings.
@@ -91,8 +91,8 @@ export function applyFilterDefaults(cfg) {
   if (g.perBook === undefined) g.perBook = true;
   if (g.cooldownSec === undefined) g.cooldownSec = 150;
   // Same bet again (same book, side and line): only when its EV differs by at least this many points from
-  // every earlier one on that book in the last 24h (10.1% EV first -> 20.1%+ for a repeat). 0/null = off.
-  if (g.repeatMinEvPts === undefined) g.repeatMinEvPts = 10;
+  // every earlier one on that book in the last 24h (10.1% EV first -> 13.1%+ or 7.1%- for a repeat). 0/null = off.
+  if (g.repeatMinEvPts === undefined) g.repeatMinEvPts = 3;
   // The opposite side (Under after an Over, the other team): "afterCooldown" (default) lets it go once the
   // group's last bet, on any book, is cooldownSec old and it passes every rule; "block" = never that game.
   if (g.otherSide === undefined) g.otherSide = 'afterCooldown';
