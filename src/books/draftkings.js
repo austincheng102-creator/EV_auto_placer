@@ -16,10 +16,16 @@
 import { decimalToAmerican } from '../ev.js';
 import { log } from '../log.js';
 
-/** DraftKings selection id from Gambit's link: .../event/<slug>/<eventId>?outcomes=<id>[,<id>] */
+/**
+ * DraftKings selection id from Gambit's link: .../event/<slug>/<eventId>?outcomes=<id>[,<id>]
+ * Game lines look like "0ML87369883_1", but player props carry '#' and sometimes '-':
+ * "0QA391841828#2377495537_13L88808Q1-1412470928Q20" (sent as %2523 in Gambit's link). Cutting the id
+ * at the '#' made DraftKings answer every prop price check HTTP 400 (Austin, 2026-11-24).
+ */
 export function draftkingsRef(link) {
-  const s = decodeURIComponent(decodeURIComponent(String(link || '')));
-  const m = /[?&]outcomes=([0-9A-Za-z_]+)/.exec(s);
+  let s = String(link || '');
+  for (let i = 0; i < 3 && /%[0-9A-Fa-f]{2}/.test(s); i++) { try { s = decodeURIComponent(s); } catch { break; } }
+  const m = /[?&]outcomes=([0-9A-Za-z_#-]+)/.exec(s);
   return m ? { bookRef: m[1], eventRef: /\/event\/[^/]+\/(\d+)/.exec(s)?.[1] } : {};
 }
 
@@ -194,7 +200,11 @@ export function makeDraftKings(name, label, cfg, bridge) {
           .catch((e) => ({ status: 0, error: String(e?.message || e) })),
       ]);
       if (authFail(calc)) throw new Error(loginMsg);
-      if (calc.status >= 400 || !calc.json) throw new Error(`price check HTTP ${calc.status}: ${why(calc.json) || String(calc.text || '').slice(0, 200)}`);
+      if (calc.status >= 400 || !calc.json) {
+        // DraftKings' 400s can carry a reason in a shape why() doesn't know: show the raw answer then.
+        const raw = calc.text || (calc.json ? JSON.stringify(calc.json) : '') || calc.error || 'empty answer';
+        throw new Error(`price check HTTP ${calc.status}: ${why(calc.json) || String(raw).slice(0, 300)} (selection ${id})`);
+      }
       const bet = (calc.json.bets || []).find((b) => b.type === 'Single');
       const sel = (si.json?.selections || []).find((s) => s.id === id);
       const mk = (si.json?.markets || []).find((m) => m.id === sel?.marketId);
