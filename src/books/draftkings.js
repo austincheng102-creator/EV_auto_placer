@@ -77,11 +77,30 @@ export function dkSettled(b) {
     : /void|cancel|refund/i.test(st) ? 'void' : null;
   if (!result) return null;
   const n = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v) * 100) / 100 : null);
+  // What was bet on, for matching bets logged without DraftKings' bet id (resultsync.js).
+  const sel = (b.selections || [])[0] || {};
+  const label = [sel.selectionDisplayName, sel.marketDisplayName, sel.points, ...(sel.players || []).map((x) => x?.name), ...(sel.participants || []).map((x) => x?.name)]
+    .filter((x) => x != null && x !== '').join(' ');
   return { betId: String(b.betId), result, status: st, payout: result === 'lost' ? 0 : n(b.returns), stake: n(b.stake),
-    odds: dkAmerican(b.displayOdds), settledAt: b.settlementDate || null, placedAt: b.placementDate || null };
+    odds: dkAmerican(b.displayOdds), settledAt: b.settlementDate || null, placedAt: b.placementDate || null,
+    selectionId: sel.selectionId || null, label: label || null };
 }
 
 const BAD = /reject|declin|fail|cancel|error|expired/i;
+
+/**
+ * Our bet in a My Bets page: a single on selection `selId` for `stake`, placed from 15s before we
+ * sent it (clocks differ) to 3 minutes after. Declined bets aren't in My Bets at all.
+ */
+export function findPlacedBet(list, selId, stake, sentAt) {
+  return (list || []).find((b) => {
+    const sel = (b.selections || [])[0];
+    const t = Date.parse(b.placementDate);
+    return b.betId && (b.numberOfSelections ?? 1) === 1 && sel && String(sel.selectionId) === String(selId)
+      && (!Number.isFinite(stake) || b.stake == null || Math.abs(Number(b.stake) - stake) < 0.005)
+      && Number.isFinite(t) && t >= sentAt - 15e3 && t <= sentAt + 180e3;
+  }) || null;
+}
 
 export function makeDraftKings(name, label, cfg, bridge) {
   const k = cfg.draftkings || {};
@@ -219,13 +238,47 @@ export function makeDraftKings(name, label, cfg, bridge) {
         selectionsForYourBet: [], selectionsForProgressiveParlay: [], selectionsForForecast: [], selectionsForTricast: [], selectionsForCombinator: [],
         locale: 'en', oddsStyle: 'american', autoAcceptMode: 'None',
       };
+      const sentAt = Date.now();
       const res = await send('place', `${wager}/placeBets`, 'POST', body, { ...slipHeaders, calculationid: uuid(), 'x-request-client-timestamp': String(Date.now()) }, 30000);
-      return answer(res, q, 'placeBets', '');
+      return answer(res, q, 'placeBets', '', sentAt);
     },
   });
+  // One page (25) of My Bets, newest first, over the site's WebSocket. filter: {status: 'All' | 'Open' | 'Settled'}.
+  async function myBets(filter, skip = 0) {
+    const ws = `${(k.gateway || 'https://gateway.northamerica-northeast2.prod.dkapis.com').replace(/^https/, 'wss').replace(/\/[^/]*\/betting\/v2$/, '')}/${site}/shelby/api/v1/websocket?format=json`;
+    const jwt = await loginJwt();
+    const init = uuid(), id = uuid();
+    const msgs = [
+      JSON.stringify({ jsonrpc: '2.0', method: 'InitializeBetsPageRequest', id: init, params: { betsRequest: { filter: { status: 'All' }, pagination: { count: 25, skip: 0 }, ScoreboardType: 'EventScore' }, cashOut: { information: true, pullOperations: true }, locale: 'en' } }),
+      JSON.stringify({ jsonrpc: '2.0', method: 'BetsRequest', id, params: { filter, orderCriteria: { orderBy: 'placementDate', direction: 'DESC' }, pagination: { count: 25, skip }, locale: 'en', ScoreboardType: 'EventScore' } }),
+    ];
+    const r = await send('history', `${ws}&jwt=${encodeURIComponent(jwt)}`, 'GET', null, {}, 25000, { ws: { send: msgs, replyId: id }, timeoutMs: 20000 });
+    if (r.error && !r.json) throw new Error(`DraftKings My Bets: ${r.error}`);
+    if (r.json?.error) throw new Error(`DraftKings My Bets: ${JSON.stringify(r.json.error).slice(0, 200)}`);
+    return r.json?.result?.bets || [];
+  }
+
+  // A live bet whose decision we didn't see on the waitingBets stream: look for it in My Bets (the list
+  // the site shows), by selection id, stake and placement time, a few times after the live delay.
+  // Returns {found: bet} or {found: null} (DraftKings didn't take it) or {error} (My Bets couldn't be read).
+  async function confirmInMyBets(selId, stake, sentAt, delaySec) {
+    const waits = [Math.max(0, sentAt + (delaySec + 3) * 1000 - Date.now()), 5000, 10000];
+    let lastErr = null, reads = 0;
+    for (const w of waits) {
+      if (w) await sleep(w);
+      try {
+        const list = await myBets({ status: 'All' });
+        reads++;
+        const hit = findPlacedBet(list, selId, stake, sentAt);
+        if (hit) return { found: hit };
+      } catch (e) { lastErr = e; }
+    }
+    return reads ? { found: null } : { error: lastErr };
+  }
+
   // DraftKings' answer to placeBets or acceptPurchase: placed, refused, or a counter-offer (in the
   // answer itself, or at the end of the live delay on the waitingBets stream).
-  async function answer(res, q, op, note) {
+  async function answer(res, q, op, note, sentAt = Date.now()) {
     {
       if (authFail(res)) throw new Error(loginMsg);
       const j = res.json || {};
@@ -252,8 +305,21 @@ export function makeDraftKings(name, label, cfg, bridge) {
           waitNote = `waitingBets: HTTP ${w.status}${w.error ? `, ${w.error}` : ''}${w.matched === false ? ', no decision in the stream' : ''}, ${String(w.text || '').length} chars: ${String(w.text || '').slice(-600)}`;
         } catch (e) { waitNote = `waitingBets failed: ${e?.message || e}`; }
         if (/LiveDelay|Pending|Waiting/i.test(status)) {
-          // No decision seen: it may still go through, so record it (never bet twice) and say so.
-          return { betId: `draftkings:waiting-${j.waitingBetId}`, confirmedOdds: null, detail: `${detail} (no decision seen after the live delay; ${waitNote})` };
+          // No decision on the stream (its fetch fails in the tab, 2026-11-24: every live DraftKings bet).
+          // Ask My Bets instead: there it's a real bet with its id and price, or it isn't there at all.
+          const c = await confirmInMyBets(q.id, Number(b0.stake), sentAt, Number(b0.delayPeriod) || 3);
+          if (c.found) {
+            const fb = c.found;
+            return { betId: `draftkings:${fb.betId}`, confirmedOdds: dkAmerican(fb.displayOdds, fb.trueOdds),
+              detail: `${detail} (stream gave no decision; confirmed in My Bets: ${JSON.stringify({ betId: fb.betId, status: fb.status, displayOdds: fb.displayOdds, stake: fb.stake, placementDate: fb.placementDate })}; ${waitNote})` };
+          }
+          if (c.found === null) {
+            const err = new Error('rejected: DraftKings didn\'t take it (not in My Bets after the live delay)');
+            err.detail = `${detail} (not in My Bets ~20s after the live delay; ${waitNote})`;
+            throw err;
+          }
+          // My Bets couldn't be read either: it may still go through, so record it (never bet twice) and say so.
+          return { betId: `draftkings:waiting-${j.waitingBetId}`, confirmedOdds: null, detail: `${detail} (no decision seen after the live delay, My Bets unreadable: ${c.error?.message || c.error}; ${waitNote})` };
         }
       }
       if (res.status < 400 && !/NewOffer/i.test(status) && (OK.test(status) || (betId && !BAD.test(status)))) {
@@ -307,19 +373,9 @@ export function makeDraftKings(name, label, cfg, bridge) {
 
     // Settled bets placed since `from` (ms), newest first, read 25 at a time like the My Bets page.
     async settled(from = 0) {
-      const ws = `${(k.gateway || 'https://gateway.northamerica-northeast2.prod.dkapis.com').replace(/^https/, 'wss').replace(/\/[^/]*\/betting\/v2$/, '')}/${site}/shelby/api/v1/websocket?format=json`;
       const out = [];
       for (let page = 0; page < 20; page++) {
-        const jwt = await loginJwt();
-        const init = uuid(), id = uuid();
-        const msgs = [
-          JSON.stringify({ jsonrpc: '2.0', method: 'InitializeBetsPageRequest', id: init, params: { betsRequest: { filter: { status: 'All' }, pagination: { count: 25, skip: 0 }, ScoreboardType: 'EventScore' }, cashOut: { information: true, pullOperations: true }, locale: 'en' } }),
-          JSON.stringify({ jsonrpc: '2.0', method: 'BetsRequest', id, params: { filter: { status: 'Settled' }, orderCriteria: { orderBy: 'placementDate', direction: 'DESC' }, pagination: { count: 25, skip: page * 25 }, locale: 'en', ScoreboardType: 'EventScore' } }),
-        ];
-        const r = await send('history', `${ws}&jwt=${encodeURIComponent(jwt)}`, 'GET', null, {}, 25000, { ws: { send: msgs, replyId: id }, timeoutMs: 20000 });
-        if (r.error && !r.json) throw new Error(`DraftKings My Bets: ${r.error}`);
-        if (r.json?.error) throw new Error(`DraftKings My Bets: ${JSON.stringify(r.json.error).slice(0, 200)}`);
-        const bets = r.json?.result?.bets || [];
+        const bets = await myBets({ status: 'Settled' }, page * 25);
         for (const b of bets) { const x = dkSettled(b); if (x) out.push(x); }
         const oldest = Math.min(...bets.map((b) => Date.parse(b.placementDate)).filter(Number.isFinite));
         if (bets.length < 25 || !(oldest > from)) break;

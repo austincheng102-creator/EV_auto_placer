@@ -12,6 +12,54 @@ import { BOOK_LABELS } from './books/index.js';
 
 const DAY = 864e5;
 
+const words = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9.\s]/g, ' ').split(/\s+/).filter(Boolean);
+const STOP = new Set(['the', 'and', 'over', 'under', 'total', 'points', 'game', 'moneyline', 'spread', 'state']);
+
+/**
+ * Does a book's settled bet `r` look like our bet `b`? With the book's selection id on both, only
+ * an exact id match counts. Without it (bets logged before the id was kept), the side and line must
+ * agree: Over/Under the same way and the same number, or a team/player name word in common.
+ */
+export function sameSelection(b, r) {
+  if (b.bookRef && r.selectionId) return String(b.bookRef) === String(r.selectionId);
+  const have = words(r.label);
+  if (!have.length) return false;
+  const mine = words(b.selection);
+  const ou = mine.find((w) => w === 'over' || w === 'under');
+  if (ou && !have.includes(ou)) return false;
+  if (!ou && (have.includes('over') || have.includes('under')) && !/total|over|under/i.test(b.market || '')) return false;
+  const nums = have.filter((w) => /^\d+(\.\d+)?$/.test(w)).map(Number);
+  if (b.line != null && Number.isFinite(Number(b.line)) && nums.length && !nums.includes(Math.abs(Number(b.line)))) return false;
+  const names = mine.filter((w) => w.length >= 3 && !STOP.has(w) && !/^\d/.test(w));
+  if (!names.length) return !!ou && b.line != null && nums.includes(Math.abs(Number(b.line)));
+  return names.some((w) => have.includes(w));
+}
+
+/**
+ * Our bets logged without the book's bet id (DraftKings: the live-delay decision wasn't seen), matched
+ * to the book's settled bets: the same selection (sameSelection), the same stake, placed within 90s.
+ * The closest in time wins, and each book bet goes to one of our bets only (`taken` holds the ones
+ * already used). A bet with no such match stays unsettled rather than taking another bet's result.
+ * @param waiting [[ourId, bet]]   @param all the book's settled bets   @returns results with betId = ourId
+ */
+export function looseMatch(waiting, all, taken = new Set()) {
+  const out = [];
+  for (const [id, b] of waiting) {
+    const t0 = Date.parse(b.placedAt);
+    let best = null, bestGap = Infinity;
+    for (const r of all) {
+      if (taken.has(String(r.betId)) || !r.placedAt) continue;
+      const gap = Math.abs(Date.parse(r.placedAt) - t0);
+      if (!(gap < 90e3) || gap >= bestGap) continue;
+      if (r.stake != null && Math.abs(r.stake - Number(b.stake)) >= 0.005) continue;
+      if (!sameSelection(b, r)) continue;
+      best = r; bestGap = gap;
+    }
+    if (best) { taken.add(String(best.betId)); out.push({ ...best, bookBetId: best.betId, betId: id }); }
+  }
+  return out;
+}
+
 /**
  * Spans [from, to) in `days`-long pieces, newest first. A book that caps how many settled bets
  * one reply holds (Hard Rock's mybets/closed has no paging) still gives us every bet this way.
@@ -97,19 +145,16 @@ export function makeResultSync({ cfg, bridge, root, dryRun = false, log, bets, b
           const all = await read(src, waiting, byId);
           const settled = all.filter((r) => byId.has(r.betId));
           if (src.loose) {
-            // Bets with no matching id: the settled bet placed within 90s of ours with the same stake.
-            const used = new Set(settled.map((r) => r.betId));
-            for (const [id, b] of byId) {
-              if (used.has(id)) continue;
-              const t0 = Date.parse(b.placedAt);
-              const hit = all.find((r) => !used.has(r.betId) && r.placedAt && Math.abs(Date.parse(r.placedAt) - t0) < 90e3
-                && (r.stake == null || Math.abs(r.stake - Number(b.stake)) < 0.005));
-              if (hit) { used.add(hit.betId); settled.push({ ...hit, betId: id }); }
-            }
+            // Bets with no matching id: find the bet in the book's list by what was bet on (see looseMatch).
+            // A book bet already given to another of our bets (now or on an earlier read) is never reused.
+            const taken = new Set(settled.map((r) => r.betId));
+            for (const r of Object.values(store.read())) if (r?.bookBetId) taken.add(String(r.bookBetId));
+            for (const b of bets()) { const m = b.book === book && idRe.exec(b.betId || ''); if (m && !/waiting-/.test(b.betId)) taken.add(m[1]); }
+            settled.push(...looseMatch([...byId].filter(([id]) => !settled.some((r) => r.betId === id)), all, taken));
           }
           lastOk[book] = now();
           warned.delete(book);
-          const n = settled.length ? store.setMany(settled.map((r) => ({ key: betKey(byId.get(r.betId)), result: r.result, payout: r.payout, odds: r.odds, settledAt: r.settledAt }))) : 0;
+          const n = settled.length ? store.setMany(settled.map((r) => ({ key: betKey(byId.get(r.betId)), result: r.result, payout: r.payout, odds: r.odds, settledAt: r.settledAt, stake: r.stake ?? null, bookBetId: r.bookBetId ?? r.betId }))) : 0;
           if (n) {
             total += n;
             const profit = settled.reduce((s, r) => s + r.payout - (r.stake ?? byId.get(r.betId).stake), 0);

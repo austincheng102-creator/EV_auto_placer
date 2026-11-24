@@ -44,6 +44,10 @@ export function makeResults(dir, { dryRun = false } = {}) {
   function migrate(all) {
     let changed = false;
     for (const [k, r] of Object.entries(all)) {
+      // DraftKings bets logged without DraftKings' bet id were matched to its settled bets by time and
+      // stake only, which gave some of them another bet's result (two bets 7s apart, same $1). Drop those
+      // once so they're matched again by selection (resultsync.js looseMatch).
+      if (k.startsWith('draftkings:waiting-') && r?.source === 'book' && !r.bookBetId) { delete all[k]; changed = true; continue; }
       if (k.startsWith('coupon:') && r?.source === 'book' && !r.v) {
         if (r.payout != null) r.payout = Math.round(r.payout * 10) / 100;
         r.v = 2; changed = true;
@@ -67,9 +71,10 @@ export function makeResults(dir, { dryRun = false } = {}) {
   function setMany(list) {
     const all = read();
     let n = 0;
-    for (const { key, result, payout = null, odds = null, settledAt = null } of list) {
-      if (all[key]?.source === 'manual' || (all[key] && all[key].result === result && all[key].payout === payout)) continue;
-      all[key] = { result, payout, odds, source: 'book', settledAt: settledAt || new Date().toISOString(), v: 2 };
+    for (const { key, result, payout = null, odds = null, settledAt = null, stake = null, bookBetId = null } of list) {
+      if (all[key]?.source === 'manual' || (all[key] && all[key].result === result && all[key].payout === payout && (!bookBetId || all[key].bookBetId === String(bookBetId)))) continue;
+      // stake: what the book says was staked; bookBetId: the book's bet id this result came from.
+      all[key] = { result, payout, odds, stake, bookBetId: bookBetId == null ? null : String(bookBetId), source: 'book', settledAt: settledAt || new Date().toISOString(), v: 2 };
       n++;
     }
     if (n) fs.writeFileSync(file, JSON.stringify(all, null, 2));
@@ -117,7 +122,8 @@ export function loadBets(dir, { dryRun = false } = {}) {
         // Expected profit: what the bet is worth on average at the fair price we had.
         expected: Number.isFinite(b.ev) ? stake * b.ev / 100 : null,
         result: r?.result || null, resultSource: r?.source || null, settledAt: r?.settledAt || null,
-        profit: r ? profitOf({ result: r.result, stake, odds, payout: r.payout }) : null,
+        // The book's own stake when it reported one (a bet it took for less than we sent).
+        profit: r ? profitOf({ result: r.result, stake: r.stake ?? stake, odds, payout: r.payout }) : null,
       };
     });
 }
