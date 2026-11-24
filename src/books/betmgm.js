@@ -49,7 +49,16 @@ export function findOption(j, ref) {
     for (const m of [...(fx.optionMarkets || []), ...(fx.markets || [])]) {
       if (String(m.id) !== String(ref.marketId)) continue;
       const o = (m.options || []).find((x) => String(x.id) === String(ref.optionId));
-      if (o) return { fixture: fx, market: m, option: o };
+      if (!o) continue;
+      // An older-market game line can also come back in the newer shape, with price.id -1 (Austin's
+      // debug.log 2026-11-23: BYU, San Francisco and Memphis game lines on fixtures 2012xxxx/2010xxxx).
+      // Betting it on pick "-1" gets an empty HTTP 500. The site bets these as betModel "Result" on
+      // the option (result) id, so do the same.
+      const pid = Number(o.price?.id);
+      if (!(pid > 0)) {
+        return { fixture: fx, market: m, v1: true, option: { ...o, price: { ...o.price, id: o.id } } };
+      }
+      return { fixture: fx, market: m, option: o };
     }
     // Older markets (plain-number fixtures, "v1"): fixture.games[].results[], the price on the result
     // itself (Austin's capture 2026-11-23, Middle Tenn State at So Illinois, fixture 20129999).
