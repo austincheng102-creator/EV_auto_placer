@@ -52,6 +52,46 @@ export function otherBooksText(prices, ownId) {
   }).join('; ') || null;
 }
 
+// Config/internal book names (filters.js) -> display names.
+const REF_NAMES = { pinnacle: 'Pinnacle', kalshi: 'Kalshi', polymarket: 'Polymarket', novig: 'Novig', prophetx: 'ProphetX',
+  fanduel: 'FanDuel', draftkings: 'DraftKings', caesars: 'Caesars', betmgm: 'BetMGM', hardrock: 'Hard Rock', betrivers: 'BetRivers' };
+export const refName = (n) => REF_NAMES[n] || (n ? n[0].toUpperCase() + n.slice(1) : n);
+
+/**
+ * The reference prices behind a bet's fair price, as saved in bets.json `ref` (Austin, 2026-11-24):
+ * every book Gambit listed for the selection, with its two sides, and for the books the fair
+ * calculation looked at, the win % it took from them and whether it set the fair price.
+ * breakdown = filters.js fairBreakdown(). All from the same Gambit fetch the EV was judged on.
+ */
+export function refSnapshot(row, breakdown) {
+  const prices = row.prices || {};
+  const own = Number(row.gambitBookId);
+  const ownName = GAMBIT_BOOK_NAMES[own];
+  const byId = new Map((breakdown?.books || []).filter((b) => b.id != null).map((b) => [Number(b.id), b]));
+  const ids = Object.keys(prices).map(Number).filter((id) => id !== own);
+  for (const b of breakdown?.books || []) if (b.id != null && !ids.includes(Number(b.id)) && Number(b.id) !== own) ids.push(Number(b.id));
+  const rank = (id) => { const b = byId.get(id); return b ? { fair: 0, used: 1, 'not used': 2 }[b.role] ?? 3 : 4; };
+  ids.sort((a, b) => rank(a) - rank(b) || ((SHARP_FIRST.indexOf(a) + 1 || 99) - (SHARP_FIRST.indexOf(b) + 1 || 99)) || a - b);
+  const books = ids.map((id) => {
+    const pr = prices[id] || {}, b = byId.get(id);
+    const name = GAMBIT_BOOK_NAMES[id] || (b ? refName(b.name) : `book ${id}`);
+    return {
+      name, id, odds: Number.isFinite(pr.odds) ? pr.odds : null, oppOdds: Number.isFinite(pr.oppOdds) ? pr.oppOdds : null,
+      liq: pr.liq > 0 || pr.oppLiq > 0 ? pr.liq ?? null : null, oppLiq: pr.liq > 0 || pr.oppLiq > 0 ? pr.oppLiq ?? null : null,
+      noVig: b?.noVig ?? null, role: b?.role ?? null,
+      why: b?.why ?? (name === ownName ? "Gambit's copy of the book we bet, under another id" : null),
+    };
+  });
+  // A book in the fair calculation that Gambit has no price row for (Gambit's own Pinnacle fair) still shows.
+  for (const b of breakdown?.books || []) if (b.id == null) books.unshift({ name: refName(b.name), id: null, odds: null, oppOdds: null, liq: null, oppLiq: null, noVig: b.noVig, role: b.role, why: b.why });
+  const ts = (t) => (Number.isFinite(t) ? new Date(t).toISOString() : null);
+  return {
+    how: breakdown?.how ?? null, books,
+    gambitAt: ts(row.gambitAt), sharpAgeSec: Number.isFinite(row.sharpAgeSec) ? row.sharpAgeSec : null,
+  };
+}
+const fairSetBy = (ref) => (ref?.books || []).filter((b) => b.role === 'fair').map((b) => `${b.name}${b.noVig != null ? ` ${(b.noVig * 100).toFixed(1)}%` : ''}`).join(' + ') || null;
+
 const LIVE_UNSEEN_MS = 15 * 60 * 1000;      // live bet gone from Gambit this long -> close it
 const MAX_TRACK_MS = 36 * 60 * 60 * 1000;    // give up on a close after this long
 
@@ -64,7 +104,9 @@ const COLUMNS = [
   ['oddsMatch', 'confirmed = sent'], ['fairOdds', 'fair odds used (lowest method)'],
   ['fairPower', 'fair Power'], ['fairMultiplicative', 'fair Multiplicative'], ['fairAdditive', 'fair Additive'], ['fairShin', 'fair Shin'],
   ['fairBooks', 'books behind fair'], ['fairSource', 'fair source'],
-  ['otherBooks', "other books' odds (our side/other side) [$ liquidity our side/other side]"], ['sharpNoVig', 'sharp books no-vig win % (arb: reference books)'], ['sharpSpreadPts', 'sharp spread pts (arb: reference books)'],
+  ['fairSetBy', 'fair set by (win % used)'], ['refAt', 'Gambit prices fetched at (UTC)'], ['refToAcceptSec', 'secs from those prices to bet accepted'],
+  ['otherBooks', "other books' odds (our side/other side) [$ liquidity our side/other side]"], ['sharpNoVig', 'sharp books simple no-vig win %, for the 3-point check (arb: reference books)'], ['sharpSpreadPts', 'sharp spread pts (arb: reference books)'],
+  ['acceptFairOdds', 'fair odds in first Gambit prices after accepted'], ['acceptEv', 'EV vs that fair %'],
   ['gambitEv', 'EV at Gambit price %'], ['ev', 'EV at placed price %'],
   ['novigOdds', 'Novig odds'], ['novigOppOdds', 'Novig other side'], ['novigEv', 'Novig EV %'],
   ['stake', 'stake $'], ['maxStake', 'book max stake $'],
@@ -74,7 +116,16 @@ const COLUMNS = [
  *  before this was recorded are all from the +EV table unless they carry the arb flag. */
 export const betSource = (b) => (b?.source === 'arb' || b?.source === 'ev' ? b.source : b?.arb ? 'arb' : 'ev');
 export const SOURCE_LABELS = { ev: '+EV', arb: 'Arb' };
-const cellOf = (b, k) => (k === 'sourceLabel' ? SOURCE_LABELS[betSource(b)] : b[k]);
+const secs = (a, b) => (Date.parse(a) && Date.parse(b) ? (Date.parse(b) - Date.parse(a)) / 1000 : null);
+const cellOf = (b, k) => {
+  if (k === 'sourceLabel') return SOURCE_LABELS[betSource(b)];
+  if (k === 'fairSetBy') return fairSetBy(b.ref);
+  if (k === 'refAt') return b.ref?.gambitAt ?? null;
+  if (k === 'refToAcceptSec') return secs(b.ref?.gambitAt, b.timing?.acceptedAt);
+  if (k === 'acceptFairOdds') return b.atAccept ? (b.atAccept.gone ? 'Gambit no longer listed it' : b.atAccept.none || b.atAccept.fairOdds) : null;
+  if (k === 'acceptEv') return b.atAccept?.ev ?? null;
+  return b[k];
+};
 const csvCell = (v) => {
   if (v == null) return '';
   const s = typeof v === 'number' ? String(Math.round(v * 100) / 100) : String(v);
@@ -103,7 +154,7 @@ export function makeBetLog(dir, { dryRun = false, log } = {}) {
   }
 
   /** Record a placed bet. Returns the record. */
-  function record({ row, quote, stake, betId, confirmedOdds, ev, novig, sharp }) {
+  function record({ row, quote, stake, betId, confirmedOdds, ev, novig, sharp, ref = null, timing = null }) {
     const dv = row.devig || {};
     // Arbitrage-table bets: the books that set the fair price are the reference books (DK/FD/Caesars).
     if (row.arb && row.refProbs) sharp = { probs: row.refProbs, spread: row.refSpread ?? null };
@@ -121,6 +172,10 @@ export function makeBetLog(dir, { dryRun = false, log } = {}) {
       otherBooks: otherBooksText(row.prices, row.gambitBookId),
       sharpNoVig: sharp?.probs ? Object.entries(sharp.probs).map(([n, p]) => `${n[0].toUpperCase()}${n.slice(1)} ${(p * 100).toFixed(1)}`).join('; ') || null : null,
       sharpSpreadPts: sharp?.spread ?? null,
+      // The exact reference prices and fair used for this EV, from the Gambit fetch it was judged on.
+      ref: refSnapshot(row, ref),
+      timing: timing ? Object.fromEntries(Object.entries(timing).map(([k, t]) => [k, Number.isFinite(t) ? new Date(t).toISOString() : null])) : null,
+      atAccept: null,   // filled from the first Gambit prices fetched after the book accepted it
       gambitEv: row.ev, ev,
       novigOdds: novig?.nv?.odds ?? null, novigOppOdds: novig?.nv?.oppOdds ?? null, novigEv: novig?.ev ?? null,
       stake, maxStake: quote.maxStake ?? null,
