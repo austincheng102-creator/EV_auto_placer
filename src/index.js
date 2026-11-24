@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { evPct, fmtAmerican, fmtPct, decimalToAmerican, americanToDecimal } from './ev.js';
+import { evPct, fmtAmerican, fmtPct, decimalToAmerican, americanToDecimal, impliedProb } from './ev.js';
 import { log } from './log.js';
 import { makeGambitSource } from './sources/gambit.js';
 import { arbStats } from './sources/gambit-arbs.js';
@@ -403,7 +403,30 @@ async function tryBet(row, ctx) {
     lg.warn(`${book.label}: price jumped to ${fmtAmerican(quote.odds)} ${fj.sec.toFixed(1)}s ago (${fmtPct(fj.ev)} EV vs ${fmtPct(fj.gambitEv)} at Gambit's ${fmtAmerican(row.gambitOdds ?? row.odds)}), fair price may not have caught up — skipped, nothing placed`);
     return false;
   }
+  // Gambit behind the book (Austin, 2026-11-24): on a live bet, when the book's real price is no longer
+  // the price Gambit showed for it, the game has moved since Gambit's snapshot, and Gambit's sharp prices
+  // (the "fair") are from that same old snapshot. 873 settled bets: those won 41 of 64.3 expected
+  // (-$34.75 vs +$17.29 expected); the rest were on model. Skipped and checked again on later scans:
+  // once Gambit shows the book's new price, its fair has caught up too and the bet goes ahead.
+  const gb = gambitBehind(row, quote);
+  if (gb) {
+    ctx.outcome = 'Gambit behind';
+    lg.warn(`${book.label}: price is ${fmtAmerican(quote.odds)} but Gambit still shows ${fmtAmerican(gb.gambitOdds)}, so its fair ${fmtAmerican(row.fairOdds)} is from before the move — skipped, checking again once Gambit catches up`);
+    return false;
+  }
   return placeAt(row, book, quote, ctx);
+}
+
+// Config "gambitBehind": { books, maxPts }; false turns it off. Defaults: every book except Hard Rock
+// (its moves away from Gambit's copy were on model: 330 bets), any change (0 points of win chance).
+function gambitBehind(row, quote) {
+  const g = cfg.gambitBehind === false ? null : { exceptBooks: ['hardrock'], maxPts: 0, ...(cfg.gambitBehind || {}) };
+  if (!g || !row.isLive) return null;
+  if (Array.isArray(g.books) ? !g.books.includes(row.book) : (g.exceptBooks || []).includes(row.book)) return null;
+  const gambitOdds = row.gambitOdds ?? row.odds;
+  if (!Number.isFinite(gambitOdds) || !Number.isFinite(quote.odds) || gambitOdds === quote.odds) return null;
+  const pts = Math.abs(impliedProb(gambitOdds) - impliedProb(quote.odds)) * 100;
+  return pts > Number(g.maxPts || 0) ? { gambitOdds, pts } : null;
 }
 
 // Config "freshJump": { books, sec, evPts }; false turns it off. Defaults: Hard Rock, 3s, 3 points.
@@ -806,8 +829,8 @@ function startBet(row, scanAt, t = {}) {
       const w = watch.get(row.id);
       if (ok) watch.delete(row.id);
       else if (ctx.pausedUntil) cooldown.set(row.id, ctx.pausedUntil);
-      // A fresh-jump skip only waits for the jump to be freshJump.sec old, so it's watched on every book.
-      else if ((book.freePriceCheck || ctx.outcome === 'fresh jump') && WATCH_MS > 0 && ctx.quote && (!ctx.sent || ctx.priceMoved) && (!w || now - w.since < WATCH_MS)) {
+      // A fresh-jump or Gambit-behind skip only waits for Gambit to catch up, so it's watched on every book.
+      else if ((book.freePriceCheck || ctx.outcome === 'fresh jump' || ctx.outcome === 'Gambit behind') && WATCH_MS > 0 && ctx.quote && (!ctx.sent || ctx.priceMoved) && (!w || now - w.since < WATCH_MS)) {
         if (!w) watch.set(row.id, { since: now, sig: ctx.sig });
         // Check it again next scan, or after the book's recheckWatchSec (DraftKings: 5s).
         const gap = Number(cfg[row.book]?.recheckWatchSec ?? book.recheckWatchSec ?? 0);
