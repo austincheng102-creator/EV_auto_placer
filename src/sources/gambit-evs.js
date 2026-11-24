@@ -58,29 +58,29 @@ const MARKETS = {
   money_line: 'Moneyline', money_line_first_half: '1H Moneyline', spread: 'Spread',
   total_game_points: 'Total',
 };
-const prettyMarket = (m) => MARKETS[m] || String(m).replace(/^PLAYER_PROP_/, '').toLowerCase()
+export const prettyMarket = (m) => MARKETS[m] || String(m).replace(/^PLAYER_PROP_/, '').toLowerCase()
   .replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
 /** Kambi (BetRivers) link: ...#event/<eventId>?coupon=single|<outcomeId>|... */
-function kambiRef(link) {
+export function kambiRef(link) {
   const m = /event\/(\d+)\?coupon=single\|(\d+)/.exec(link || '');
   return m ? { eventRef: m[1], bookRef: m[2] } : {};
 }
 /** FanDuel link: addToBetslip?marketId=<m>&selectionId=<s> */
-function fanduelRef(link) {
+export function fanduelRef(link) {
   const m = /marketId=([\d.]+)&selectionId=(\d+)/.exec(link || '');
   return m ? { marketRef: m[1], bookRef: m[2] } : {};
 }
 
 /** Hard Rock link: app.hardrock.bet/?deep_link_value=betslip/<selectionId> */
-function hardrockRef(link) {
+export function hardrockRef(link) {
   const m = /betslip\/(\d+)/.exec(decodeURIComponent(link || ''));
   return m ? { bookRef: m[1] } : {};
 }
 
 /** BetMGM link: fixture, market and option ids (bookRef = option id, so rows can be told apart). */
-function betmgmRefs(link) {
+export function betmgmRefs(link) {
   const r = betmgmRef(link);
   return r.optionId ? { ...r, bookRef: r.optionId } : {};
 }
