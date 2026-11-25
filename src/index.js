@@ -314,6 +314,10 @@ const propFunnel = makePropFunnel(cfg, root, { dryRun, log });
 // Player props: at most maxPropStatsPerPlayer different stats per player per game (default 2), e.g.
 // points and rebounds, then steals is skipped. The same stat on both books counts once. null = no limit.
 if (cfg.maxPropStatsPerPlayer === undefined) cfg.maxPropStatsPerPlayer = 2;
+// Live player props: at most liveMaxPropsPerEvent per game across all books (Austin 2026-11-25: 6).
+// Props after the 6th in one live game went 87 W vs 112 expected (-$36 vs +$26); the first 6 were on model.
+// Pre-game props don't count toward it. null = no limit.
+if (cfg.liveMaxPropsPerEvent === undefined) cfg.liveMaxPropsPerEvent = 6;
 // Arbitrage-table props carry their own minimum (arbProps.minEvPct); everything else uses minEvPct.
 // Pre-game bets (+EV and arb table, any source) use pregameMinEvPct instead (Austin 2026-11-25: 6%,
 // live stays minEvPct). null = pre-game uses the same minimum as live.
@@ -331,9 +335,14 @@ const ppFallbackOk = (r) => r.src === 'propprofessor' && cfg.propprofessor?.fair
   && !r.isProp && !r.arb && Number.isFinite(r.fairProb) && r.fairProb > 0 && r.fairProb < 1;
 const inEventCap = (p) => cfg.propsInEventCap === true || !isPropBet(p);
 const overEventCap = (r, perEvent) => inEventCap(r) && (perEvent[r.event] || 0) >= (cfg.maxBetsPerEvent ?? Infinity);
+// Placed bets from before this rule have no isLive: counted as live (safe side).
+const isLiveProp = (p) => isPropBet(p) && p.isLive !== false;
+const livePropCounts = (list) => { const n = {}; for (const p of list) if (isLiveProp(p)) n[p.event] = (n[p.event] || 0) + 1; return n; };
+const overLivePropCap = (r, liveProps) => r.isLive === true && isPropBet(r) && cfg.liveMaxPropsPerEvent != null
+  && (liveProps[r.event] || 0) >= Number(cfg.liveMaxPropsPerEvent);
 
 /** First rule a prop row fails in this scan (same order as the scan filters in tick()). */
-function propStage(r, { groups, perEvent, stats, now }) {
+function propStage(r, { groups, perEvent, liveProps, stats, now }) {
   if (r.direct === 'gone') return 'gone';
   if (!Number.isFinite(r.ev) || r.ev < minEv(r) - 3) return 'evLow';
   if (r.ev < minEv(r)) return 'evNear';
@@ -352,6 +361,7 @@ function propStage(r, { groups, perEvent, stats, now }) {
   if ([...inflight.values()].some((f) => groupClash(cfg, r, f))) return 'groupInFlight';
   if ((cooldown.get(r.id) || 0) >= now) return 'cooldown';
   if (overEventCap(r, perEvent)) return 'perEvent';
+  if (overLivePropCap(r, liveProps)) return 'livePropCap';
   if (tooManyStats(cfg, stats, r)) return 'playerStats';
   if (!dryRun && !bridge.hasTab(r.book)) return 'noTab';
   if (novig && !novig.check(r, r.odds).ok) return 'novig';
@@ -538,7 +548,7 @@ async function placeAt(row, book, quote, ctx, retries = 0) {
     ctx.outcome = 'placed'; ctx.realOdds = confirmedOdds ?? quote.odds;
     if (detail) lg.debug(`${book.label} ${desc(row)} PLACED — ${detail}`);
     state.placed.push({ at: new Date().toISOString(), key: selKey(row), group: groupKey(row), event: row.event, book: row.book,
-      market: row.market, isProp: !!row.isProp, gambitBookId: row.gambitBookId, selection: row.selection, line: row.line, odds: quote.odds, fair: row.fairOdds, ev, novigEv: novigEvPct, stake, betId });
+      market: row.market, isProp: !!row.isProp, isLive: row.isLive, gambitBookId: row.gambitBookId, selection: row.selection, line: row.line, odds: quote.odds, fair: row.fairOdds, ev, novigEv: novigEvPct, stake, betId });
     state.staked += stake; save();
     // Paper trail: what we checked vs what the book says it accepted, plus Gambit's fair odds.
     // Dry runs: the simulated book "confirms" the price we sent.
@@ -626,9 +636,10 @@ function pickBets(rows, { quiet = false } = {}) {
   const stats = playerStats([...state.placed, ...inflight.values()]);
   const perEvent = {};
   for (const p of [...state.placed, ...inflight.values()]) if (inEventCap(p)) perEvent[p.event] = (perEvent[p.event] || 0) + 1;
+  const liveProps = livePropCounts([...state.placed, ...inflight.values()]);
   const now = Date.now();
   let farOff = 0;
-  const why = { noProps: 0, odds: 0, evCap: 0, sharpSpread: 0, softBooks: 0, longConsensus: 0, pinnacleOff: 0, noSharp: 0, stale: 0, staleProp: 0, group: 0, groupCooldown: 0, sameEv: 0, playerStats: 0 };
+  const why = { noProps: 0, odds: 0, evCap: 0, sharpSpread: 0, softBooks: 0, longConsensus: 0, pinnacleOff: 0, noSharp: 0, stale: 0, staleProp: 0, livePropCap: 0, group: 0, groupCooldown: 0, sameEv: 0, playerStats: 0 };
   const drop = (k) => (why[k]++, false);
   const groups = groupTotals(state.placed);
   let ev = rows
@@ -648,6 +659,7 @@ function pickBets(rows, { quiet = false } = {}) {
     .filter((r) => ![...inflight.values()].some((f) => groupClash(cfg, r, f)))
     .filter((r) => (cooldown.get(r.id) || 0) < now)   // repeats on one side are capped by the group rule
     .filter((r) => !overEventCap(r, perEvent))
+    .filter((r) => !overLivePropCap(r, liveProps) || drop('livePropCap'))
     .filter((r) => !tooManyStats(cfg, stats, r) || drop('playerStats'))
     .filter((r) => dryRun || bridge.hasTab(r.book))
     // New bets first, then ones being watched after a failed price check.
@@ -659,12 +671,13 @@ function pickBets(rows, { quiet = false } = {}) {
   // Also counts each kept prop's stat, so one scan can't send a player past maxPropStatsPerPlayer.
   { const kept = [];
     ev = ev.filter((r) => {
-      if (kept.some((k) => groupClash(cfg, r, k)) || tooManyStats(cfg, stats, r)) return false;
+      if (kept.some((k) => groupClash(cfg, r, k)) || tooManyStats(cfg, stats, r) || overLivePropCap(r, liveProps)) return false;
       kept.push(r);
+      if (r.isLive === true && isPropBet(r)) liveProps[r.event] = (liveProps[r.event] || 0) + 1;
       if (isPropBet(r)) { const k = playerKey(r); if (!stats.has(k)) stats.set(k, new Set()); stats.get(k).add(statKey(r)); }
       return true;
     }); }
-  return { ev, why, farOff, novigDropped, groups, perEvent, stats, now };
+  return { ev, why, farOff, novigDropped, groups, perEvent, liveProps, stats, now };
 }
 // Live bet whose sharp price hasn't moved within the live timing rule (5s, props 30s).
 const sharpTooOld = (r) => {
@@ -791,11 +804,11 @@ async function tick() {
       }
     }
   }
-  const { ev, why, farOff, novigDropped, groups, perEvent, stats, now } = pickBets(rows);
+  const { ev, why, farOff, novigDropped, groups, perEvent, liveProps, stats, now } = pickBets(rows);
   const ageMax = cfg.sharp.liveMaxAgeSec;
   if (propFunnel) {
     const sent = new Set(ev.map((r) => r.id));
-    for (const r of rows) if (r.isProp) propFunnel.note(r, sent.has(r.id) ? 'sent' : propStage(r, { groups, perEvent, stats, now }));
+    for (const r of rows) if (r.isProp) propFunnel.note(r, sent.has(r.id) ? 'sent' : propStage(r, { groups, perEvent, liveProps, stats, now }));
     propFunnel.tick();
   }
   const whyText = [
@@ -815,6 +828,7 @@ async function tick() {
     why.groupCooldown && `${why.groupCooldown} group bet <${cfg.group.cooldownSec}s ago`,
     why.sameEv && `${why.sameEv} same bet already placed at EV within ${cfg.group.repeatMinEvPts} pts`,
     why.playerStats && `${why.playerStats} player already has ${cfg.maxPropStatsPerPlayer} stats bet`,
+    why.livePropCap && `${why.livePropCap} live game already has ${cfg.liveMaxPropsPerEvent} props`,
   ].filter(Boolean).join(', ');
 
   const nBooks = new Set(rows.map((r) => r.book)).size;
