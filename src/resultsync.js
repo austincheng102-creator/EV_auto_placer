@@ -102,6 +102,12 @@ export function makeResultSync({ cfg, bridge, root, dryRun = false, log, bets, b
     const since = now() - lookbackMs;
     return bets().filter((b) => b.book === book && idRe.test(b.betId || '') && !have[betKey(b)] && Date.parse(b.placedAt) >= since);
   }
+  /** Bets marked by hand that the book's own record hasn't been checked against yet (look-back window). */
+  function handMarked(book, idRe) {
+    const have = store.read();
+    const since = now() - lookbackMs;
+    return bets().filter((b) => { const r = have[betKey(b)]; return b.book === book && idRe.test(b.betId || '') && r?.source === 'manual' && !r.bookChecked && Date.parse(b.placedAt) >= since; });
+  }
   const waitingBooks = () => sources.filter((s) => waitingFor(s.book, s.idRe).length).map((s) => s.book);
 
   /** Read one book's settled bets covering every bet in `byId`. */
@@ -132,7 +138,8 @@ export function makeResultSync({ cfg, bridge, root, dryRun = false, log, bets, b
         const { book, idRe } = src;
         if (!bridge?.connected() || !bridge.hasTab(book)) continue;
         const waiting = waitingFor(book, idRe);
-        if (!waiting.length) continue;
+        const hand = handMarked(book, idRe);
+        if (!waiting.length && !hand.length) continue;
         const t = now();
         if (!force) {
           if (lastOk[book] && t - lastOk[book] < everyMs) continue;
@@ -140,9 +147,36 @@ export function makeResultSync({ cfg, bridge, root, dryRun = false, log, bets, b
         }
         lastTry[book] = t;
         const byId = new Map(waiting.map((b) => [idRe.exec(b.betId)[1], b]));
+        const handById = new Map(hand.map((b) => [idRe.exec(b.betId)[1], b]));
         const label = BOOK_LABELS[book] || book;
         try {
-          const all = await read(src, waiting, byId);
+          const all = await read(src, [...waiting, ...hand], new Map([...byId, ...handById]));
+          // Results marked by hand, checked against the book's own record: by the book's bet id (the book's
+          // result wins), or for bets logged without one by selection, stake and time (flagged if different).
+          if (hand.length) {
+            const checks = [];
+            const taken = new Set();
+            for (const r of Object.values(store.read())) if (r?.bookBetId && r.source !== 'manual') taken.add(String(r.bookBetId));
+            for (const b of bets()) { const m = b.book === book && idRe.exec(b.betId || ''); if (m && !/waiting-/.test(b.betId)) taken.add(m[1]); }
+            for (const r of all) if (handById.has(r.betId) && !/waiting-/.test(handById.get(r.betId).betId)) checks.push({ ...r, key: betKey(handById.get(r.betId)), exact: true, bookBetId: r.betId });
+            if (src.loose) {
+              const loose = [...handById].filter(([, b]) => /waiting-/.test(b.betId));
+              const found = looseMatch(loose, all, taken);
+              for (const m of found) checks.push({ ...m, key: betKey(handById.get(m.betId)), exact: false });
+              // A day on, still no bet on that selection, stake and time in the book's list: the book has no such bet.
+              const oldestRead = Math.min(...all.filter((r) => r.placedAt).map((r) => Date.parse(r.placedAt)));
+              for (const [id, b] of loose) {
+                if (found.some((m) => m.betId === id) || now() - Date.parse(b.placedAt) <= DAY || !(oldestRead < Date.parse(b.placedAt) - 3600e3)) continue;
+                checks.push({ key: betKey(b), exact: false, result: 'not found' });
+              }
+            }
+            if (checks.length) {
+              const { replaced, flagged } = store.checkManual(checks);
+              if (replaced) log?.warn(`Results: ${replaced} ${label} result${replaced === 1 ? '' : 's'} marked by hand didn't match the book's own record of that bet; the book's result is used now`);
+              if (flagged) log?.warn(`Results: ${flagged} ${label} result${flagged === 1 ? '' : 's'} marked by hand differ from the book's matching settled bet; flagged on Show bets`);
+            }
+          }
+          if (!waiting.length) { lastOk[book] = now(); continue; }
           const settled = all.filter((r) => byId.has(r.betId));
           if (src.loose) {
             // Bets with no matching id: find the bet in the book's list by what was bet on (see looseMatch).

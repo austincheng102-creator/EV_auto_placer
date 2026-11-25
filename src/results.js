@@ -82,7 +82,33 @@ export function makeResults(dir, { dryRun = false } = {}) {
     if (n) fs.writeFileSync(file, JSON.stringify(all, null, 2));
     return n;
   }
-  return { file, read, set, setMany };
+  /**
+   * A book's settled record for a bet you marked by hand. When the book has the bet under its own bet id
+   * (`exact`), the book's result replaces the hand mark (the old one is kept as manualWas). When it was
+   * only matched by selection, stake and time (DraftKings bets logged without an id), the hand mark stays
+   * and the book's answer is saved beside it (bookSays) so Show bets can flag a disagreement.
+   */
+  function checkManual(list) {
+    const all = read();
+    let replaced = 0, flagged = 0;
+    for (const { key, exact, result, payout = null, odds = null, settledAt = null, stake = null, bookBetId = null } of list) {
+      const cur = all[key];
+      if (cur?.source !== 'manual') continue;
+      const bookId = bookBetId == null ? null : String(bookBetId);
+      if (exact) {
+        if (cur.result === result) { cur.bookChecked = new Date().toISOString(); cur.bookBetId = bookId; continue; }
+        all[key] = { result, payout, odds, stake, bookBetId: bookId, source: 'book', settledAt: settledAt || new Date().toISOString(), v: 3, manualWas: cur.result };
+        replaced++;
+      } else {
+        if (cur.bookSays === result && cur.bookBetId === bookId) continue;
+        cur.bookSays = result; cur.bookBetId = bookId; cur.bookChecked = new Date().toISOString();
+        if (result !== cur.result) flagged++;
+      }
+    }
+    fs.writeFileSync(file, JSON.stringify(all, null, 2));
+    return { replaced, flagged };
+  }
+  return { file, read, set, setMany, checkManual };
 }
 
 /**
@@ -158,6 +184,12 @@ export function loadBets(dir, { dryRun = false } = {}) {
         // Expected profit: what the bet is worth on average at the fair price we had, at the price we got.
         expected: r?.result === 'not placed' ? 0 : Number.isFinite(ev) ? stake * ev / 100 : null,
         result: r?.result || null, resultSource: r?.source || null, settledAt: r?.settledAt || null,
+        // How sure the result is: 'book' = the book's own record for this bet id; 'matched' = the book's record
+        // found by selection, stake and time (no bet id logged); 'manual' = marked by hand. bookSays: what the
+        // book's record says for a hand-marked bet, when it differs. manualWas: a hand mark the book replaced.
+        resultBasis: !r ? null : r.source === 'manual' ? 'manual' : r.bookBetId && !String(key).includes(String(r.bookBetId)) ? 'matched' : 'book',
+        bookSays: r?.source === 'manual' && r.bookSays && r.bookSays !== r.result && !(r.bookSays === 'not found' && ['void', 'not placed'].includes(r.result)) ? r.bookSays : null,
+        manualWas: r?.manualWas ?? null,
         // The book's own stake when it reported one (a bet it took for less than we sent).
         profit: r ? profitOf({ result: r.result, stake: r.stake ?? stake, odds, payout: r.payout }) : null,
       };

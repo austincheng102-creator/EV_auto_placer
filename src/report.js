@@ -164,6 +164,10 @@ select { font: inherit; font-size: 12px; background: var(--surface); color: var(
 .kind.pre { background: var(--chip); color: var(--text-2); }
 .pill { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 10px; background: var(--chip); color: var(--text-2); }
 .info { display: inline-block; margin-left: 6px; font-size: 12px; color: var(--text-3); }
+.basis { display: block; font-size: 11px; color: var(--text-3); margin-top: 2px; white-space: nowrap; }
+.basis.warn { color: var(--bad); font-weight: 600; }
+.trust { margin: 0 0 10px; padding: 8px 12px; border-radius: 8px; font-size: 13px; background: var(--chip); color: var(--text-2); }
+.trust.warn { background: color-mix(in srgb, var(--bad) 12%, var(--surface)); color: var(--bad); }
 tr.hasodds { cursor: default; }
 tr.hasodds:hover td { background: var(--chip); }
 #oddsTip { position: fixed; z-index: 50; display: none; max-width: 520px; background: var(--surface); color: var(--text);
@@ -237,6 +241,7 @@ tr.hasodds:hover td { background: var(--chip); }
   <section class="card">
     <h2>Bets</h2>
     <p class="desc" id="tableNote"></p>
+    <p class="trust" id="trustNote" hidden></p>
     <div class="tablewrap"><table id="table"></table></div>
   </section>
 </main>
@@ -608,8 +613,19 @@ async function setResult(key, result, sel) {
 function table(list) {
   const tb = document.getElementById('table');
   document.getElementById('tableNote').textContent = LIVE
-    ? 'Results fill in by themselves from Hard Rock, BetRivers and FanDuel while the placer runs. You can also pick one by hand; it saves to results.json and the charts update.'
+    ? 'Results fill in by themselves from each book\'s settled bets while the placer runs. You can also pick one by hand; it saves to results.json and the charts update.'
     : 'Read-only copy. Run Show bets to mark results.';
+  // Results not taken from the book's own record of that bet id: say how many, and flag any the book disagrees with.
+  const trust = document.getElementById('trustNote');
+  const settled = list.filter((b) => b.result);
+  const hand = settled.filter((b) => b.resultBasis === 'manual'), matched = settled.filter((b) => b.resultBasis === 'matched');
+  const differ = hand.filter((b) => b.bookSays), replaced = settled.filter((b) => b.manualWas);
+  trust.hidden = false;
+  trust.classList.toggle('warn', differ.length > 0);
+  trust.textContent = (settled.length - hand.length - matched.length) + ' of ' + settled.length + ' results come from the book\'s own record of that bet.'
+    + (matched.length ? ' ' + matched.length + ' were found in the book\'s list by selection, stake and time (no bet id was logged).' : '')
+    + (hand.length ? ' ' + hand.length + ' ' + (hand.length === 1 ? 'was' : 'were') + ' marked by hand' + (differ.length ? ', and ' + differ.length + ' of those disagree with the book (in red below).' : '.') : '')
+    + (replaced.length ? ' ' + replaced.length + ' hand mark' + (replaced.length === 1 ? ' was' : 's were') + ' replaced by the book\'s result.' : '');
   const head = '<tr><th>Placed</th><th>Book</th><th>Type</th><th>Market</th><th>Table</th><th>Bet</th><th class="num">Odds</th><th class="num">Stake</th><th class="num">EV</th><th class="num" title="EV at the price we got, against the first fair seen after the book accepted the bet. Green: the fair moved our way; red: against us.">EV after</th><th class="num">CLV</th><th>Result</th><th class="num">Profit</th></tr>';
   tb.innerHTML = head;
   for (const b of [...list].reverse()) {
@@ -637,6 +653,11 @@ function table(list) {
           sel.onchange = () => setResult(b.key, sel.value, sel);
           td.append(sel);
         } else td.textContent = b.result || 'not settled';
+        // Where the result came from, when it isn't the book's own record of this bet id.
+        const note = b.bookSays ? (b.bookSays === 'not found' ? 'by hand; book has no such bet' : 'by hand; book says ' + b.bookSays)
+          : b.resultBasis === 'manual' ? 'by hand' : b.resultBasis === 'matched' ? 'matched by selection'
+          : b.manualWas ? 'book result (you had ' + b.manualWas + ')' : '';
+        if (note) { const sp = document.createElement('span'); sp.className = 'basis' + (b.bookSays ? ' warn' : ''); sp.textContent = note; td.append(sp); }
       } else td.textContent = c;
       // EV after: green when the fair moved our way after the bet, red when it moved against us.
       if (i === 9 && evAfter(b) != null && Number.isFinite(b.ev)) {
