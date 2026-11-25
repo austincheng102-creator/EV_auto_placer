@@ -15,9 +15,10 @@ export function reportData(dir, { dryRun = false } = {}) {
   return { generatedAt: new Date().toISOString(), dryRun, books: BOOK_LABELS, bets: loadBets(dir, { dryRun }) };
 }
 
-export function renderPage(data, { live = false } = {}) {
+export function renderPage(data, { live = false, etag = null } = {}) {
   const json = JSON.stringify(data).replace(/</g, '\\u003c');
-  return PAGE.replace('__DATA__', json).replace('__LIVE__', live ? 'true' : 'false');
+  // Function replacers: the data can hold "$&"-style text that a plain string replace would expand.
+  return PAGE.replace('__LIVE__', live ? 'true' : 'false').replace('__ETAG__', () => JSON.stringify(etag)).replace('__DATA__', () => json);
 }
 
 export function writeSnapshot(dir, opts) {
@@ -35,11 +36,32 @@ export function openInBrowser(url) {
 /** Serve the page on 127.0.0.1. Resolves with the URL once listening. */
 export function serveReport(dir, { dryRun = false, port = 8766, log } = {}) {
   const results = makeResults(dir, { dryRun });
+  // The page asks for new data every 15s. bets.json is several MB once there are a few thousand
+  // bets, so it is only read and sent again when bets.json, results.json or state.json changed
+  // (size + modified time). Otherwise the page gets a tiny "304 not modified" and redraws nothing.
+  // Only this window reads the files; the placer itself is untouched.
+  const sfx = dryRun ? '.dry' : '';
+  const stamp = () => ['bets', 'results', 'state'].map((f) => {
+    try { const st = fs.statSync(path.join(dir, f + sfx + '.json')); return st.size + ':' + st.mtimeMs; } catch { return '-'; }
+  }).join('|');
+  let cache = null;
+  const current = () => {
+    const v = stamp();
+    if (!cache || cache.v !== v) {
+      const data = reportData(dir, { dryRun });
+      cache = { v, etag: '"' + Date.now().toString(36) + '"', data, json: JSON.stringify(data) };
+    }
+    return cache;
+  };
   const server = http.createServer((req, res) => {
-    const send = (code, type, body) => { res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store' }); res.end(body); };
+    const send = (code, type, body, extra) => { res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', ...extra }); res.end(body); };
     // Only this machine's browser, and only same-origin posts.
-    if (req.method === 'GET' && (req.url === '/' || req.url.startsWith('/?'))) return send(200, 'text/html; charset=utf-8', renderPage(reportData(dir, { dryRun }), { live: true }));
-    if (req.method === 'GET' && req.url === '/data.json') return send(200, 'application/json', JSON.stringify(reportData(dir, { dryRun })));
+    if (req.method === 'GET' && (req.url === '/' || req.url.startsWith('/?'))) { const c = current(); return send(200, 'text/html; charset=utf-8', renderPage(c.data, { live: true, etag: c.etag })); }
+    if (req.method === 'GET' && req.url === '/data.json') {
+      const c = current();
+      if (req.headers['if-none-match'] === c.etag) { res.writeHead(304, { etag: c.etag, 'cache-control': 'no-store' }); return res.end(); }
+      return send(200, 'application/json', c.json, { etag: c.etag });
+    }
     if (req.method === 'POST' && req.url === '/result') {
       const host = req.headers.host || '';
       if (!/^(127\.0\.0\.1|localhost):\d+$/.test(host) || (req.headers.origin && !/^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(req.headers.origin))) return send(403, 'text/plain', 'forbidden');
@@ -52,7 +74,8 @@ export function serveReport(dir, { dryRun = false, port = 8766, log } = {}) {
           results.set(String(key), result || null);
           try { writeSnapshot(dir, { dryRun }); } catch {}
           log?.info(`Result saved: ${key} -> ${result || 'cleared'}`);
-          send(200, 'application/json', JSON.stringify(reportData(dir, { dryRun })));
+          const c = current();
+          send(200, 'application/json', c.json, { etag: c.etag });
         } catch (e) { send(400, 'text/plain', e.message); }
       });
       return;
@@ -127,6 +150,9 @@ svg text { fill: var(--text-3); font-size: 11px; font-variant-numeric: tabular-n
 .tip .row span:last-child { color: var(--text); font-variant-numeric: tabular-nums; }
 .empty { color: var(--text-2); padding: 30px 0; text-align: center; }
 .tablewrap { overflow-x: auto; }
+.more { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: center; color: var(--text-2); font-size: 12px; padding: 10px 0 6px; }
+.more[hidden] { display: none; }
+.more button { border: 1px solid var(--border); background: var(--chip); color: var(--text); font: inherit; padding: 5px 12px; border-radius: 7px; cursor: pointer; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 th { color: var(--text-2); font-weight: 500; font-size: 12px; }
@@ -238,11 +264,15 @@ tr.hasodds:hover td { background: var(--chip); }
     <h2>Bets</h2>
     <p class="desc" id="tableNote"></p>
     <div class="tablewrap"><table id="table"></table></div>
+    <div class="more" id="tableMore"><span id="tableCount"></span><button type="button" id="moreBtn"></button><button type="button" id="allBtn"></button></div>
   </section>
 </main>
 <script>
 let DATA = __DATA__;
 const LIVE = __LIVE__;
+let ETAG = __ETAG__;
+// Placed time and local day of each bet, worked out once per load (not on every filter pass).
+const prep = (d) => { for (const b of d.bets) { b._t = Date.parse(b.placedAt); b._day = dayKey(b._t); } return d; };
 const NS = 'http://www.w3.org/2000/svg';
 const state = { book: 'all', range: 'all', src: 'all', kind: 'all', mkt: 'all' };
 try { const v = JSON.parse(localStorage.getItem('evp-view') || '{}'); state.book = v.book || 'all'; state.range = v.range || 'all'; state.src = v.src || 'all'; state.kind = v.kind || 'all'; state.mkt = v.mkt || 'all'; } catch {}
@@ -261,6 +291,9 @@ const SRC = { ev: '+EV', arb: 'Arb' };
 const srcOf = (b) => b.source === 'arb' ? 'arb' : 'ev';
 // Calendar: the day picked (YYYY-MM-DD, or null for all days) and the month shown (YYYY-MM).
 state.day = null; state.month = null;
+// Bets table: how many rows are drawn (newest first). Back to one page when the view changes.
+const TABLE_PAGE = 100;
+state.rows = TABLE_PAGE; state.rowsView = '';
 
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const colorOf = (b) => b === 'all' ? 'var(--all)' : b === 'hardrock' ? 'var(--hardrock)' : b === 'betrivers' ? 'var(--betrivers)' : b === 'fanduel' ? 'var(--fanduel)' : b === 'betmgm' ? 'var(--betmgm)' : b === 'draftkings' ? 'var(--draftkings)' : b === 'thescore' ? 'var(--thescore)' : 'var(--other)';
@@ -276,11 +309,12 @@ const dayKey = (t) => { const d = new Date(t); return d.getFullYear() + '-' + St
 const dayLabel = (k) => new Date(k + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 const when = (t) => new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
+prep(DATA);
 function booksPresent() { return [...new Set(DATA.bets.map((b) => b.book))].sort((a, b) => ['hardrock', 'betrivers', 'fanduel', 'betmgm', 'draftkings', 'thescore'].indexOf(a) - ['hardrock', 'betrivers', 'fanduel', 'betmgm', 'draftkings', 'thescore'].indexOf(b) || a.localeCompare(b)); }
 // A picked day wins over the time range.
 function filtered(book = state.book, { day = state.day, range = !day, src = state.src, kind = state.kind, mkt = state.mkt } = {}) {
   const cut = !range || state.range === 'all' ? 0 : Date.now() - Number(state.range) * 864e5;
-  return DATA.bets.filter((b) => (book === 'all' || b.book === book) && (src === 'all' || srcOf(b) === src) && (kind === 'all' || kindOf(b) === kind) && (mkt === 'all' || mktOf(b) === mkt) && Date.parse(b.placedAt) >= cut && (!day || dayKey(b.placedAt) === day));
+  return DATA.bets.filter((b) => (book === 'all' || b.book === book) && (src === 'all' || srcOf(b) === src) && (kind === 'all' || kindOf(b) === kind) && (mkt === 'all' || mktOf(b) === mkt) && b._t >= cut && (!day || b._day === day));
 }
 
 function pickDay(k) {
@@ -295,7 +329,7 @@ function calendar() {
   const list = filtered(state.book, { day: null, range: false });
   const by = {};
   for (const b of list) {
-    const d = by[dayKey(b.placedAt)] ||= { n: 0, settled: 0, pnl: 0, stake: 0, expected: 0 };
+    const d = by[b._day] ||= { n: 0, settled: 0, pnl: 0, stake: 0, expected: 0 };
     d.n++; d.stake += b.stake || 0; d.expected += b.expected || 0;
     if (b.profit != null) { d.settled++; d.pnl += b.profit; }
   }
@@ -480,7 +514,7 @@ function pnlChart(list) {
   legend('pnlLegend', [['Actual (settled bets)', color], ['Expected (stake × EV)', 'var(--text-3)', true]]);
   if (!list.length) { host.innerHTML = '<div class="empty">No bets in this view yet.</div>'; return; }
   let act = 0, exp = 0;
-  const pts = list.map((b) => { if (b.profit != null) act += b.profit; exp += b.expected || 0; return { t: Date.parse(b.placedAt), act, exp, b }; });
+  const pts = list.map((b) => { if (b.profit != null) act += b.profit; exp += b.expected || 0; return { t: b._t, act, exp, b }; });
   const W = Math.max(320, host.clientWidth), H = 280, m = { l: 52, r: 12, t: 10, b: 26 };
   const t0 = pts[0].t, t1 = Math.max(pts[pts.length - 1].t, t0 + 36e5);
   const vals = pts.flatMap((p) => [p.act, p.exp]).concat(0);
@@ -547,7 +581,7 @@ function countChart(list) {
   const keys = [];
   for (let d = new Date(first); dayKey(d) <= dayKey(Date.now()); d.setDate(d.getDate() + 1)) keys.push(dayKey(d));
   const by = Object.fromEntries(keys.map((k) => [k, Object.fromEntries(books.map((b) => [b, { n: 0, stake: 0 }]))]));
-  for (const b of list) { const c = by[dayKey(b.placedAt)]?.[b.book]; if (c) { c.n++; c.stake += b.stake; } }
+  for (const b of list) { const c = by[b._day]?.[b.book]; if (c) { c.n++; c.stake += b.stake; } }
   const W = Math.max(320, host.clientWidth), H = 200, m = { l: 36, r: 8, t: 10, b: 26 };
   const max = Math.max(1, ...keys.map((k) => books.reduce((s, b) => s + by[k][b].n, 0)));
   const ticks = niceTicks(0, max, 4, true);
@@ -597,7 +631,8 @@ async function setResult(key, result, sel) {
   try {
     const r = await fetch('/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key, result }) });
     if (!r.ok) throw new Error(await r.text());
-    DATA = await r.json();
+    const e = r.headers.get('etag');
+    DATA = prep(await r.json()); if (e) ETAG = e;
     render();
   } catch (e) {
     sel.disabled = false;
@@ -612,7 +647,20 @@ function table(list) {
     : 'Read-only copy. Run Show bets to mark results.';
   const head = '<tr><th>Placed</th><th>Book</th><th>Type</th><th>Market</th><th>Table</th><th>Bet</th><th class="num">Odds</th><th class="num">Stake</th><th class="num">EV</th><th class="num" title="EV at the price we got, against the first fair seen after the book accepted the bet. Green: the fair moved our way; red: against us.">EV after</th><th class="num">CLV</th><th>Result</th><th class="num">Profit</th></tr>';
   tb.innerHTML = head;
-  for (const b of [...list].reverse()) {
+  // Newest first, TABLE_PAGE rows at a time: drawing every row (2,000+ rows, each with its own
+  // result picker) made the page heavy. "Show more" / "Show all" add the older ones.
+  const all = [...list].reverse(), shown = all.slice(0, state.rows);
+  const more = document.getElementById('tableMore');
+  more.hidden = all.length <= TABLE_PAGE;
+  document.getElementById('tableCount').textContent = 'Showing the newest ' + shown.length + ' of ' + all.length + ' bets';
+  const moreBtn = document.getElementById('moreBtn'), allBtn = document.getElementById('allBtn');
+  const done = shown.length >= all.length;
+  moreBtn.textContent = done ? 'Show only the newest ' + TABLE_PAGE : 'Show ' + Math.min(TABLE_PAGE, all.length - shown.length) + ' more';
+  moreBtn.onclick = () => { state.rows = done ? TABLE_PAGE : state.rows + TABLE_PAGE; table(list); };
+  allBtn.hidden = done;
+  allBtn.textContent = 'Show all ' + all.length;
+  allBtn.onclick = () => { state.rows = Infinity; table(list); };
+  for (const b of shown) {
     const tr = document.createElement('tr');
     const cells = [when(b.placedAt), label(b.book), '', '', SRC[srcOf(b)], '', odds(b.odds), '$' + b.stake, pct(b.ev), pct(evAfter(b)), pct(b.clv), '', money(b.profit, true)];
     cells.forEach((c, i) => {
@@ -675,18 +723,32 @@ function render() {
   document.getElementById('dayClear').onclick = () => { state.day = null; render(); };
   document.getElementById('sub').textContent = (DATA.dryRun ? 'Demo bets (dry run). ' : '') + 'Updated ' + when(DATA.generatedAt) + ' · ' + DATA.bets.length + ' bets in the log';
   const list = filtered();
+  const view = [state.book, state.kind, state.mkt, state.src, state.range, state.day].join('|');
+  if (view !== state.rowsView) { state.rowsView = view; state.rows = TABLE_PAGE; }
   // Bets per day says nothing new once one day is picked.
   document.getElementById('countCard').hidden = !!state.day;
   calendar(); tiles(list); pnlChart(list); countChart(list); table(list);
 }
 render();
-let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(render, 150); });
+// Only the charts depend on the window width: a resize redraws those, not the table.
+let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { const list = filtered(); pnlChart(list); countChart(list); }, 150); });
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', render);
-// Pick up bets the placer logs while this page is open.
-if (LIVE) setInterval(async () => {
-  if (document.activeElement?.tagName === 'SELECT') return;
-  try { const r = await fetch('/data.json'); if (r.ok) { DATA = await r.json(); render(); } } catch {}
-}, 15000);
+// Pick up bets the placer logs while this page is open. Every 15s the page asks whether anything
+// changed; the window answers "not modified" (a few bytes, nothing redrawn) unless bets.json or
+// results.json did. Nothing is asked while the tab is hidden or the window minimized; it catches up
+// as soon as you look at it again.
+async function refresh() {
+  if (document.hidden || document.activeElement?.tagName === 'SELECT') return;
+  try {
+    const r = await fetch('/data.json', { headers: ETAG ? { 'if-none-match': ETAG } : {} });
+    if (r.status === 304) return;
+    if (r.ok) { const e = r.headers.get('etag'); DATA = prep(await r.json()); if (e) ETAG = e; render(); }
+  } catch {}
+}
+if (LIVE) {
+  setInterval(refresh, 15000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+}
 </script>
 <div id="oddsTip" role="tooltip"></div>
 <script>
