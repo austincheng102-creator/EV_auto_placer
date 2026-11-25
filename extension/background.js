@@ -1924,7 +1924,12 @@ async function ppRead(req) {
   const read = async (t, click) => {
     const run = chrome.scripting.executeScript({ target: { tabId: t.id }, world: 'MAIN', func: ppReadPage, args: [req.books || [], click] });
     const [r] = await Promise.race([run, sleep(req.timeoutMs || 15000).then(() => [{ result: { error: 'the tab didn\'t answer (frozen or still loading)' } }])]).catch((e) => [{ result: { error: String(e?.message || e) } }]);
-    return { id: t.id, ...(r?.result || { error: 'could not read that tab' }) };
+    const out = { id: t.id, ...(r?.result || { error: 'could not read that tab' }) };
+    // A tab that didn't answer (hung) still counts as on its page, from its address, so it gets
+    // closed and reopened when stuck instead of a new tab being opened beside it.
+    if (!out.path && t.url) { try { out.path = new URL(t.url).pathname.replace(/\/$/, ''); } catch {} }
+    if (out.page === undefined) out.page = out.path === '/positive_ev' ? 'ev' : out.path === '/arbitrage' ? 'arb' : null;
+    return out;
   };
   // Only tabs this read can use: ones kept on a table asked for now, and ones not kept on any table.
   let seen = await Promise.all(tabs.filter((t) => !ppRole.has(t.id) || roles.includes(ppRole.get(t.id))).map((t) => read(t, null)));
