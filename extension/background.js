@@ -14,8 +14,7 @@ const BOOK_HOSTS = {
 };
 
 // Saved logins: kept in memory-only storage (gone when Chrome restarts or the extension reloads)
-// and on disk, so an update that reloads the extension doesn't lose them. Hard Rock's location
-// check only comes from a bet you place by hand, so losing it stopped every Hard Rock bet.
+// and on disk, so an update that reloads the extension doesn't lose them.
 const store = {
   async get(keys) {
     const l = await chrome.storage.local.get(keys).catch(() => ({}));
@@ -182,19 +181,81 @@ chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
 
 // Hard Rock Bet sends no auth headers: its login token (sessionToken) and location-check
 // token (geolocationDetails) ride in the form body of its own requests. We keep the latest
-// ones your Hard Rock tab sent. The login token refreshes every few seconds; the location
-// token is only sent when you place a bet, so place one bet by hand after logging in.
-let hrAuth = { session: null, geo: null, geoAt: 0, sessionAt: 0 };
-store.get('hrAuth').then((v) => { if (v?.hrAuth && !hrAuth.session) hrAuth = v.hrAuth; });
+// ones your Hard Rock tab sent. The login token refreshes every few seconds.
+// The location check (a GeoComply "blackbox"): the page makes one by itself when it loads
+// logged in, and again before each one runs out (about every 20 minutes), and sends it to Hard
+// Rock's geocomply/check. Its own bets then send that same token. So we take it from the check
+// too: no bet by hand needed. Hard Rock's newer flow (it asks geocomply/geostatus first) keeps the
+// location on Hard Rock's side and its bets send an empty token; we then send it empty too.
+let hrAuth = { session: null, geo: null, geoAt: 0, sessionAt: 0, flow: '', flowAt: 0 };
+store.get('hrAuth').then((v) => {
+  // Merge: a request seen before this read finished must not wipe the saved location check.
+  const saved = v?.hrAuth;
+  if (saved) hrAuth = { ...saved, ...Object.fromEntries(Object.entries(hrAuth).filter(([, x]) => x)) };
+});
+const hrSave = () => store.set({ hrAuth });
+function hrSetGeo(geo, from) {
+  if (!geo || typeof geo !== 'string' || geo.length < 100) return;
+  hrAuth = { ...hrAuth, geo, geoAt: Date.now(), geoFrom: from };
+  hrSave();
+}
+function hrSetFlow(flow) {
+  if (hrAuth.flow === flow && Date.now() - hrAuth.flowAt < 60e3) return;
+  hrAuth = { ...hrAuth, flow, flowAt: Date.now() };
+  hrSave();
+}
 chrome.webRequest.onBeforeRequest.addListener((d) => {
+  if (d.method !== 'POST') return;
+  if (/\/geocomply\/geostatus/.test(d.url)) return hrSetFlow('new');
+  if (/\/geocomply\/check/.test(d.url)) {
+    try {
+      const bytes = d.requestBody?.raw?.[0]?.bytes;
+      const j = bytes ? JSON.parse(new TextDecoder().decode(bytes)) : null;
+      hrSetGeo(j?.geocomplyResponse, 'the page\'s location check');
+    } catch {}
+    return;
+  }
   const f = d.requestBody?.formData;
   if (!f) return;
-  const session = f.sessionToken?.[0], geo = f.geolocationDetails?.[0];
-  if ((session && session !== hrAuth.session) || geo) {
-    hrAuth = { ...hrAuth, ...(session && session !== hrAuth.session ? { session, sessionAt: Date.now() } : {}), ...(geo ? { geo, geoAt: Date.now() } : {}) };
-    store.set({ hrAuth });
-  }
+  const session = f.sessionToken?.[0], geo = f.geolocationDetails?.[0] ?? f.geoLocationDetails?.[0];
+  if (session && session !== hrAuth.session) { hrAuth = { ...hrAuth, session, sessionAt: Date.now() }; hrSave(); }
+  // A bet sent from the page itself: the token it sent (or that it sent none) shows which flow Hard Rock uses.
+  if (/\/placeBets/.test(d.url) && geo != null) {
+    if (geo) { hrSetGeo(geo, 'a bet placed in the Hard Rock tab'); hrSetFlow('old'); } else hrSetFlow('new');
+  } else if (geo) hrSetGeo(geo, 'the Hard Rock tab');
 }, { urls: ['https://*.hardrocksportsbook.com/*'] }, ['requestBody']);
+
+// No location check seen yet (or Hard Rock said it ran out): reload the Hard Rock tab. Logged in,
+// the page then runs its location check by itself, which the listener above picks up. Bets
+// wait (nothing sent) until it's in; the app checks them again from the start next scan.
+let hrGeoJob = null, hrGeoTriedAt = 0;
+function renewHrGeo(why) {
+  if (hrGeoJob) return hrGeoJob;
+  if (Date.now() - hrGeoTriedAt < 2 * 60e3) return Promise.resolve({ ok: false, why: 'tried less than 2 minutes ago', recent: true });
+  hrGeoTriedAt = Date.now();
+  const note = (text, level = 'warn') => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book: 'hardrock', level, text })); };
+  hrGeoJob = (async () => {
+    const start = Date.now();
+    const t = (await bookTabs()).find((x) => x.book === 'hardrock');
+    if (!t) return { ok: false, why: 'no Hard Rock tab is open' };
+    for (let i = 0; i < 60 && placing.hardrock > 0; i++) await sleep(500);   // never reload under a bet being sent
+    note(`Hard Rock location check: ${why}; reloading the Hard Rock tab so the page runs a new one`, 'info');
+    reloadedAt.hardrock = Date.now();
+    lastReload = { book: 'hardrock', why: `renew the location check: ${why}`, at: Date.now() };
+    await chrome.tabs.reload(t.id).catch(() => {});
+    for (let i = 0; i < 90; i++) {   // up to 45s: page load + GeoComply's check
+      await sleep(500);
+      if (hrAuth.geoAt > start) { note(`Hard Rock location check renewed (from ${hrAuth.geoFrom}) in ${Math.round((Date.now() - start) / 1000)}s`, 'info'); return { ok: true }; }
+      if (hrAuth.flow === 'new' && hrAuth.flowAt > start && i > 10) { note('Hard Rock location check: the page uses Hard Rock\'s newer flow (location kept on Hard Rock\'s side); bets go out without a token, like the page\'s own', 'info'); return { ok: true }; }
+    }
+    note('Hard Rock location check NOT renewed: the reloaded tab ran no location check in 45s (logged out? GeoComply not running?)');
+    return { ok: false, why: 'the reloaded Hard Rock tab ran no location check in 45s (is it logged in, and is GeoComply running?)' };
+  })().finally(() => { hrGeoJob = null; });
+  return hrGeoJob;
+}
+// Hard Rock turned a bet down over its location check (nothing placed).
+const hrGeoRefused = (j) => /GEO_TOKEN_EXPIRED|GEOCOMPLY_(LOCATION_ERROR|REJECTED|UNKNOWN_ERROR)/.test(JSON.stringify(j?.PlaceBetsResponse?.betPlacementResult || j?.Error || '').slice(0, 5000))
+  && !(j?.PlaceBetsResponse?.betPlacementResult || []).some((r) => /ACCEPTED|PENDING|REFERRED|DELAY/i.test(String(r?.status || r?.bet?.betStatus)));
 
 // FanDuel: its bet requests carry the login in an x-authentication header (lasts about an hour,
 // the page renews it) and, for placing, the location check in x-geo-packet (lasts 20 minutes).
@@ -1063,7 +1124,7 @@ const jwtExp = (tok) => {
 // debugger (chrome.debugger), which Chrome treats as real mouse/keyboard input. While it runs
 // (a few seconds) Chrome shows a bar "EV Placer Bridge started debugging this browser"; it goes
 // away by itself. Off with config.json "session": {"gambitAutoLogin": false}.
-let settings = { gambitAutoLogin: true, fanduelGeoRenew: true, betriversGeoRenew: true, betmgmGeoRenew: true, betmgmGeoClick: true, betmgmAutoLogin: true, thescoreGeoRenew: true, thescoreAutoLogin: true, draftkingsPlaySpan: true, draftkingsGeoRenew: true };
+let settings = { gambitAutoLogin: true, fanduelGeoRenew: true, betriversGeoRenew: true, betmgmGeoRenew: true, betmgmGeoClick: true, betmgmAutoLogin: true, thescoreGeoRenew: true, thescoreAutoLogin: true, draftkingsPlaySpan: true, draftkingsGeoRenew: true, hardrockGeoRenew: true };
 chrome.storage.local.get('settings').then((v) => { if (v?.settings) settings = { ...settings, ...v.settings }; }).catch(() => {});
 let lastLogin = null;          // { at, ok, why } for the popup
 let loginBusy = false;
@@ -1970,13 +2031,21 @@ async function handle(msg) {
     if (msg.request.useHardRockAuth) {
       if (!hrAuth.session) return reply({ error: 'Hard Rock login not seen yet: refresh the Hard Rock tab (stay logged in)' });
       const needsGeo = String(msg.request.body).includes('{{hrGeo}}');
-      if (needsGeo && !hrAuth.geo) return reply({ error: 'Hard Rock location check not seen yet: place one small bet by hand in the Hard Rock tab first' });
+      // Newer flow: the page's own bets send no token, so ours don't either.
+      const noToken = hrAuth.flow === 'new';
+      if (needsGeo && (hrGeoJob || (!hrAuth.geo && !noToken))) {
+        msg.held = true;
+        if (settings.hardrockGeoRenew === false) return reply({ error: 'Hard Rock location check not seen yet, nothing was sent, and renewing it is off (config "session": {"hardrockGeoRenew": false}): reload the Hard Rock tab', notSent: true });
+        const n = await Promise.race([renewHrGeo('none seen yet'), sleep(300).then(() => null)]);
+        if (n && !n.ok && !n.recent) return reply({ error: `Hard Rock location check not seen yet, nothing was sent, and renewing it didn't work: ${n.why}`, notSent: true });
+        return reply({ error: 'Hard Rock location check not seen yet, nothing was sent; getting one now (reloading the Hard Rock tab), the bet is checked again next scan', notSent: true, geoRenewing: true });
+      }
       const acct = hrAccountId(hrAuth.session);
       if (!acct) return reply({ error: 'Hard Rock login token unreadable: refresh the Hard Rock tab' });
       const enc = encodeURIComponent;
       msg.request.body = String(msg.request.body)
         .replaceAll('{{hrSessionToken}}', enc(hrAuth.session))
-        .replaceAll('{{hrGeo}}', enc(hrAuth.geo || ''))
+        .replaceAll('{{hrGeo}}', hrAuth.flow === 'new' ? '' : enc(hrAuth.geo || ''))
         .replaceAll(enc('{{hrAccountId}}'), acct);
       // Some Hard Rock requests (My Bets) also carry the login token as a header.
       for (const [h, v] of Object.entries(msg.request.headers || {})) {
@@ -2091,6 +2160,13 @@ async function handle(msg) {
       else r = { ...again, error: `${again.error}${/Failed to fetch|NetworkError/i.test(again.error) ? netWhy(msg.request.url) : ''} (also on a second try${ago < 60e3 ? `; the tab was reloaded ${Math.round(ago / 1000)}s before` : ''})` };
     }
     if (r.error) return reply({ error: r.error });
+    // Hard Rock refused the bet over its location check (ran out, or none on its side): nothing was
+    // placed. Get a new one and let the app check the bet again from the start next scan.
+    if (msg.request.useHardRockAuth && msg.request.kind === 'place' && hrGeoRefused(r.json)) {
+      const code = (JSON.stringify(r.json).match(/GEO_TOKEN_EXPIRED|GEOCOMPLY_[A-Z_]+/) || [''])[0];
+      if (settings.hardrockGeoRenew !== false) { renewHrGeo(`Hard Rock refused a bet (${code})`).catch(() => {}); }
+      return reply({ error: `Hard Rock refused the bet over its location check (${code}), nothing placed; ${settings.hardrockGeoRenew === false ? 'renewing it is off (config "session": {"hardrockGeoRenew": false})' : 'getting a new one now (reloading the Hard Rock tab), the bet is checked again next scan'}`, notSent: true, geoRenewing: settings.hardrockGeoRenew !== false });
+    }
     reply(r);
   } catch (e) { reply({ error: String(e?.message || e) }); }
   finally {

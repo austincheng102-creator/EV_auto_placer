@@ -6,7 +6,9 @@
 //  - both are form posts: bets=<JSON>&locale=...&sessionToken=<login>[&geolocationDetails=<location check>]
 //  - auth: no headers. The login token and the location-check token go in the form body.
 //    The extension copies the latest ones from your Hard Rock tab's own requests and fills
-//    in the {{hrSessionToken}} / {{hrGeo}} / {{hrAccountId}} placeholders.
+//    in the {{hrSessionToken}} / {{hrGeo}} / {{hrAccountId}} placeholders. The location token
+//    comes from the page's own location check (geocomply/check, run on load and every ~20 min);
+//    with none yet, or after a GEO_TOKEN_EXPIRED refusal, the extension reloads the tab to get one.
 // The straight-bet body matches a captured $1 SINGLE (accepted). Hard Rock's max stake comes
 // back in a field named "Double" (it's a number type, not a bet type).
 
