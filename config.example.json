@@ -5,6 +5,7 @@
   ],
   "region": "CO",
   "minEvPct": 10,
+  "pregameMinEvPct": 6,
   "minOdds": -300,
   "maxOdds": 250,
   "maxEvPct": 25,
