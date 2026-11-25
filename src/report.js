@@ -191,6 +191,7 @@ tr.hasodds:hover td { background: var(--chip); }
   <div class="controls">
     <div class="seg" id="bookSeg" role="group" aria-label="Book"></div>
     <div class="seg" id="kindSeg" role="group" aria-label="Live or pre-game"></div>
+    <div class="seg" id="mktSeg" role="group" aria-label="Market type"></div>
     <div class="seg" id="srcSeg" role="group" aria-label="Odds table"></div>
     <div class="seg" id="rangeSeg" role="group" aria-label="Time range"></div>
     <div class="daychip" id="dayChip"><span id="dayChipText"></span><button type="button" id="dayClear">Show all days</button></div>
@@ -198,12 +199,17 @@ tr.hasodds:hover td { background: var(--chip); }
   <div class="tiles" id="tiles"></div>
   <section class="card" id="kindCard">
     <h2>Live vs pre-game</h2>
-    <p class="desc">Bets placed while the game was on, next to bets placed before it started. Follows the book, table, time range and day picked.</p>
+    <p class="desc">Bets placed while the game was on, next to bets placed before it started. Follows the book, market type, table, time range and day picked.</p>
     <div class="tablewrap"><table id="kindTable"></table></div>
+  </section>
+  <section class="card" id="mktCard">
+    <h2>By market type</h2>
+    <p class="desc">Full-game moneylines, spreads and totals, player props, and everything else (team totals, halves, quarters, periods, sets). Every bet in the log is sorted here, settled ones included. Follows the book, live/pre-game, table, time range and day picked.</p>
+    <div class="tablewrap"><table id="mktTable"></table></div>
   </section>
   <section class="card" id="srcCard" hidden>
     <h2>By odds table</h2>
-    <p class="desc">Where each bet came from on its odds source (Gambit or PropProfessor): the +EV table or the arbitrage table (player props priced off the reference books). Follows the book, time range and day picked.</p>
+    <p class="desc">Where each bet came from on its odds source (Gambit or PropProfessor): the +EV table or the arbitrage table (player props priced off the reference books). Follows the book, live/pre-game, market type, time range and day picked.</p>
     <div class="tablewrap"><table id="srcTable"></table></div>
   </section>
   <section class="card" id="calCard">
@@ -238,13 +244,18 @@ tr.hasodds:hover td { background: var(--chip); }
 let DATA = __DATA__;
 const LIVE = __LIVE__;
 const NS = 'http://www.w3.org/2000/svg';
-const state = { book: 'all', range: 'all', src: 'all', kind: 'all' };
-try { const v = JSON.parse(localStorage.getItem('evp-view') || '{}'); state.book = v.book || 'all'; state.range = v.range || 'all'; state.src = v.src || 'all'; state.kind = v.kind || 'all'; } catch {}
-const saveView = () => { try { localStorage.setItem('evp-view', JSON.stringify({ book: state.book, range: state.range, src: state.src, kind: state.kind })); } catch {} };
+const state = { book: 'all', range: 'all', src: 'all', kind: 'all', mkt: 'all' };
+try { const v = JSON.parse(localStorage.getItem('evp-view') || '{}'); state.book = v.book || 'all'; state.range = v.range || 'all'; state.src = v.src || 'all'; state.kind = v.kind || 'all'; state.mkt = v.mkt || 'all'; } catch {}
+const saveView = () => { try { localStorage.setItem('evp-view', JSON.stringify({ book: state.book, range: state.range, src: state.src, kind: state.kind, mkt: state.mkt })); } catch {} };
 // Live (placed while the game was on) or pre-game.
 const KIND = { live: 'Live', pre: 'Pre-game' };
 const kindOf = (b) => b.live ? 'live' : 'pre';
 const kindBadge = (b) => { const s = document.createElement('span'); s.className = 'kind ' + kindOf(b); s.textContent = KIND[kindOf(b)]; return s; };
+// Market type (worked out by Show bets from the saved market, so older bets have it too).
+const MKT = { ml: 'Moneyline', spread: 'Spread', total: 'Total', prop: 'Player prop', other: 'Other' };
+const MKT_ORDER = ['ml', 'spread', 'total', 'prop', 'other'];
+const mktOf = (b) => MKT[b.mkt] ? b.mkt : 'other';
+const mktPill = (k) => { const s = document.createElement('span'); s.className = 'pill mkt-' + k; s.textContent = MKT[k]; return s; };
 // Which Gambit table a bet came from. Bets from before this was logged are all +EV table bets.
 const SRC = { ev: '+EV', arb: 'Arb' };
 const srcOf = (b) => b.source === 'arb' ? 'arb' : 'ev';
@@ -267,9 +278,9 @@ const when = (t) => new Date(t).toLocaleString(undefined, { month: 'short', day:
 
 function booksPresent() { return [...new Set(DATA.bets.map((b) => b.book))].sort((a, b) => ['hardrock', 'betrivers', 'fanduel', 'betmgm', 'draftkings', 'thescore'].indexOf(a) - ['hardrock', 'betrivers', 'fanduel', 'betmgm', 'draftkings', 'thescore'].indexOf(b) || a.localeCompare(b)); }
 // A picked day wins over the time range.
-function filtered(book = state.book, { day = state.day, range = !day, src = state.src, kind = state.kind } = {}) {
+function filtered(book = state.book, { day = state.day, range = !day, src = state.src, kind = state.kind, mkt = state.mkt } = {}) {
   const cut = !range || state.range === 'all' ? 0 : Date.now() - Number(state.range) * 864e5;
-  return DATA.bets.filter((b) => (book === 'all' || b.book === book) && (src === 'all' || srcOf(b) === src) && (kind === 'all' || kindOf(b) === kind) && Date.parse(b.placedAt) >= cut && (!day || dayKey(b.placedAt) === day));
+  return DATA.bets.filter((b) => (book === 'all' || b.book === book) && (src === 'all' || srcOf(b) === src) && (kind === 'all' || kindOf(b) === kind) && (mkt === 'all' || mktOf(b) === mkt) && Date.parse(b.placedAt) >= cut && (!day || dayKey(b.placedAt) === day));
 }
 
 function pickDay(k) {
@@ -399,12 +410,12 @@ function stats(list) {
 // Side by side comparison rows (stats per group) for the book / range / day picked.
 function compareTable(id, head, groups) {
   const tb = document.getElementById(id);
-  tb.innerHTML = '<tr><th>' + head + '</th><th class="num">Bets</th><th class="num">Staked</th><th class="num">Settled</th><th class="num">Profit</th><th class="num">ROI</th><th class="num">Expected</th><th class="num">Avg EV</th><th class="num">Avg CLV</th></tr>';
+  tb.innerHTML = '<tr><th>' + head + '</th><th class="num">Bets</th><th class="num">Staked</th><th class="num">Settled</th><th class="num">Profit</th><th class="num">ROI</th><th class="num">Expected</th><th class="num">Avg EV</th><th class="num" title="EV at the price we got, against the first fair seen after the book accepted the bet (bets that have one)">Avg EV after</th><th class="num">Avg CLV</th></tr>';
   for (const [name, list, badge] of groups) {
     const s = stats(list);
     const tr = document.createElement('tr');
     const cells = [[name], [String(s.n)], [money(s.staked)], [s.settled ? s.settled + ' (' + s.record[0] + '-' + s.record[1] + (s.record[2] ? '-' + s.record[2] : '') + ')' : '0'],
-      [money(s.settled ? s.pnl : null, true), s.pnl], [pct(s.roi), s.roi], [money(s.n ? s.expected : null, true)], [pct(s.avgEv)], [pct(s.clv), s.clv]];
+      [money(s.settled ? s.pnl : null, true), s.pnl], [pct(s.roi), s.roi], [money(s.n ? s.expected : null, true)], [pct(s.avgEv)], [pct(s.avgAfter), s.avgAfter != null && s.avgEvAfterSet != null ? s.avgAfter - s.avgEvAfterSet : null], [pct(s.clv), s.clv]];
     cells.forEach(([t, v], i) => {
       const td = document.createElement('td');
       if (i) td.className = 'num';
@@ -424,6 +435,12 @@ function srcTable() {
 function kindTable() {
   const all = filtered(state.book, { kind: 'all' });
   compareTable('kindTable', 'Type', ['live', 'pre'].map((k) => [KIND[k], all.filter((b) => kindOf(b) === k), kindBadge({ live: k === 'live' })]));
+}
+
+// Moneyline vs spread vs total vs player prop vs other.
+function mktTable() {
+  const all = filtered(state.book, { mkt: 'all' });
+  compareTable('mktTable', 'Market', MKT_ORDER.map((k) => [MKT[k], all.filter((b) => mktOf(b) === k), mktPill(k)]));
 }
 
 function tiles(list) {
@@ -593,16 +610,17 @@ function table(list) {
   document.getElementById('tableNote').textContent = LIVE
     ? 'Results fill in by themselves from Hard Rock, BetRivers and FanDuel while the placer runs. You can also pick one by hand; it saves to results.json and the charts update.'
     : 'Read-only copy. Run Show bets to mark results.';
-  const head = '<tr><th>Placed</th><th>Book</th><th>Type</th><th>Table</th><th>Bet</th><th class="num">Odds</th><th class="num">Stake</th><th class="num">EV</th><th class="num" title="EV at the price we got, against the first fair seen after the book accepted the bet. Green: the fair moved our way; red: against us.">EV after</th><th class="num">CLV</th><th>Result</th><th class="num">Profit</th></tr>';
+  const head = '<tr><th>Placed</th><th>Book</th><th>Type</th><th>Market</th><th>Table</th><th>Bet</th><th class="num">Odds</th><th class="num">Stake</th><th class="num">EV</th><th class="num" title="EV at the price we got, against the first fair seen after the book accepted the bet. Green: the fair moved our way; red: against us.">EV after</th><th class="num">CLV</th><th>Result</th><th class="num">Profit</th></tr>';
   tb.innerHTML = head;
   for (const b of [...list].reverse()) {
     const tr = document.createElement('tr');
-    const cells = [when(b.placedAt), label(b.book), '', SRC[srcOf(b)], '', odds(b.odds), '$' + b.stake, pct(b.ev), pct(evAfter(b)), pct(b.clv), '', money(b.profit, true)];
+    const cells = [when(b.placedAt), label(b.book), '', '', SRC[srcOf(b)], '', odds(b.odds), '$' + b.stake, pct(b.ev), pct(evAfter(b)), pct(b.clv), '', money(b.profit, true)];
     cells.forEach((c, i) => {
       const td = document.createElement('td');
-      if ([5, 6, 7, 8, 9, 11].includes(i)) td.className = 'num';
+      if ([6, 7, 8, 9, 10, 12].includes(i)) td.className = 'num';
       if (i === 2) td.append(kindBadge(b));
-      else if (i === 4) {
+      else if (i === 3) td.append(mktPill(mktOf(b)));
+      else if (i === 5) {
         td.className = 'what';
         td.textContent = (b.event || '') + ': ' + (b.market || '') + ' ' + (b.selection || '') + (b.line != null ? ' ' + b.line : '');
         // Hover anywhere on the row: every book's odds at the time of the bet (popup below the table code).
@@ -610,7 +628,7 @@ function table(list) {
           const i = document.createElement('span'); i.className = 'info'; i.textContent = 'ⓘ'; td.append(i);
           tr.classList.add('hasodds'); tr.dataset.tip = '1'; tr._bet = b;
         }
-      } else if (i === 10) {
+      } else if (i === 11) {
         if (LIVE) {
           const sel = document.createElement('select');
           for (const [v, t] of [['', 'not settled'], ['won', 'won'], ['lost', 'lost'], ['push', 'push'], ['void', 'void'], ['half-won', 'half won'], ['half-lost', 'half lost'], ['cashout', 'cashed out'], ['not placed', 'not placed']]) {
@@ -621,12 +639,12 @@ function table(list) {
         } else td.textContent = b.result || 'not settled';
       } else td.textContent = c;
       // EV after: green when the fair moved our way after the bet, red when it moved against us.
-      if (i === 8 && evAfter(b) != null && Number.isFinite(b.ev)) {
+      if (i === 9 && evAfter(b) != null && Number.isFinite(b.ev)) {
         const d = evAfter(b) - b.ev;
         if (Math.abs(d) >= 0.05) td.classList.add(cls(d));
         td.title = (d >= 0 ? '+' : '−') + Math.abs(d).toFixed(1) + ' pts vs EV at the price we got';
       }
-      if (i === 11 && b.profit != null) td.classList.add(cls(b.profit) || 'num');
+      if (i === 12 && b.profit != null) td.classList.add(cls(b.profit) || 'num');
       tr.append(td);
     });
     tb.append(tr);
@@ -642,6 +660,9 @@ function render() {
   if (!hasArb) state.src = 'all';
   seg(document.getElementById('kindSeg'), [['all', 'Live + pre-game'], ['live', 'Live (' + filtered(state.book, { kind: 'live' }).length + ')', 'var(--live)'], ['pre', 'Pre-game (' + filtered(state.book, { kind: 'pre' }).length + ')', 'var(--pre)']], state.kind, (v) => { state.kind = v; saveView(); render(); });
   kindTable();
+  if (!MKT[state.mkt]) state.mkt = 'all';
+  seg(document.getElementById('mktSeg'), [['all', 'All markets'], ...MKT_ORDER.map((k) => [k, MKT[k] + ' (' + filtered(state.book, { mkt: k }).length + ')'])], state.mkt, (v) => { state.mkt = v; saveView(); render(); });
+  mktTable();
   const srcEl = document.getElementById('srcSeg');
   srcEl.hidden = !hasArb;
   if (hasArb) seg(srcEl, [['all', 'All tables'], ['ev', '+EV table (' + filtered(state.book, { src: 'ev' }).length + ')'], ['arb', 'Arb table (' + filtered(state.book, { src: 'arb' }).length + ')']], state.src, (v) => { state.src = v; saveView(); render(); });
