@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /** Steps in funnel order. Labels are filled in from the config (EV and timing numbers). */
-export const STAGES = ['gone', 'evLow', 'evNear', 'odds', 'evCap', 'pregameFar', 'noSharp', 'sharpSpread', 'stale',
+export const STAGES = ['gone', 'evLow', 'evNear', 'odds', 'evCap', 'pregameFar', 'noSharp', 'sharpSpread', 'softBooks', 'longConsensus', 'pinnacleOff', 'stale',
   'group', 'sameEv', 'groupInFlight', 'cooldown', 'perEvent', 'playerStats', 'noTab', 'novig', 'dupInScan', 'sent'];
 
 export function stageLabels(cfg) {
@@ -24,6 +24,9 @@ export function stageLabels(cfg) {
     pregameFar: `pre-game, starts more than ${cfg.pregameMaxHours}h away`,
     noSharp: `no ${(cfg.sharp.livePropNeeds || []).join('/')} price (live) or ${(cfg.sharp.pregamePropNeeds || []).join('/')} (pre-game)`,
     sharpSpread: `sharp books more than ${cfg.sharp.maxSpreadPts} pts apart`,
+    softBooks: `not above ${cfg.softCheck?.minEvPct ?? 0}% EV on ${cfg.softCheck?.minBooks ?? 2}+ soft books`,
+    longConsensus: `over ${cfg.maxOdds ?? 'any'} without ${Object.keys(cfg.longPropConsensus?.books || {}).join('/')} within ${cfg.longPropConsensus?.maxPts} pts`,
+    pinnacleOff: `Pinnacle more than ${cfg.marketCheck?.maxPts} pts above the soft-book median`,
     stale: `live, no ${(cfg.sharp.livePropNeeds || []).join('/')} move in ${cfg.sharp.livePropMaxAgeSec ?? cfg.sharp.liveMaxAgeSec}s`,
     group: 'group already bet',
     sameEv: `same bet already placed at EV within ${cfg.group.repeatMinEvPts} pts`,
@@ -44,6 +47,12 @@ export function makePropFunnel(cfg, dir, { dryRun = false, log, now = () => Date
   const everyMs = Number(cfg.propsFunnel?.everyMinutes ?? 10) * 60e3;
   if (!(everyMs > 0)) return null;
   const file = path.join(dir, dryRun ? 'props-funnel.dry.csv' : 'props-funnel.csv');
+  const headerNow = ['time', 'minutes', 'props', 'live', 'preGame', ...STAGES, 'recheckResults'].join(',');
+  // A file from an older version has other columns: keep it aside and start a new one.
+  try {
+    const first = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n', 1)[0].trim() : '';
+    if (first && first !== headerNow) fs.renameSync(file, file.replace(/\.csv$/, `.old-${Date.now()}.csv`));
+  } catch { /* in use: appends continue */ }
   const labels = stageLabels(cfg);
   const rank = Object.fromEntries(STAGES.map((s, i) => [s, i]));
   let start = now();
@@ -69,7 +78,7 @@ export function makePropFunnel(cfg, dir, { dryRun = false, log, now = () => Date
     const oc = {};
     for (const o of outcomes.values()) oc[o] = (oc[o] || 0) + 1;
     const ocText = Object.entries(oc).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${n} ${k}`).join('; ');
-    const header = ['time', 'minutes', 'props', 'live', 'preGame', ...STAGES, 'recheckResults'].join(',');
+    const header = headerNow;
     write([new Date(t).toISOString(), minutes.toFixed(1), best.size, live, best.size - live,
       ...STAGES.map((s) => counts[s]), cell(ocText)].join(','), header);
     const parts = STAGES.filter((s) => counts[s]).sort((a, b) => counts[b] - counts[a]).map((s) => `${counts[s]} ${labels[s]}`);
