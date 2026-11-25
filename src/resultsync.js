@@ -97,10 +97,10 @@ export function makeResultSync({ cfg, bridge, root, dryRun = false, log, bets, b
   let running = false;
 
   /** Bets per book still waiting for a result (placed within the look-back window). */
-  function waitingFor(book, idRe) {
-    const have = store.read();
+  function waitingFor(book, idRe, snap = null) {
+    const have = snap ? snap.have : store.read();
     const since = now() - lookbackMs;
-    return bets().filter((b) => b.book === book && idRe.test(b.betId || '') && !have[betKey(b)] && Date.parse(b.placedAt) >= since);
+    return (snap ? snap.bets : bets()).filter((b) => b.book === book && idRe.test(b.betId || '') && !have[betKey(b)] && Date.parse(b.placedAt) >= since);
   }
   const waitingBooks = () => sources.filter((s) => waitingFor(s.book, s.idRe).length).map((s) => s.book);
 
@@ -128,10 +128,14 @@ export function makeResultSync({ cfg, bridge, root, dryRun = false, log, bets, b
     running = true;
     let total = 0;
     try {
+      // results.json and the bet list read once per pass, not once per book (each book only looks at
+      // its own bets, so a result saved for one book doesn't change what another is waiting for).
+      let snap = null;
       for (const src of sources) {
         const { book, idRe } = src;
         if (!bridge?.connected() || !bridge.hasTab(book)) continue;
-        const waiting = waitingFor(book, idRe);
+        snap ||= { have: store.read(), bets: bets() };
+        const waiting = waitingFor(book, idRe, snap);
         if (!waiting.length) continue;
         const t = now();
         if (!force) {
