@@ -147,6 +147,7 @@ setting in `config.json`; one that isn't there gets the default below, and `null
 | Favorites: nothing shorter than -300 (-300 itself is fine) | -300 | `"minOdds"` or `--min-odds -250` |
 | Underdogs: nothing longer than +250 | +250 | `"maxOdds"` (above) |
 | Nothing above 25% EV | 25 | `"maxEvPct"` or `--max-ev 20` |
+| Player props (+EV and arb-table): nothing above 50% EV, instead of `maxEvPct`. `null` = no cap | 50 | `"maxPropEvPct"` |
 | Hard Rock: skip when its price changed under 3s before the scan and shows 3+ points more EV than Gambit's copy (the game likely moved before the sharp prices caught up) | 3s, 3 pts | `"freshJump": {"books", "sec", "evPts"}`, `false` turns it off |
 | Live bets: skip when the book's real price is no longer the price Gambit shows for it (the game moved after Gambit's snapshot, so Gambit's sharp prices behind "fair" are from before the move). Checked again on later scans and placed once Gambit shows the book's new price. Hard Rock is left out (its moves away from Gambit were on model) | every book but Hard Rock, any change | `"gambitBehind": {"exceptBooks", "books", "maxPts"}`, `false` turns it off |
 | Bets at +201 to +250 need 12% EV (everything else `minEvPct`) | 12% | `"minEvByOdds": [{"from": 201, "to": 250, "minEvPct": 12}]` |

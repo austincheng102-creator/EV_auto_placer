@@ -1,6 +1,6 @@
 // Austin's placement rules on top of the EV and Novig checks:
 //  - odds window: nothing shorter than -300 (minOdds) or longer than +250 (maxOdds)
-//  - EV cap: nothing above 25% EV (maxEvPct), it's usually a stale or wrong price
+//  - EV cap: nothing above 25% EV (maxEvPct), it's usually a stale or wrong price; player props 50% (maxPropEvPct)
 //  - sharp books must agree: their no-vig win probabilities within 3 points of each other
 //    (Pinnacle, plus liquid Kalshi/Polymarket; FanDuel left out since 2026-11-19, sharp.spreadBooks)
 //  - Prediction markets (Kalshi, Polymarket, Novig, ProphetX) are sharp books (2026-11-23, sharp.predictionMarkets), but a
@@ -45,6 +45,8 @@ export const DEFAULT_MARKET_BOOKS = {
 export function applyFilterDefaults(cfg) {
   if (cfg.minOdds === undefined) cfg.minOdds = -300;
   if (cfg.maxEvPct === undefined) cfg.maxEvPct = 25;
+  // Player props (+EV and arb-table rows) get their own EV cap (Austin 2026-11-25: 50%). null = no cap.
+  if (cfg.maxPropEvPct === undefined) cfg.maxPropEvPct = 50;
   const s = (cfg.sharp ||= {});
   s.ids = { ...DEFAULT_SHARP_IDS, ...(s.ids || {}) };
   if (s.liveMainlineNeeds === undefined) s.liveMainlineNeeds = ['pinnacle', 'polymarket', 'novig'];
@@ -249,7 +251,9 @@ export const fmtSoft = (sc) => Object.entries(sc.evs).map(([n, e]) => `${n} ${e 
 
 /** -300 is allowed, -310 is not. Positive odds are never "shorter than" a negative limit. */
 export const tooShort = (cfg, odds) => cfg.minOdds != null && odds < 0 && odds < cfg.minOdds;
-export const evTooHigh = (cfg, ev) => cfg.maxEvPct != null && ev > cfg.maxEvPct;
+/** The EV cap for a row: maxPropEvPct (default 50) for player props, maxEvPct for everything else. */
+export const maxEvFor = (cfg, row) => (row && isPropBet(row) && cfg.maxPropEvPct !== undefined ? cfg.maxPropEvPct : cfg.maxEvPct);
+export const evTooHigh = (cfg, ev, row) => { const m = maxEvFor(cfg, row); return m != null && ev > m; };
 
 const ids = (cfg, name) => [].concat(cfg.sharp.ids[name] ?? []).map(Number);
 
