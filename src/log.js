@@ -15,11 +15,16 @@ function line(tag, color, msg, dimTag = false) {
 // Full details (raw book responses) go to debug.log next to the app, not the screen.
 // Kept under ~5 MB: when it grows past that, the old file becomes debug.old.log.
 const debugPath = path.join(appDir, 'debug.log');
+// The file's size is looked up once and then counted here, instead of two disk checks per line.
+let debugSize = null;
 function debug(msg) {
   try {
-    if (fs.existsSync(debugPath) && fs.statSync(debugPath).size > 5e6) fs.renameSync(debugPath, path.join(appDir, 'debug.old.log'));
-    fs.appendFileSync(debugPath, `${new Date().toISOString()} ${msg}\n`);
-  } catch {}
+    if (debugSize == null) { try { debugSize = fs.statSync(debugPath).size; } catch { debugSize = 0; } }
+    if (debugSize > 5e6) { fs.renameSync(debugPath, path.join(appDir, 'debug.old.log')); debugSize = 0; }
+    const line = `${new Date().toISOString()} ${msg}\n`;
+    fs.appendFileSync(debugPath, line);
+    debugSize += Buffer.byteLength(line);
+  } catch { debugSize = null; }
 }
 
 export const log = {

@@ -115,8 +115,22 @@ export function marketTypeOf(b) {
  * Uses bets.json, plus bets from state.json that were placed before bets.json existed.
  */
 /** Every bet placed: bets.json plus bets from state.json placed before bets.json existed. */
+// The running placer asks for this every 15s for each book (results check), and bets.json is
+// several MB after a few thousand bets: the files are only read again when they changed (size +
+// modified time), otherwise the last read is handed out again. Nothing changes the bets it returns.
+const allCache = new Map();   // dir|sfx -> { stamp, list }
+const fileStamp = (f) => { try { const st = fs.statSync(f); return `${st.size}:${st.mtimeMs}`; } catch { return '-'; } };
 export function allBets(dir, { dryRun = false } = {}) {
   const sfx = dryRun ? '.dry' : '';
+  const ck = `${dir}|${sfx}`;
+  const stamp = fileStamp(path.join(dir, `bets${sfx}.json`)) + '|' + fileStamp(path.join(dir, `state${sfx}.json`));
+  const hit = allCache.get(ck);
+  if (hit && hit.stamp === stamp) return [...hit.list];
+  const list = readAllBets(dir, sfx);
+  allCache.set(ck, { stamp, list });
+  return [...list];
+}
+function readAllBets(dir, sfx) {
   const readJson = (f, d) => { try { return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch { return d; } };
   const logged = readJson(`bets${sfx}.json`, []);
   const state = readJson(`state${sfx}.json`, { placed: [] });

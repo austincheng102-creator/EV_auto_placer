@@ -335,13 +335,24 @@ export function makePropProfessorSource(cfg, bridge, { root = null, log = null }
       const reload = due.filter((w) => { const l = last.get(roleOf(w)); return l && now - tableFreshAt(l.table) > ageLimit(w, l.table); });
       for (const w of reload) warn(`old:${roleOf(w)}`, `PropProfessor ${what(w)} hasn't changed for ${Math.round((now - tableFreshAt(last.get(roleOf(w)).table)) / 60e3)} min: reloading its tab in case the page lost its feed`);
       const timeoutMs = Number(p.timeoutSec || 15) * 1000;
+      // have: the tables we already hold. A tab whose table hasn't changed since answers with just
+      // that table's token (extension 0.9.26+) and its rows are reused below: the same rows it would
+      // have sent, without Chrome copying the whole table over every 2s.
+      const have = [...last.values()].map((l) => l.table.token).filter(Boolean);
       const res = due.length ? await bridge.send('propprofessor', { kind: 'ppRead', wants: due, books: ppNames, timeoutMs,
-        openTabs: p.openTabs !== false, reload: reload.map(roleOf), stuckSec: p.stuckSec ?? 60 }, timeoutMs + 5000) : { tables: [] };
+        openTabs: p.openTabs !== false, reload: reload.map(roleOf), stuckSec: p.stuckSec ?? 60, have }, timeoutMs + 5000) : { tables: [] };
       if (res.error) throw new Error(`PropProfessor: ${res.error}`);
       if (res.loggedOut) throw new Error(`PropProfessor: log in again in the PropProfessor tab (${res.loggedOut})`);
       for (const n of res.notes || []) log?.info(`PropProfessor: ${n}`);
+      const held = new Map([...last.values()].filter((l) => l.table.token).map((l) => [l.table.token, l.table]));
       for (const w of due) {
-        const t = (res.tables || []).find((x) => x.page === w.page && !!x.live === w.live);
+        let t = (res.tables || []).find((x) => x.page === w.page && !!x.live === w.live);
+        if (t?.same) {
+          const prev = held.get(t.same);
+          // Unchanged: the rows we already have (never expected to be missing; if so, read it in full next poll).
+          if (!prev) { last.delete(roleOf(w)); continue; }
+          t = { ...t, rows: prev.rows, token: t.same };
+        }
         if (!t) { warn(`miss:${roleOf(w)}`, `PropProfessor: no tab showing the ${what(w)} yet${res.opening ? ' (opening one)' : ''}`); last.delete(roleOf(w)); continue; }
         if (t.warning) warn(`warn:${roleOf(w)}`, `PropProfessor ${what(w)}: ${t.warning}`);
         if (t.error) { warn(`err:${roleOf(w)}`, `PropProfessor ${what(w)}: ${t.error}`); last.delete(roleOf(w)); continue; }

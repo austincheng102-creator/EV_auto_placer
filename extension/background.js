@@ -1859,7 +1859,7 @@ const ppErrSince = new Map();  // tabId -> since when its table has failed to re
 const ppReopenedAt = {};       // role -> when its tab was last closed and opened anew for a stuck load
 
 // Runs in the page (MAIN world). Must be self-contained. Reads the page's own query cache.
-function ppReadPage(books, clickLive) {
+function ppReadPage(books, clickLive, have) {
   const path = location.pathname.replace(/\/$/, '');
   const page = path === '/positive_ev' ? 'ev' : path === '/arbitrage' ? 'arb' : null;
   const out = { path, page };
@@ -1904,6 +1904,16 @@ function ppReadPage(books, clickLive) {
   if (!best) { out.error = 'no table in the page yet (still loading, or no subscription for it)'; return out; }
   out.live = !!best.queryKey[2].isLive;
   out.updatedAt = best.state.dataUpdatedAt;
+  // Same table as the last read the app still holds (same data, same update time, same books):
+  // send only its token, not every row again. The app reuses the rows it already has, which are
+  // exactly what this read would have sent. Saves copying the whole table every 2s.
+  const booksKey = JSON.stringify(books || []);
+  const sent = window.__evppSent;
+  if (Array.isArray(have) && sent && have.includes(sent.token) && sent.data === best.state.data
+    && sent.updatedAt === best.state.dataUpdatedAt && sent.booksKey === booksKey) {
+    out.same = sent.token; out.total = best.state.data.length;
+    return out;
+  }
   const ours = new Set(books || []);
   // Rows on our books in full; the rest only what closing line value needs (their fair price).
   const keep = (r) => (page === 'ev' ? ours.has(r.book) : (ours.has(r.site1) || ours.has(r.site2)));
@@ -1914,6 +1924,8 @@ function ppReadPage(books, clickLive) {
       market: r.market, marketType: r.marketType, participant: r.participant, selection: r.selection, line: r.line, book: r.book, noVigOdds: r.noVigOdds, pageUrl: r.pageUrl });
   }
   out.total = best.state.data.length;
+  out.token = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  window.__evppSent = { token: out.token, data: best.state.data, updatedAt: best.state.dataUpdatedAt, booksKey };
   return out;
 }
 
@@ -1922,7 +1934,8 @@ async function ppRead(req) {
   for (const id of ppRole.keys()) if (!tabs.some((t) => t.id === id)) ppRole.delete(id);
   const roles = (req.wants || []).map((w) => `${w.page}:${!!w.live}`);
   const read = async (t, click) => {
-    const run = chrome.scripting.executeScript({ target: { tabId: t.id }, world: 'MAIN', func: ppReadPage, args: [req.books || [], click] });
+    // have: tokens of the tables the app already holds (only plain reads; a click read sends all rows).
+    const run = chrome.scripting.executeScript({ target: { tabId: t.id }, world: 'MAIN', func: ppReadPage, args: [req.books || [], click, click == null ? (req.have || null) : null] });
     const [r] = await Promise.race([run, sleep(req.timeoutMs || 15000).then(() => [{ result: { error: 'the tab didn\'t answer (frozen or still loading)' } }])]).catch((e) => [{ result: { error: String(e?.message || e) } }]);
     const out = { id: t.id, ...(r?.result || { error: 'could not read that tab' }) };
     // A tab that didn't answer (hung) still counts as on its page, from its address, so it gets
@@ -2004,7 +2017,7 @@ async function ppRead(req) {
       chrome.tabs.reload(t.id).catch(() => {});
       notes.push(`reloaded the ${page === 'ev' ? 'Positive EV' : 'Arbitrage'} ${live ? 'live' : 'pre-game'} tab (its table hadn't changed in a long time)`);
     }
-    tables.push({ page, live, updatedAt: t.updatedAt, rows: t.rows, total: t.total, error: t.error, warning: t.warning });
+    tables.push({ page, live, updatedAt: t.updatedAt, rows: t.rows, total: t.total, error: t.error, warning: t.warning, token: t.token, same: t.same });
   }
   return { tables, notes, opening };
 }
