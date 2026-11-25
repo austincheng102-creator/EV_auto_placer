@@ -20,7 +20,7 @@ export function stageLabels(cfg) {
     evLow: `under ${near}% EV`,
     evNear: `${near}-${cfg.minEvPct}% EV`,
     odds: `odds outside ${cfg.minOdds ?? 'any'}..${cfg.maxOdds ?? 'any'}`,
-    evCap: `above ${cfg.maxEvPct}% EV`,
+    evCap: `above ${cfg.maxPropEvPct ?? cfg.maxEvPct}% EV`,
     pregameFar: `pre-game, starts more than ${cfg.pregameMaxHours}h away`,
     noSharp: `no ${(cfg.sharp.livePropNeeds || []).join('/')} price (live) or ${(cfg.sharp.pregamePropNeeds || []).join('/')} (pre-game)`,
     sharpSpread: `sharp books more than ${cfg.sharp.maxSpreadPts} pts apart`,
