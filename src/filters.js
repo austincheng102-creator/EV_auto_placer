@@ -15,6 +15,8 @@
 //    than 3 points above the median no-vig of the soft books on the row (DraftKings, FanDuel, Caesars, BetMGM,
 //    theScore, Hard Rock, ...; not the book we're betting). Needs 3+ soft books priced, otherwise it passes.
 //  - odds bands (minEvByOdds): +201 to +250 needs 12% EV, everything else minEvPct
+//  - pre-game minimum (pregameMinEvPct, Austin 2026-11-25): pre-game bets need 6% EV, live keeps minEvPct (8%).
+//    The odds bands and long-odds props rules above still raise it (12% at +201..+250, 18% props over +250).
 //  - longOddsProps (Austin 2026-11-25): player props on every book above +250 (maxOdds) are allowed up to
 //    +400, at 18% EV or more, and only when DraftKings or Caesars (not the book we're betting) has a
 //    no-vig win % for our side within 5 points of our fair win % (longPropConsensus). Game lines keep +250.
