@@ -15,7 +15,9 @@
 //    than 3 points above the median no-vig of the soft books on the row (DraftKings, FanDuel, Caesars, BetMGM,
 //    theScore, Hard Rock, ...; not the book we're betting). Needs 3+ soft books priced, otherwise it passes.
 //  - odds bands (minEvByOdds): +201 to +250 needs 12% EV, everything else minEvPct
-//  - longOddsProps: BetRivers player props above +250 are allowed at 15% EV or more
+//  - longOddsProps (Austin 2026-11-25): player props on every book above +250 (maxOdds) are allowed up to
+//    +400, at 18% EV or more, and only when DraftKings or Caesars (not the book we're betting) has a
+//    no-vig win % for our side within 5 points of our fair win % (longPropConsensus). Game lines keep +250.
 //  - live timing: a sharp price for the selection changed within the last 5 seconds (30 for props)
 //  - groups: same game + market (period is part of the market) share group.maxBets bets and group.maxStake $.
 //    Both sides count as one group (Over and Under, either team's spread), unless group.bothSides is true.
@@ -120,21 +122,56 @@ export function applyFilterDefaults(cfg) {
   if (mc.arb === undefined) mc.arb = false;
   // Higher minimum EV for long odds: first band whose odds range holds the price wins (if above minEvPct).
   if (cfg.minEvByOdds === undefined) cfg.minEvByOdds = [{ from: 201, to: 250, minEvPct: 12 }];
-  // Player props above maxOdds (+250) on these books: allowed, but only at this EV or more
-  // (Austin 2026-11-24: BetRivers props over +250 need 15% EV). maxOdds here = optional upper
-  // limit (null = none). Everything else keeps the maxOdds cap. {} turns it off.
-  if (cfg.longOddsProps === undefined) cfg.longOddsProps = { betrivers: { minEvPct: 15, maxOdds: null } };
+  // Player props above maxOdds (+250): allowed, but only at this EV or more and up to this maxOdds
+  // (null = no upper limit). Keyed by book; "all" covers every book without its own entry.
+  // Austin 2026-11-25: all books, up to +400, 18% EV (replaces BetRivers' 15% rule). {} turns it off.
+  if (cfg.longOddsProps === undefined) cfg.longOddsProps = { all: { minEvPct: 18, maxOdds: 400 } };
+  // Those long-odds props also need consensus: at least minBooks of these books (both sides listed,
+  // not the book we're betting) with a no-vig win % for our side within maxPts of our fair win %.
+  // None of them priced = skip. "enabled": false turns it off.
+  const lc = (cfg.longPropConsensus ||= {});
+  if (lc.enabled === undefined) lc.enabled = true;
+  if (lc.books === undefined) lc.books = { draftkings: 200, caesars: 300 };
+  if (lc.maxPts === undefined) lc.maxPts = 5;
+  if (lc.minBooks === undefined) lc.minBooks = 1;
   return cfg;
 }
 
 /** The longOddsProps rule that lets this prop past the maxOdds cap at these odds, or null. */
 export function longPropRule(cfg, row, odds = row?.odds) {
   if (!row || cfg.maxOdds == null || !Number.isFinite(odds) || odds <= cfg.maxOdds) return null;
-  const r = cfg.longOddsProps?.[row.book];
+  const r = cfg.longOddsProps?.[row.book] ?? cfg.longOddsProps?.all;
   if (!r || !Number.isFinite(Number(r.minEvPct)) || !isPropBet(row)) return null;
   if (r.maxOdds != null && odds > Number(r.maxOdds)) return null;
   return r;
 }
+
+/**
+ * Consensus check for long-odds props (only when longPropRule lets the price past maxOdds).
+ * Returns { ok, need, probs: {draftkings: 0.24, ...}, fair, n, off }. probs = each book's no-vig win %
+ * for our side; ok when at least `need` of them are within maxPts of the fair win %.
+ */
+export function longPropConsensus(cfg, row, odds = row?.odds) {
+  const lc = cfg.longPropConsensus;
+  if (!lc?.enabled || !longPropRule(cfg, row, odds)) return { ok: true, off: true, probs: {}, n: 0 };
+  const fair = Number.isFinite(row.fairProb) && row.fairOdds == null ? row.fairProb : impliedProb(row.fairOdds);
+  const probs = {};
+  for (const [name, idv] of Object.entries(lc.books || {})) {
+    const idList = [].concat(idv ?? []).map(Number);
+    if (name === row.book || idList.includes(Number(row.gambitBookId))) continue;
+    for (const id of idList) {
+      const pr = row.prices?.[id];
+      const p = pr && bookFairProb(pr.odds, pr.oppOdds);
+      if (p != null) { probs[name] = p; break; }
+    }
+  }
+  const need = lc.minBooks ?? 1;
+  const close = Number.isFinite(fair) ? Object.values(probs).filter((p) => Math.abs(p - fair) * 100 <= lc.maxPts).length : 0;
+  return { ok: close >= need, probs, fair, n: Object.keys(probs).length, close, need };
+}
+
+/** Log text for longPropConsensus: "fair 22.0%: draftkings 24.1, caesars 30.2". */
+export const fmtLongConsensus = (c) => `fair ${Number.isFinite(c.fair) ? (c.fair * 100).toFixed(1) : '?'}%: ${Object.entries(c.probs).map(([n, p]) => `${n} ${(p * 100).toFixed(1)}`).join(', ') || 'no DraftKings/Caesars price'}`;
 
 /** Minimum EV for a price: the base minimum, raised by a matching minEvByOdds band. */
 export function minEvFor(cfg, base, odds, row) {

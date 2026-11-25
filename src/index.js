@@ -26,7 +26,7 @@ import { makeBetLog, parseTime } from './betlog.js';
 import { makePriceLog, makeSpreadSkipLog, makeTimingLog } from './skiplog.js';
 import { makePropFunnel } from './propfunnel.js';
 import { writeSnapshot, serveReport, openInBrowser } from './report.js';
-import { applyFilterDefaults, tooShort, evTooHigh, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom, groupClash, groupCoolingDown, groupMaxBets, sameEvRepeat, isPropBet, playerStats, tooManyStats, playerKey, statKey, minEvFor, longPropRule, softCheck, fmtSoft, marketCheck, fmtMarket, sharpFair, fairBreakdown } from './filters.js';
+import { applyFilterDefaults, tooShort, evTooHigh, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom, groupClash, groupCoolingDown, groupMaxBets, sameEvRepeat, isPropBet, playerStats, tooManyStats, playerKey, statKey, minEvFor, longPropRule, longPropConsensus, fmtLongConsensus, softCheck, fmtSoft, marketCheck, fmtMarket, sharpFair, fairBreakdown } from './filters.js';
 
 const root = appDir;
 let args = process.argv.slice(2);
@@ -153,7 +153,8 @@ if (opt('--min-ev')) cfg.minEvPct = Number(opt('--min-ev'));
 // Not set in config.json -> +250. "maxOdds": null turns the cap off.
 if (opt('--max-odds')) cfg.maxOdds = Number(opt('--max-odds'));
 if (cfg.maxOdds === undefined) cfg.maxOdds = 250;
-// longOddsProps (in filters.js) lets some books' player props past the cap at a higher min EV.
+// longOddsProps (in filters.js) lets player props past the cap (to +400) at a higher min EV (18%),
+// when DraftKings or Caesars agree within 5 pts (longPropConsensus).
 const tooLong = (odds, row) => cfg.maxOdds != null && odds > cfg.maxOdds && !longPropRule(cfg, row, odds);
 // Pre-game bets only when the game starts within this many hours (default 12; null = no limit).
 // A pre-game row with no start time is skipped, since we can't tell.
@@ -338,6 +339,7 @@ function propStage(r, { groups, perEvent, stats, now }) {
   if (!freeLive(r) && !r.ppFairFallback && liveSharpMissing(cfg, r)) return 'noSharp';
   if (!freeLive(r) && !sharpSpread(cfg, r).ok) return 'sharpSpread';
   if (!softCheck(cfg, r).ok) return 'softBooks';
+  if (!longPropConsensus(cfg, r).ok) return 'longConsensus';
   if (!marketCheck(cfg, r).ok) return 'pinnacleOff';
   const lim = liveAgeLimit(cfg, r);
   if (!freeLive(r) && r.isLive && lim != null && r.prices) { const a = sharpClock.ageSec(r); if (a == null || a > lim) return 'stale'; }
@@ -486,6 +488,15 @@ async function placeAt(row, book, quote, ctx, retries = 0) {
   }
   if (!sc.off) lg.bet(`soft-book check OK: ${fmtSoft(sc)}`);
 
+  // Props over +250: DraftKings or Caesars must have a no-vig win % within 5 pts of our fair.
+  const lc = longPropConsensus(cfg, row, quote.odds);
+  if (!lc.ok) {
+    ctx.outcome = 'long-odds consensus fail';
+    lg.warn(`long-odds prop check FAIL: ${fmtAmerican(quote.odds)} needs ${lc.need}+ of ${Object.keys(cfg.longPropConsensus.books).join('/')} within ${cfg.longPropConsensus.maxPts} pts (${fmtLongConsensus(lc)}) — skipped, nothing placed`);
+    return false;
+  }
+  if (!lc.off) lg.bet(`long-odds prop check OK: ${fmtLongConsensus(lc)}`);
+
   // Novig has to agree at the live price too.
   let novigEvPct = null, novigCheck = null;
   if (novig) {
@@ -613,7 +624,7 @@ function pickBets(rows, { quiet = false } = {}) {
   for (const p of [...state.placed, ...inflight.values()]) if (inEventCap(p)) perEvent[p.event] = (perEvent[p.event] || 0) + 1;
   const now = Date.now();
   let farOff = 0;
-  const why = { noProps: 0, odds: 0, evCap: 0, sharpSpread: 0, softBooks: 0, pinnacleOff: 0, noSharp: 0, stale: 0, staleProp: 0, group: 0, groupCooldown: 0, sameEv: 0, playerStats: 0 };
+  const why = { noProps: 0, odds: 0, evCap: 0, sharpSpread: 0, softBooks: 0, longConsensus: 0, pinnacleOff: 0, noSharp: 0, stale: 0, staleProp: 0, group: 0, groupCooldown: 0, sameEv: 0, playerStats: 0 };
   const drop = (k) => (why[k]++, false);
   const groups = groupTotals(state.placed);
   let ev = rows
@@ -625,6 +636,7 @@ function pickBets(rows, { quiet = false } = {}) {
     .filter((r) => freeLive(r) || r.ppFairFallback || !liveSharpMissing(cfg, r) || drop('noSharp'))
     .filter((r) => { if (freeLive(r)) return true; const sp = sharpSpread(cfg, r); if (sp.ok) return true; if (!quiet) logSpreadSkip(r, sp); return drop('sharpSpread'); })
     .filter((r) => softCheck(cfg, r).ok || drop('softBooks'))
+    .filter((r) => longPropConsensus(cfg, r).ok || drop('longConsensus'))
     .filter((r) => { const mc = marketCheck(cfg, r); if (mc.ok) return true; if (!quiet) logMarketSkip(r, mc); return drop('pinnacleOff'); })
     .filter((r) => !sharpTooOld(r) || drop(r.isProp ? 'staleProp' : 'stale'))
     .filter((r) => groupRoom(cfg, groups, r) != null || drop(groupCoolingDown(cfg, groups, r) ? 'groupCooldown' : 'group'))
@@ -791,6 +803,7 @@ async function tick() {
     why.noSharp && `${why.noSharp} without the needed sharp book (live, or pre-game props without ${(cfg.sharp.pregamePropNeeds || []).join('/') || 'any'})`,
     why.sharpSpread && `${why.sharpSpread} sharp books more than ${cfg.sharp.maxSpreadPts} pts apart`,
     why.softBooks && `${why.softBooks} not above ${cfg.softCheck.minEvPct}% EV on ${cfg.softCheck.minBooks}+ of ${Object.keys(cfg.softCheck.books).join('/')}`,
+    why.longConsensus && `${why.longConsensus} props over ${fmtAmerican(cfg.maxOdds)} without ${Object.keys(cfg.longPropConsensus.books).join('/')} within ${cfg.longPropConsensus.maxPts} pts of fair`,
     why.pinnacleOff && `${why.pinnacleOff} Pinnacle more than ${cfg.marketCheck.maxPts} pts above the soft-book median`,
     why.stale && `${why.stale} live with no sharp move in the last ${ageMax}s`,
     why.staleProp && `${why.staleProp} live props with no FanDuel move in the last ${cfg.sharp.livePropMaxAgeSec}s`,
@@ -973,7 +986,7 @@ async function fastTick() {
 }
 if (Number(fastCfg.everySec) > 0) setInterval(() => { fastTick().catch((e) => log.debug(`fast price check: ${e.message}`)); }, Math.max(250, Number(fastCfg.everySec) * 1000));
 
-log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}%${(cfg.minEvByOdds || []).map((b) => ` (${b.minEvPct}% at ${fmtAmerican(b.from)}..${fmtAmerican(b.to)})`).join('')}${Object.entries(cfg.longOddsProps || {}).map(([bk, r]) => ` (${bk} props over ${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)}${r.maxOdds != null ? ` to ${fmtAmerican(r.maxOdds)}` : ''}: ${r.minEvPct}%)`).join('')} softBooks=${cfg.softCheck.enabled ? `${cfg.softCheck.minBooks}+ of ${Object.keys(cfg.softCheck.books).join('/')} >${cfg.softCheck.minEvPct}%` : 'off'} pinnacleVsMarket=${cfg.marketCheck.enabled ? `<=${cfg.marketCheck.maxPts}pts over ${cfg.marketCheck.minBooks}+ soft books` : 'off'} sharpOut=${(cfg.sharp.excludeBooks || []).join(',') || 'none'} predictionMarkets=${cfg.sharp.predictionMarkets.enabled ? `${cfg.sharp.predictionMarkets.books.join('/')} at $${cfg.sharp.predictionMarkets.minLiquidity}+ thinner side, <=${cfg.sharp.predictionMarkets.maxHoldPct}c spread, ${(cfg.sharp.predictionMarkets.agreeBooks || []).join('/')} within ${cfg.sharp.predictionMarkets.agreePts}pts${cfg.sharp.predictionMarkets.inFair ? ' (in fair)' : ''}` : 'off'} novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} odds=${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)}..${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)} maxEV=${cfg.maxEvPct ?? 'off'}% sharpSpread<=${cfg.sharp.maxSpreadPts ?? 'off'}pts liveSharpAge<=${cfg.sharp.liveMaxAgeSec ?? 'off'}s (props ${cfg.sharp.livePropMaxAgeSec ?? 'off'}s) group=${cfg.group.maxBets ?? 'any'} bet (pre-game ${cfg.group.pregameMaxBets ?? cfg.group.maxBets ?? 'any'})/$${cfg.group.maxStake ?? 'any'} every ${cfg.group.cooldownSec || 0}s pregame<=${cfg.pregameMaxHours == null ? 'any' : cfg.pregameMaxHours + 'h'} stake=$${cfg.stake.amount} poll=${pollSeconds}s fastPrices=${Number(fastCfg.everySec) > 0 ? `every ${fastCfg.everySec}s within ${fastCfg.marginPts} pts` : 'off'} atOnce=${maxInFlight} recheckWatch=${WATCH_MS / 60e3}min`);
+log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}%${(cfg.minEvByOdds || []).map((b) => ` (${b.minEvPct}% at ${fmtAmerican(b.from)}..${fmtAmerican(b.to)})`).join('')}${Object.entries(cfg.longOddsProps || {}).map(([bk, r]) => ` (${bk === 'all' ? 'all books' : bk} props over ${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)}${r.maxOdds != null ? ` to ${fmtAmerican(r.maxOdds)}` : ''}: ${r.minEvPct}%${cfg.longPropConsensus.enabled ? `, ${cfg.longPropConsensus.minBooks}+ of ${Object.keys(cfg.longPropConsensus.books).join('/')} within ${cfg.longPropConsensus.maxPts} pts` : ''})`).join('')} softBooks=${cfg.softCheck.enabled ? `${cfg.softCheck.minBooks}+ of ${Object.keys(cfg.softCheck.books).join('/')} >${cfg.softCheck.minEvPct}%` : 'off'} pinnacleVsMarket=${cfg.marketCheck.enabled ? `<=${cfg.marketCheck.maxPts}pts over ${cfg.marketCheck.minBooks}+ soft books` : 'off'} sharpOut=${(cfg.sharp.excludeBooks || []).join(',') || 'none'} predictionMarkets=${cfg.sharp.predictionMarkets.enabled ? `${cfg.sharp.predictionMarkets.books.join('/')} at $${cfg.sharp.predictionMarkets.minLiquidity}+ thinner side, <=${cfg.sharp.predictionMarkets.maxHoldPct}c spread, ${(cfg.sharp.predictionMarkets.agreeBooks || []).join('/')} within ${cfg.sharp.predictionMarkets.agreePts}pts${cfg.sharp.predictionMarkets.inFair ? ' (in fair)' : ''}` : 'off'} novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} odds=${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)}..${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)} maxEV=${cfg.maxEvPct ?? 'off'}% sharpSpread<=${cfg.sharp.maxSpreadPts ?? 'off'}pts liveSharpAge<=${cfg.sharp.liveMaxAgeSec ?? 'off'}s (props ${cfg.sharp.livePropMaxAgeSec ?? 'off'}s) group=${cfg.group.maxBets ?? 'any'} bet (pre-game ${cfg.group.pregameMaxBets ?? cfg.group.maxBets ?? 'any'})/$${cfg.group.maxStake ?? 'any'} every ${cfg.group.cooldownSec || 0}s pregame<=${cfg.pregameMaxHours == null ? 'any' : cfg.pregameMaxHours + 'h'} stake=$${cfg.stake.amount} poll=${pollSeconds}s fastPrices=${Number(fastCfg.everySec) > 0 ? `every ${fastCfg.everySec}s within ${fastCfg.marginPts} pts` : 'off'} atOnce=${maxInFlight} recheckWatch=${WATCH_MS / 60e3}min`);
 if (source.arb) {
   const a = source.arb.cfg;
   log.info(source.arb.books.length
