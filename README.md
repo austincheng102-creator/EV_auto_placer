@@ -399,8 +399,10 @@ links for each book. Arbitrage-table props are priced off `arbProps.refBooks` th
 ```json
 "propprofessor": { "live": true, "pregame": true, "arbPregame": true, "arbLive": true,
                    "openTabs": true, "liveMaxAgeSec": 600, "pregameMaxAgeSec": 1800,
-                   "pregameEverySec": 10, "fairFallback": true }
+                   "pregameEverySec": 10, "fairFallback": true, "stuckSec": 60 }
 ```
+A PropProfessor tab that still has no table after `stuckSec` seconds (stuck loading) is closed and the
+page opened again in a new tab, at most once every 3 min per table (`0` turns this off).
 PropProfessor sends no Pinnacle prices, so with `"fairFallback": true` (the default) a game line
 (spread, total, moneyline) that has no Pinnacle and no prediction market with enough money behind it
 uses PropProfessor's own no-vig fair instead of being skipped. Every other rule still applies (min EV,

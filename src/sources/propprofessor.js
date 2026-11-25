@@ -336,7 +336,7 @@ export function makePropProfessorSource(cfg, bridge, { root = null, log = null }
       for (const w of reload) warn(`old:${roleOf(w)}`, `PropProfessor ${what(w)} hasn't changed for ${Math.round((now - tableFreshAt(last.get(roleOf(w)).table)) / 60e3)} min: reloading its tab in case the page lost its feed`);
       const timeoutMs = Number(p.timeoutSec || 15) * 1000;
       const res = due.length ? await bridge.send('propprofessor', { kind: 'ppRead', wants: due, books: ppNames, timeoutMs,
-        openTabs: p.openTabs !== false, reload: reload.map(roleOf) }, timeoutMs + 5000) : { tables: [] };
+        openTabs: p.openTabs !== false, reload: reload.map(roleOf), stuckSec: p.stuckSec ?? 60 }, timeoutMs + 5000) : { tables: [] };
       if (res.error) throw new Error(`PropProfessor: ${res.error}`);
       if (res.loggedOut) throw new Error(`PropProfessor: log in again in the PropProfessor tab (${res.loggedOut})`);
       for (const n of res.notes || []) log?.info(`PropProfessor: ${n}`);
