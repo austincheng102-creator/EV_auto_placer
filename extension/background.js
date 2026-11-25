@@ -1855,6 +1855,8 @@ const ppOpenedAt = {};         // role -> when a tab was last opened or sent bac
 const ppCreatedAt = {};        // role -> when a new tab was opened for it
 const ppClickedAt = new Map(); // tabId -> when its Live / Pre-Match button was last clicked
 const ppReloadedAt = new Map(); // tabId -> when it was last reloaded for a table that stopped changing
+const ppErrSince = new Map();  // tabId -> since when its table has failed to read (still loading etc.)
+const ppReopenedAt = {};       // role -> when its tab was last closed and opened anew for a stuck load
 
 // Runs in the page (MAIN world). Must be self-contained. Reads the page's own query cache.
 function ppReadPage(books, clickLive) {
@@ -1964,6 +1966,23 @@ async function ppRead(req) {
     // Keep it from being discarded by Chrome's Memory Saver (a discarded tab has no table).
     if (!ppRole.has(t.id)) chrome.tabs.update(t.id, { autoDiscardable: false }).catch(() => {});
     ppRole.set(t.id, role);
+    // No table for too long (stuck loading): close the tab and open the page in a new one, at most
+    // once every 3 min per table. propprofessor.stuckSec (default 60, 0 = never).
+    if (t.error) {
+      if (!ppErrSince.has(t.id)) ppErrSince.set(t.id, Date.now());
+      const stuckMs = Number(req.stuckSec ?? 60) * 1000, for_ = Date.now() - ppErrSince.get(t.id);
+      if (stuckMs > 0 && for_ > stuckMs && Date.now() - (ppReopenedAt[role] || 0) > 3 * 60e3) {
+        const label = `${page === 'ev' ? 'Positive EV' : 'Arbitrage'} ${live ? 'live' : 'pre-game'}`;
+        ppReopenedAt[role] = Date.now(); ppOpenedAt[role] = Date.now();
+        ppErrSince.delete(t.id); ppRole.delete(t.id); ppClickedAt.delete(t.id); ppReloadedAt.delete(t.id);
+        await chrome.tabs.remove(t.id).catch(() => {});
+        const nt = await chrome.tabs.create({ url: PP_PAGES[page], active: false }).catch(() => null);
+        if (nt) { ppRole.set(nt.id, role); ppCreatedAt[role] = Date.now(); chrome.tabs.update(nt.id, { autoDiscardable: false }).catch(() => {}); }
+        notes.push(`closed the ${label} tab and opened it again in a new tab (no table for ${Math.round(for_ / 1000)}s: ${t.error})`);
+        opening = true;
+        continue;
+      }
+    } else ppErrSince.delete(t.id);
     // Showing the other half (or reloaded back to Pre-Match): click it over, at most every 10s.
     if ((t.showsLive != null && t.showsLive !== live) || (t.live != null && t.live !== live)) {
       if (Date.now() - (ppClickedAt.get(t.id) || 0) > 10e3) {
