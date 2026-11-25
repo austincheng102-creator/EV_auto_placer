@@ -118,12 +118,16 @@ export function loadBets(dir, { dryRun = false } = {}) {
       // bets.json "ev" is the EV at the price we checked and sent. The book can accept a different
       // price (Hard Rock checked +110, accepted +115): EV here is at the price we got, vs the same fair.
       const ev = Number.isFinite(b.ev) ? evMovedTo(b.ev, b.sentOdds, odds) : null;
+      // EV after: the same price we got, against the first fair seen after the book accepted the bet.
+      const acc = b.atAccept, accProb = Number(acc?.fairProb);
+      const evAfter = acc && !acc.gone && !acc.none && accProb > 0 && accProb < 1 && Number.isFinite(Number(odds)) && Number(odds) !== 0
+        ? (accProb * americanToDecimal(Number(odds)) - 1) * 100 : Number.isFinite(acc?.ev) ? acc.ev : null;
       return {
         key, placedAt: b.placedAt, book: b.book, event: b.event, market: b.market, selection: b.selection, line: b.line,
         live: b.live, source: betSource(b), feed: b.feed ?? null, otherBooks: b.otherBooks ?? null, sharpNoVig: b.sharpNoVig ?? null,
         // For the hover popup: the fair price and reference prices the EV was judged on, and when.
         fairOdds: b.fairOdds ?? null, fairProb: b.fairProb ?? null, fairSource: b.fairSource ?? null, sentOdds: b.sentOdds ?? null,
-        ref: b.ref ?? null, timing: b.timing ?? null, atAccept: b.atAccept ?? null, odds, stake, ev, checkedEv: b.ev ?? null, clv: b.clv ?? null,
+        ref: b.ref ?? null, timing: b.timing ?? null, atAccept: b.atAccept ?? null, odds, stake, ev, evAfter, checkedEv: b.ev ?? null, clv: b.clv ?? null,
         // Expected profit: what the bet is worth on average at the fair price we had, at the price we got.
         expected: r?.result === 'not placed' ? 0 : Number.isFinite(ev) ? stake * ev / 100 : null,
         result: r?.result || null, resultSource: r?.source || null, settledAt: r?.settledAt || null,

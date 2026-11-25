@@ -258,6 +258,9 @@ const money = (x, sign) => x == null ? '—' : (sign && x > 0 ? '+' : x < 0 ? '�
 const pct = (x) => x == null ? '—' : (x > 0 ? '+' : x < 0 ? '−' : '') + Math.abs(x).toFixed(1) + '%';
 const odds = (a) => a == null ? '—' : a > 0 ? '+' + a : String(a);
 const cls = (x) => x > 0 ? 'pos' : x < 0 ? 'neg' : '';
+// EV at the price we got, against the first fair seen after the book accepted the bet (bets.json atAccept).
+// null when there is none: older bets, the feed no longer listed it, or no prices within 2 minutes.
+const evAfter = (b) => Number.isFinite(b?.evAfter) ? b.evAfter : Number.isFinite(b?.atAccept?.ev) ? b.atAccept.ev : null;
 const dayKey = (t) => { const d = new Date(t); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
 const dayLabel = (k) => new Date(k + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 const when = (t) => new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
@@ -380,11 +383,14 @@ function stats(list) {
   const staked = sum(list, (b) => b.stake), stakedSettled = sum(settled, (b) => b.stake);
   const pnl = sum(settled, (b) => b.profit);
   const withClv = list.filter((b) => b.clv != null);
+  const withAfter = list.filter((b) => evAfter(b) != null);
   return {
     n: list.length, staked, settled: settled.length, pnl, roi: stakedSettled ? pnl / stakedSettled * 100 : null,
     expected: sum(list, (b) => b.expected), expectedSettled: sum(settled, (b) => b.expected),
     avgEv: list.length ? sum(list, (b) => b.ev) / list.length : null,
     clv: withClv.length ? sum(withClv, (b) => b.clv) / withClv.length : null, nClv: withClv.length,
+    avgAfter: withAfter.length ? sum(withAfter, evAfter) / withAfter.length : null, nAfter: withAfter.length,
+    avgEvAfterSet: withAfter.length ? sum(withAfter, (b) => b.ev) / withAfter.length : null,
     open: list.length - settled.length,
     record: [['won', 'half-won'], ['lost', 'half-lost'], ['push', 'void', 'not placed']].map((rs) => list.filter((b) => rs.includes(b.result)).length),
   };
@@ -427,6 +433,7 @@ function tiles(list) {
     ['Profit (settled)', money(s.pnl, true), s.settled ? s.settled + ' settled · ' + s.record[0] + '-' + s.record[1] + (s.record[2] ? '-' + s.record[2] : '') : 'no results yet', cls(s.pnl)],
     ['ROI (settled)', pct(s.roi), s.settled ? 'expected ' + money(s.expectedSettled, true) + ' on these' : '—', cls(s.roi)],
     ['Expected profit', money(s.expected, true), 'avg EV ' + pct(s.avgEv)],
+    ['Avg EV after', pct(s.avgAfter), s.nAfter ? s.nAfter + ' bets · avg EV ' + pct(s.avgEvAfterSet) + ' on these' : 'no after-bet prices yet', cls(s.avgAfter != null && s.avgEvAfterSet != null ? s.avgAfter - s.avgEvAfterSet : null)],
     ['Avg CLV', pct(s.clv), s.nClv ? s.nClv + ' with a close' : 'no closes yet', cls(s.clv)],
     ['Waiting for result', String(s.open), LIVE ? 'mark them below' : 'open Show bets to mark'],
   ];
@@ -586,14 +593,14 @@ function table(list) {
   document.getElementById('tableNote').textContent = LIVE
     ? 'Results fill in by themselves from Hard Rock, BetRivers and FanDuel while the placer runs. You can also pick one by hand; it saves to results.json and the charts update.'
     : 'Read-only copy. Run Show bets to mark results.';
-  const head = '<tr><th>Placed</th><th>Book</th><th>Type</th><th>Table</th><th>Bet</th><th class="num">Odds</th><th class="num">Stake</th><th class="num">EV</th><th class="num">CLV</th><th>Result</th><th class="num">Profit</th></tr>';
+  const head = '<tr><th>Placed</th><th>Book</th><th>Type</th><th>Table</th><th>Bet</th><th class="num">Odds</th><th class="num">Stake</th><th class="num">EV</th><th class="num" title="EV at the price we got, against the first fair seen after the book accepted the bet. Green: the fair moved our way; red: against us.">EV after</th><th class="num">CLV</th><th>Result</th><th class="num">Profit</th></tr>';
   tb.innerHTML = head;
   for (const b of [...list].reverse()) {
     const tr = document.createElement('tr');
-    const cells = [when(b.placedAt), label(b.book), '', SRC[srcOf(b)], '', odds(b.odds), '$' + b.stake, pct(b.ev), pct(b.clv), '', money(b.profit, true)];
+    const cells = [when(b.placedAt), label(b.book), '', SRC[srcOf(b)], '', odds(b.odds), '$' + b.stake, pct(b.ev), pct(evAfter(b)), pct(b.clv), '', money(b.profit, true)];
     cells.forEach((c, i) => {
       const td = document.createElement('td');
-      if ([5, 6, 7, 8, 10].includes(i)) td.className = 'num';
+      if ([5, 6, 7, 8, 9, 11].includes(i)) td.className = 'num';
       if (i === 2) td.append(kindBadge(b));
       else if (i === 4) {
         td.className = 'what';
@@ -603,7 +610,7 @@ function table(list) {
           const i = document.createElement('span'); i.className = 'info'; i.textContent = 'ⓘ'; td.append(i);
           tr.classList.add('hasodds'); tr.dataset.tip = '1'; tr._bet = b;
         }
-      } else if (i === 9) {
+      } else if (i === 10) {
         if (LIVE) {
           const sel = document.createElement('select');
           for (const [v, t] of [['', 'not settled'], ['won', 'won'], ['lost', 'lost'], ['push', 'push'], ['void', 'void'], ['half-won', 'half won'], ['half-lost', 'half lost'], ['cashout', 'cashed out'], ['not placed', 'not placed']]) {
@@ -613,7 +620,13 @@ function table(list) {
           td.append(sel);
         } else td.textContent = b.result || 'not settled';
       } else td.textContent = c;
-      if (i === 10 && b.profit != null) td.classList.add(cls(b.profit) || 'num');
+      // EV after: green when the fair moved our way after the bet, red when it moved against us.
+      if (i === 8 && evAfter(b) != null && Number.isFinite(b.ev)) {
+        const d = evAfter(b) - b.ev;
+        if (Math.abs(d) >= 0.05) td.classList.add(cls(d));
+        td.title = (d >= 0 ? '+' : '−') + Math.abs(d).toFixed(1) + ' pts vs EV at the price we got';
+      }
+      if (i === 11 && b.profit != null) td.classList.add(cls(b.profit) || 'num');
       tr.append(td);
     });
     tb.append(tr);
@@ -712,7 +725,7 @@ if (LIVE) setInterval(async () => {
     if (a?.gone) h += '<div class="tf">First ' + esc(feed) + ' prices after the bet was accepted (' + clock(a.gambitAt) + '): ' + esc(feed) + ' no longer listed it (it may no longer have been +EV).</div>';
     else if (a?.none) h += '<div class="tf">After the bet was accepted: ' + esc(a.none) + '.</div>';
     else if (a) h += '<div class="tf">First ' + esc(feed) + ' prices after the bet was accepted (' + clock(a.gambitAt) + (acc ? ', ' + gap(acc, a.gambitAt) + ' later' : '') + '): fair ' + esc(fmt(a.fairOdds)) + ' (' + pc(a.fairProb) + ')' +
-      (a.setBy?.length ? ' from ' + esc(a.setBy.map((n) => n[0].toUpperCase() + n.slice(1)).join(' + ')) : '') + ', so ' + esc(pct1(a.ev)) + ' EV at our price.</div>';
+      (a.setBy?.length ? ' from ' + esc(a.setBy.map((n) => n[0].toUpperCase() + n.slice(1)).join(' + ')) : '') + ', so ' + esc(pct1(Number.isFinite(b.evAfter) ? b.evAfter : a.ev)) + ' EV at our price.</div>';
     else if (acc) h += '<div class="tf">Waiting for the first ' + esc(feed) + ' prices after the bet was accepted.</div>';
     if (b.sharpNoVig) h += '<div class="tf">' + (b.source === 'arb' ? 'Reference books' : 'Sharp books') + ' simple no-vig win %, for the 3-point agreement check only: ' + esc(b.sharpNoVig) + '</div>';
     return h;
