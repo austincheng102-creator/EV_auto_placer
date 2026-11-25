@@ -249,7 +249,9 @@ export function makeFanDuel(name, label, cfg, bridge) {
   // api.sportsbook.fanduel.com (game pages, My Bets) allows the CO site's requests only without
   // cookies (no Access-Control-Allow-Credentials), the way the site makes them; with cookies the
   // browser blocks them ("Failed to fetch"). The *.co.sportsbook hosts take cookies.
-  const creds = (url) => (/^https:\/\/api\.sportsbook\.fanduel\.com\//.test(url) ? 'omit' : 'include');
+  // The event search (scan.<state>.sportsbook) is public too and is sent without cookies: with
+  // FanDuel's large .fanduel.com cookies on it the server answers HTTP 431 (headers too large).
+  const creds = (url) => (/^https:\/\/(api\.sportsbook|scan\.[a-z]+\.sportsbook)\.fanduel\.com\//.test(url) ? 'omit' : 'include');
   // Only the headers the site itself sends to each host (the login only where it sends one).
   const send = (kind, url, method, body, extra = {}, ms = 20000, auth = true) => {
     const headers = { ...json, ...extra };
