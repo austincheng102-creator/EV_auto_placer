@@ -37,6 +37,17 @@ export function dkAmerican(display, trueOdds) {
   return Number.isFinite(d) && d > 1 ? decimalToAmerican(d) : null;
 }
 
+/**
+ * A selection's American odds in DraftKings' odds feed (selectioninfo / sportscontent): displayOdds is
+ * {american: "−110", decimal: "1.91", ...} (or a plain string in older answers), trueOdds the decimal.
+ */
+export function feedOdds(sel) {
+  if (!sel || typeof sel !== 'object') return null;
+  const d = sel.displayOdds;
+  const am = d && typeof d === 'object' ? d.american : d;
+  return dkAmerican(am ?? sel.oddsAmerican ?? sel.americanOdds, sel.trueOdds ?? (d && typeof d === 'object' ? d.decimal : null) ?? sel.oddsDecimal);
+}
+
 /** What DraftKings' waitingBets event stream says: the last JSON event's status, bet id, odds. */
 // Each event repeats the whole bet: first status "LiveDelay", then (about 3s later) "Open" with the betId
 // when DraftKings takes it (Austin's capture, 2026-11-23). The stream can carry other waiting bets too,
@@ -173,19 +184,51 @@ export function makeDraftKings(name, label, cfg, bridge) {
     freePriceCheck: true,
     recheckWatchSec: 10,
 
+    // Re-checks read the price from DraftKings' odds feed (selectioninfo on sportsbook-nash, the same
+    // feed the page itself reads all the time to show odds), not from calculateBets. calculateBets is
+    // the bet slip's call (gaming-us-<st>, behind DraftKings' bot filter): a person sends it once when
+    // they tap the odds, but the app sent it on every scan and every 10s for each watched bet, and
+    // DraftKings answered HTTP 403 and DraftKings stopped for 1-2 min (Austin, 2026-11-25). Now
+    // calculateBets goes out only right before a bet is sent, for its price token, like a tap on the
+    // odds. Off (back to calculateBets on every check) with "draftkings": {"feedRecheck": false}; if the
+    // feed has no price for a selection, that check falls back to calculateBets.
     async recheck(row) {
       const id = row.bookRef || draftkingsRef(row.link).bookRef;
       if (!id) throw new Error(`no DraftKings selection id in Gambit's link (${String(row.link || 'no link').slice(0, 160)})`);
-      if (Date.now() < blockedUntil) throw paused();
-      await takeTurn();
-      if (Date.now() < blockedUntil) throw paused();
-      try { const q = await check(row, id); blockMs = 0; return q; }
-      catch (e) {
-        if (refused403(e.message)) { if (Date.now() >= blockedUntil) noteBlocked(); const p = paused(); p.message = e.message; throw p; }
-        throw e;
+      if (k.feedRecheck !== false) {
+        const f = await feedCheck(row, id);
+        if (f) return f;
       }
+      return tokenCheck(row, id);
     },
   };
+  // The selection's price, line and suspension from the odds feed; null if the feed didn't give a price.
+  async function feedCheck(row, id) {
+    const si = await send('recheck', `${info}?siteName=${site}&selectionIds=${encodeURIComponent(id)}`, 'GET', null, { accept: '*/*', 'x-pe-cn': 'web', 'x-pe-ep': 'SB', 'x-pe-loc': `US-${st.toUpperCase()}` })
+      .catch((e) => ({ status: 0, error: String(e?.message || e) }));
+    const sel = (si.json?.selections || []).find((s) => s.id === id);
+    const mk = (si.json?.markets || []).find((m) => m.id === sel?.marketId);
+    const odds = sel ? feedOdds(sel) : null;
+    if (!sel || odds == null) {
+      if (!feedMissSaid) { feedMissSaid = true; log.debug(`DraftKings odds feed gave no price for ${id} (HTTP ${si.status}${si.error ? `, ${si.error}` : ''}): checking with calculateBets instead. Feed answer: ${String(si.text || JSON.stringify(si.json ?? '')).slice(0, 600)}`); }
+      return null;
+    }
+    return { odds, line: lineOf(sel, row), suspended: !!mk?.isSuspended || sel.isSuspended === true || sel.isOpen === false,
+      maxStake: null, dk: { id, token: null, trueOdds: sel.trueOdds ?? null, displayOdds: sel.displayOdds?.american ?? sel.displayOdds ?? null, fromFeed: true } };
+  }
+  let feedMissSaid = false;
+  // calculateBets: the bet slip's price and its token (no bet is made). At most one every minGapSec,
+  // and none while DraftKings' bot filter has paused us.
+  async function tokenCheck(row, id) {
+    if (Date.now() < blockedUntil) throw paused();
+    await takeTurn();
+    if (Date.now() < blockedUntil) throw paused();
+    try { const q = await check(row, id); blockMs = 0; return q; }
+    catch (e) {
+      if (refused403(e.message)) { if (Date.now() >= blockedUntil) noteBlocked(); const p = paused(); p.message = e.message; throw p; }
+      throw e;
+    }
+  }
   async function check(row, id) {
     {
       // The odds/token check and the selection's details go out together: both are reads.
@@ -219,7 +262,7 @@ export function makeDraftKings(name, label, cfg, bridge) {
 
     async place(row, stake, quote) {
       let q = quote.dk;
-      if (!q?.token) throw new Error('no DraftKings price token from the price check');
+      if (!q?.id) throw new Error('no DraftKings selection from the price check');
       // A DraftKings counter-offer ("NewOffer", open for its delayPeriod, 120s) that the app has just
       // checked against every rule at the offered price: take it the way the site's Accept button does,
       // POST acceptPurchase {waitingBetId, newOfferId} (Austin's capture 2026-11-23 22:24 UTC). Sending
@@ -230,10 +273,13 @@ export function makeDraftKings(name, label, cfg, bridge) {
           { ...slipHeaders, accept: 'application/json', 'x-request-client-timestamp': String(Date.now()) }, 30000);
         return answer(res, { ...q, offer: null }, 'acceptPurchase', `accepted DraftKings' counter-offer ${quote.odds > 0 ? '+' : ''}${quote.odds}; `);
       }
-      // A retry after a price move comes with the new price but the old price's token: get a fresh
-      // token, and bet only if it's still that price.
-      if (dkAmerican(q.displayOdds, q.trueOdds) !== quote.odds) {
-        const fresh = await this.recheck(row);
+      // The price token comes from calculateBets, asked for right now (the check before read the odds
+      // feed), or again after a price move (the new price came with the old price's token). Bet only
+      // if it's still the price every rule was checked at.
+      if (!q.token || dkAmerican(q.displayOdds, q.trueOdds) !== quote.odds) {
+        let fresh;
+        try { fresh = await tokenCheck(row, q.id); }
+        catch (e) { if (e.paused) e.notSent = true; throw e; }
         if (!fresh.dk?.token || fresh.suspended) { const e = new Error('rejected: no longer offered'); e.gone = true; throw e; }
         if (fresh.odds !== quote.odds) { const e = new Error(`rejected: price is now ${fresh.odds}`); e.priceMoved = true; e.newOdds = fresh.odds; e.newQuote = { dk: fresh.dk }; throw e; }
         q = fresh.dk;

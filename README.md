@@ -113,8 +113,11 @@ One app runs either book; the Gambit feed, Novig check, EV math and limits are s
 **DraftKings (Colorado, sportsbook.draftkings.com)** is wired from a recording of a real $0.10 live bet:
 - Gambit id 200. Selection ids ("0ML87369883_1") are the same in every state, so the bet is found
   from Gambit's link (`?outcomes=<id>`).
-- **Price re-check**: DraftKings CO's bet-slip price check (calculateBets: odds plus a token for
-  exactly that price, no bet made) and the selection's line and suspension (selectioninfo).
+- **Price re-check**: the selection's price, line and suspension from DraftKings' odds feed
+  (selectioninfo, the feed the page reads to show odds). The bet slip's price check (calculateBets:
+  odds plus a token for exactly that price, no bet made) goes out only right before a bet, like a
+  tap on the odds; sending it on every re-check drew HTTP 403s from DraftKings' bot filter.
+  `"draftkings": {"feedRecheck": false}` goes back to calculateBets on every check.
 - **Bet**: placeBets with that token and auto-accept off, so a moved price is refused. Live bets
   wait out DraftKings' delay (3s) for its answer; a bet with no answer is recorded as waiting.
 - DraftKings is also a reference book (soft-book check, Pinnacle-vs-market, arb props): a

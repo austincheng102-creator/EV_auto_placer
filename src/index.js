@@ -592,6 +592,13 @@ async function placeAt(row, book, quote, ctx, retries = 0) {
       lg.warn(`${book.label}: price moved${hasNew ? ` to ${fmtAmerican(e.newOdds)}` : ''} — skipped, nothing placed`);
       return false;
     }
+    // The book paused its price checks before anything was sent (DraftKings: its bot filter answered
+    // the bet slip's price check HTTP 403): the bet waits for the pause to end, then is checked again.
+    if (e.paused && e.notSent) {
+      ctx.sent = false; ctx.outcome = 'paused'; ctx.pausedUntil = e.until;
+      lg.warn(`${book.label}: ${e.message} — nothing placed, checked again after the pause`);
+      return false;
+    }
     if (e.gone) { ctx.outcome = 'no longer offered'; lg.warn(`${book.label}: bet no longer offered — skipped, nothing placed`); return false; }
     // Nothing reached the book / nothing was placed (FanDuel's location check had run out, or
     // BetRivers refused it with ACCOUNT_BLOCKED because its location check had). Once it's renewed, the
