@@ -108,6 +108,7 @@
   "pollSeconds": 6,
   "betsAtOnce": 1,
   "maxBetsPerEvent": 1,
+  "liveMaxPropsPerEvent": 6,
   "dailyStakeLimit": 200,
   "bridgePort": 8765,
   "novig": {
@@ -154,7 +155,7 @@
       "fanduel": 100
     },
     "minBooks": 2,
-    "minEvPct": 0,
+    "minEvPct": 4,
     "skipOwnBook": true
   },
   "marketCheck": {

@@ -103,14 +103,15 @@ export function applyFilterDefaults(cfg) {
   // group's last bet, on any book, is cooldownSec old and it passes every rule; "block" = never that game.
   if (g.otherSide === undefined) g.otherSide = 'afterCooldown';
   bothSides = !!g.bothSides;
-  // Soft-book check: EV above minEvPct (0) against the no-vig price of at least minBooks (2) of these
+  // Soft-book check: EV above minEvPct (4) against the no-vig price of at least minBooks (2) of these
   // books. A book that doesn't list both sides doesn't count; fewer than minBooks priced = skip.
   // skipOwnBook: the book we're betting isn't checked against itself (its own vig always makes that negative).
   const sc = (cfg.softCheck ||= {});
   if (sc.enabled === undefined) sc.enabled = true;
   if (sc.books === undefined) sc.books = { draftkings: 200, caesars: 300, fanduel: 100 };
   if (sc.minBooks === undefined) sc.minBooks = 2;
-  if (sc.minEvPct === undefined) sc.minEvPct = 0;
+  // 4 (Austin 2026-11-25): bets that were only 0-4% EV against these books lost -$59 vs +$33 expected.
+  if (sc.minEvPct === undefined) sc.minEvPct = 4;
   if (sc.skipOwnBook === undefined) sc.skipOwnBook = true;
   // Pinnacle vs the market: Pinnacle's no-vig % for our side may be at most maxPts above the median
   // no-vig % of these soft books (each needs both sides; one price per book, first listed id wins).
