@@ -634,9 +634,14 @@ function directSlow(n, b) {
  */
 function pickBets(rows, { quiet = false } = {}) {
   const stats = playerStats([...state.placed, ...inflight.values()]);
+  // Per-game caps (maxBetsPerEvent, liveMaxPropsPerEvent) count the last 24 hours only, like the group
+  // rules: event names repeat (the same two teams meet again), so older bets must not count. Bets in
+  // flight have no time yet and always count.
+  const dayAgo = Date.now() - 24 * 3600e3;
+  const recent = [...state.placed.filter((p) => !p.at || Date.parse(p.at) >= dayAgo), ...inflight.values()];
   const perEvent = {};
-  for (const p of [...state.placed, ...inflight.values()]) if (inEventCap(p)) perEvent[p.event] = (perEvent[p.event] || 0) + 1;
-  const liveProps = livePropCounts([...state.placed, ...inflight.values()]);
+  for (const p of recent) if (inEventCap(p)) perEvent[p.event] = (perEvent[p.event] || 0) + 1;
+  const liveProps = livePropCounts(recent);
   const now = Date.now();
   let farOff = 0;
   const why = { noProps: 0, odds: 0, evCap: 0, sharpSpread: 0, softBooks: 0, longConsensus: 0, pinnacleOff: 0, noSharp: 0, stale: 0, staleProp: 0, livePropCap: 0, group: 0, groupCooldown: 0, sameEv: 0, playerStats: 0 };
