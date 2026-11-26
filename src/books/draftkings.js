@@ -234,6 +234,15 @@ export function makeDraftKings(name, label, cfg, bridge) {
     const sel = (si.json?.selections || []).find((s) => s.id === id);
     const mk = (si.json?.markets || []).find((m) => m.id === sel?.marketId);
     const odds = sel ? feedOdds(sel) : null;
+    // DraftKings says the selection doesn't exist any more (DAR404, "No data was found for requested
+    // Selection Ids"): the bet is gone, so calculateBets isn't sent for it. Sending it anyway is what drew
+    // DraftKings' HTTP 403s (Austin's logs 2026-11-25: Najai Hines and Sion James props, both gone from
+    // the feed, each refused 403, and two of them paused all of DraftKings).
+    const missing = si.json?.selectionIdsNotFound;
+    if (!sel && Array.isArray(missing) && missing.map(String).includes(String(id))) {
+      return { odds: null, line: row.line, suspended: true, why: 'DraftKings no longer offers it (its odds feed: selection not found)',
+        maxStake: null, dk: { id, token: null, fromFeed: true, gone: true } };
+    }
     if (!sel || odds == null) {
       if (!feedMissSaid) { feedMissSaid = true; log.debug(`DraftKings odds feed gave no price for ${id} (HTTP ${si.status}${si.error ? `, ${si.error}` : ''}): checking with calculateBets instead. Feed answer: ${String(si.text || JSON.stringify(si.json ?? '')).slice(0, 600)}`); }
       return null;
