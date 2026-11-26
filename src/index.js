@@ -438,7 +438,7 @@ function shadowEntry(r, firstSkip, now) {
       evPct: r.ev, minEvPct: minEv(r), fairOdds: r.fairOdds, fairSetBy: fairSetBy(r), sharpAgeSec: r.isLive ? sharpClock.ageSec(r, now) : null,
       sharpSpreadPts: sp.spread, pinnacle: pct1(pin), kalshi: pct1(pm.kalshi), polymarket: pct1(pm.polymarket), novig: pct1(pm.novig), prophetx: pct1(pm.prophetx),
       pmGapPts: worstPm != null && Number.isFinite(r.fairProb) ? (r.fairProb - worstPm) * 100 : null,
-      softDraftkings: sc.evs?.draftkings, softCaesars: sc.evs?.caesars, softFanduel: sc.evs?.fanduel, softPassing: sc.off ? null : sc.pass,
+      softDraftkings: sc.evs?.draftkings, softCaesars: sc.evs?.caesars, softFanduel: sc.evs?.fanduel, softFanatics: sc.evs?.fanatics, softPassing: sc.off ? null : sc.pass,
       pinVsMedianPts: mc.gap, pinVsDraftkingsPts: pin != null && dk != null ? (pin - dk) * 100 : null, pinVsFanduelPts: pin != null && fd != null ? (pin - fd) * 100 : null,
       failedRules: failedRules(r).join(';'), firstSkip,
     },
@@ -728,7 +728,7 @@ async function placeAt(row, book, quote, ctx, retries = 0) {
   if (ev < minEv(row, quote.odds)) { ctx.outcome = 'EV too low'; lg.warn(`${book.label}: re-check FAIL: ${tail}`); return false; }
   lg.bet(`${book.label}: re-check OK: ${tail}`);
 
-  // At least 2 of DraftKings/Caesars/FanDuel must also show this price above 0% EV (softCheck).
+  // At least 2 of the softCheck books (DraftKings/Caesars/FanDuel/Fanatics) must also show this price above 0% EV (softCheck).
   const sc = softCheck(cfg, row, quote.odds);
   if (!sc.ok) {
     ctx.outcome = 'soft books fail';

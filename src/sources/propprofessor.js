@@ -38,6 +38,8 @@ export const PP_IDS = {
   Pinnacle: 1014, Kalshi: 194, Polymarket: 193, PolymarketUS: 1011, NoVigApp: 192, Prophet: 191,
   FanDuel: 100, DraftKings: 200, Caesars: 300, BetMGM: 400, theScore: 700, BetRivers: 1004, Hardrock: DEFAULT_BOOK_IDS.hardrock,
   BallyBet: 500, BetParx: 1005, Fliff: 800, Bovada: 1006, BetOnline: 613, PrizePicks: 385,
+  // Fanatics' sportsbook (Gambit 722). "FanaticsMarkets" is its prediction market, a different book (stays 90000+).
+  Fanatics: 722,
 };
 // How each PropProfessor book is shown in the bet log and the Show bets popup. Saved with each price
 // (prices[id].name), because the 90000+ ids are handed out as books first appear in a run and mean

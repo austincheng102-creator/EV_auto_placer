@@ -35,7 +35,7 @@ export const GAMBIT_BOOK_NAMES = {
   1014: 'Pinnacle', 194: 'Kalshi', 193: 'Polymarket', 1011: 'Polymarket', 192: 'Novig', 100: 'FanDuel',
   200: 'DraftKings', 400: 'BetMGM', 1001: 'BetMGM MI', 365: 'bet365', 300: 'Caesars', 1004: 'BetRivers', 500: 'Kambi',
   850: 'Hard Rock', 851: 'Hard Rock', 1008: 'Hard Rock', 1016: 'Hard Rock', 700: 'theScore', 1005: 'BetParx',
-  191: 'ProphetX', 1006: 'Bovada', 800: 'Fliff', 613: 'BetOnline', 385: 'PrizePicks',
+  191: 'ProphetX', 1006: 'Bovada', 800: 'Fliff', 613: 'BetOnline', 385: 'PrizePicks', 722: 'Fanatics',
 };
 const SHARP_FIRST = [1014, 194, 193, 1011, 192, 100];
 const am = (o) => (Number.isFinite(o) ? fmtAmerican(o) : '?');
