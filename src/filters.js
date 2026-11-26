@@ -147,8 +147,123 @@ export function applyFilterDefaults(cfg) {
   if (lc.books === undefined) lc.books = { draftkings: 200, caesars: 300 };
   if (lc.maxPts === undefined) lc.maxPts = 5;
   if (lc.minBooks === undefined) lc.minBooks = 1;
+  // Live totals at Hard Rock and BetRivers are skipped when the fair price comes from Pinnacle alone (no
+  // prediction market counted) (Austin 2026-11-26). Team totals too; not props. "live": false / "pregame": true
+  // change when it applies. false turns it off.
+  if (cfg.pinnacleOnlyTotals === undefined) cfg.pinnacleOnlyTotals = { books: ['hardrock', 'betrivers'], live: true, pregame: false };
+  // Prediction-market check (Austin 2026-11-26): on moneylines and player props, skip when any prediction market
+  // listed on the row (Kalshi, Polymarket, Novig, ProphetX), even one too thin to count for the fair, gives our
+  // side a win % pts (2) or more below our fair. markets: any of moneyline, props, spreads, totals. false = off.
+  if (cfg.pmBelowFair === undefined) cfg.pmBelowFair = {};
+  if (cfg.pmBelowFair) cfg.pmBelowFair = { pts: 2, markets: ['moneyline', 'props'], countThin: true, ...cfg.pmBelowFair };
+  // Pre-game (Austin 2026-11-26): bet only if Pinnacle's no-vig win % for our side is within maxPts (2) of
+  // both DraftKings' and FanDuel's. missing: "skip" (default) = Pinnacle, DraftKings or FanDuel not priced on
+  // both sides means skip; "pass" = then the rule doesn't apply. false = off.
+  if (cfg.pregamePinnacleCheck === undefined) cfg.pregamePinnacleCheck = {};
+  if (cfg.pregamePinnacleCheck) cfg.pregamePinnacleCheck = { maxPts: 2, books: { draftkings: 200, fanduel: 100 }, missing: 'skip', ...cfg.pregamePinnacleCheck };
+  // Live (Austin 2026-11-26): skip when the book's real price is different at all from the price the table
+  // (Gambit / PropProfessor) quoted, better or worse, on every book (Hard Rock too). onRetry: a price that
+  // moves while placing (or a DraftKings counter-offer) is held to the same rule. false = back to gambitBehind.
+  if (cfg.livePriceMatch === undefined) cfg.livePriceMatch = {};
+  if (cfg.livePriceMatch) cfg.livePriceMatch = { onRetry: true, ...cfg.livePriceMatch };
   return cfg;
 }
+
+/** Market kind of a row: props, moneyline, totals (game and team totals) or spreads. */
+export function marketKind(row) {
+  if (isPropBet(row)) return 'props';
+  const m = String(row.marketKey || row.market || '');
+  if (/money_?line/i.test(m)) return 'moneyline';
+  if (/total/i.test(m)) return 'totals';
+  return 'spreads';
+}
+
+// Books whose live player props from the +EV table are off unless "<book>": {"liveEvProps": true}
+// (Austin 2026-11-26: Hard Rock). Arbitrage-table props on that book are still bet.
+export const NO_LIVE_EV_PROPS_DEFAULT = ['hardrock'];
+export const liveEvPropOff = (cfg, r) => r.isLive === true && !r.arb && isPropBet(r)
+  && (cfg[r.book]?.liveEvProps ?? !NO_LIVE_EV_PROPS_DEFAULT.includes(r.book)) === false;
+
+/** A total on pinnacleOnlyTotals' books whose fair came from Pinnacle alone (true = skip). */
+export function pinnacleOnlyTotal(cfg, row) {
+  const c = cfg.pinnacleOnlyTotals;
+  if (!c || c.enabled === false || row.arb || !(c.books || []).includes(row.book)) return false;
+  if (row.isLive === true ? c.live === false : c.pregame !== true) return false;
+  if (marketKind(row) !== 'totals') return false;
+  const fc = row.fairCalc;
+  if (!fc || fc.ppFallback) return false;
+  const names = Object.keys(fc.probs || {});
+  return names.length > 0 && names.every((n) => n === 'pinnacle');
+}
+
+/**
+ * Prediction-market check. Returns { ok, probs: {kalshi: 0.48}, worst, gap, fair, off }.
+ * probs = each listed prediction market's win % for our side: the counted price (pmState) when it counts,
+ * else (countThin) the mid of its two sides, or our side's implied % when only one side is listed.
+ * Sides that cross (add up under 97%) are stale and ignored. gap = fair - worst, in points.
+ */
+export function pmBelowFair(cfg, row) {
+  const c = cfg.pmBelowFair;
+  if (!c || c.enabled === false || !(c.markets || []).includes(marketKind(row))) return { ok: true, off: true, probs: {} };
+  const probs = pmListed(cfg, row, c.countThin !== false, c.books);
+  const fair = row.fairProb;
+  const vals = Object.values(probs);
+  if (!vals.length || !Number.isFinite(fair)) return { ok: true, probs, worst: null, gap: null, fair };
+  const worst = Math.min(...vals), gap = (fair - worst) * 100;
+  return { ok: c.pts == null || gap < Number(c.pts) - 1e-9, probs, worst, gap, fair };
+}
+
+/** Win % for our side from every prediction market listed on a row (see pmBelowFair). */
+export function pmListed(cfg, row, countThin = true, books = null) {
+  const pm = cfg.sharp?.predictionMarkets;
+  const st = pmState(cfg, row);
+  const probs = {};
+  for (const n of books || pm?.books || ['kalshi', 'polymarket', 'novig', 'prophetx']) for (const id of ids(cfg, n)) {
+    const pr = row.prices?.[id];
+    if (!pr || pr.odds == null || !Number.isFinite(Number(pr.odds))) continue;
+    let p = null;
+    if (st.used[n] === Number(id)) p = st.probs[n];
+    else if (countThin) {
+      const a = impliedProb(pr.odds);
+      if (pr.oppOdds != null && Number.isFinite(Number(pr.oppOdds))) { const q = impliedProb(pr.oppOdds); if (a + q >= 0.97) p = (a + 1 - q) / 2; }
+      else p = a;
+    }
+    if (p != null && Number.isFinite(p) && (probs[n] == null || p < probs[n])) probs[n] = p;
+  }
+  return probs;
+}
+
+/** "fair 52.0%: kalshi 49.5, novig 51.0" for logs. */
+export const fmtPmBelow = (c) => `fair ${Number.isFinite(c.fair) ? (c.fair * 100).toFixed(1) : '?'}%: ${Object.entries(c.probs).map(([n, p]) => `${n} ${(p * 100).toFixed(1)}`).join(', ')}`;
+
+/**
+ * Pre-game Pinnacle check. Returns { ok, pin, probs: {draftkings: 0.51, fanduel: 0.5}, gaps: {draftkings: 1.2}, missing: [] }.
+ * Every win % is the plain no-vig of that book's two sides. ok when Pinnacle is within maxPts of each book.
+ */
+export function pregamePinnacle(cfg, row) {
+  const c = cfg.pregamePinnacleCheck;
+  if (!c || c.enabled === false || row.isLive !== false || (row.arb && c.arb === false) || (isPropBet(row) && c.props === false)) return { ok: true, off: true, probs: {}, gaps: {}, missing: [] };
+  const first = (idv) => {
+    for (const id of [].concat(idv ?? []).map(Number)) { const pr = row.prices?.[id]; const p = pr && bookFairProb(pr.odds, pr.oppOdds); if (p != null) return p; }
+    return null;
+  };
+  const pin = first(cfg.sharp?.ids?.pinnacle ?? 1014);
+  const probs = {}, gaps = {}, missing = pin == null ? ['pinnacle'] : [];
+  for (const [n, idv] of Object.entries(c.books || {})) {
+    const p = first(idv);
+    if (p == null) { missing.push(n); continue; }
+    probs[n] = p;
+    if (pin != null) gaps[n] = (pin - p) * 100;
+  }
+  if (missing.length) return { ok: c.missing === 'pass', pin, probs, gaps, missing };
+  const ok = c.maxPts == null || Object.values(gaps).every((g) => Math.abs(g) <= Number(c.maxPts) + 1e-9);
+  return { ok, pin, probs, gaps, missing };
+}
+
+/** "Pinnacle 52.0%: draftkings 50.1 (+1.9), fanduel 49.2 (+2.8)" for logs. */
+export const fmtPregamePin = (c) => `Pinnacle ${c.pin == null ? 'not priced' : (c.pin * 100).toFixed(1) + '%'}: ${[
+  ...Object.entries(c.probs).map(([n, p]) => `${n} ${(p * 100).toFixed(1)}${c.gaps[n] != null ? ` (${c.gaps[n] >= 0 ? '+' : ''}${c.gaps[n].toFixed(1)})` : ''}`),
+  ...c.missing.filter((n) => n !== 'pinnacle').map((n) => `${n} not priced`)].join(', ')}`;
 
 /** The longOddsProps rule that lets this prop past the maxOdds cap at these odds, or null. */
 export function longPropRule(cfg, row, odds = row?.odds) {
@@ -579,7 +694,9 @@ export function groupTotals(placed, now = Date.now()) {
     if (now - Date.parse(p.at) > 24 * 3600e3) continue;
     const k = p.market != null ? groupKey(p) : p.group;   // recomputed, so older bets follow the current grouping
     const g = out.get(k) || { bets: 0, staked: 0, lastAt: 0, byBook: new Map(), sides: new Set(), same: new Map() };
-    const stake = Number(p.stake) || 0, at = Date.parse(p.at) || 0;
+    // groupStake: the stake in base units (a $10 Hard Rock pre-game bet at a $1 base stake counts $1 toward
+    // group.maxStake), so a bigger per-book stake doesn't fill the group's $ cap on its own.
+    const stake = Number(p.groupStake ?? p.stake) || 0, at = Date.parse(p.at) || 0;
     g.bets++; g.staked += stake; g.lastAt = Math.max(g.lastAt, at);
     const b = g.byBook.get(p.book) || { bets: 0, staked: 0, lastAt: 0 };
     b.bets++; b.staked += stake; b.lastAt = Math.max(b.lastAt, at); g.byBook.set(p.book, b);

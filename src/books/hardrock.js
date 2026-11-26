@@ -218,6 +218,23 @@ export function makeHardRock(name, label, cfg, bridge) {
         const d = Number(leg?.newOdds?.decimal ?? leg?.currentOdds?.decimal ?? leg?.odds?.decimal);
         if (Number.isFinite(d) && d > 1 && Math.abs(d - toDecimal(quote.odds)) > 1e-6) err.newOdds = decimalToAmerican(d);
       } else if (/UNAVAILABLE|SUSPENDED|CLOSED/i.test(why)) err.gone = true;
+      // Stake over Hard Rock's limit for this selection (the $10 pre-game stake): ask for the max now, so the
+      // engine can bet that instead (Austin 2026-11-26). The exact refusal code isn't captured yet, so any
+      // refusal that names a stake/limit counts.
+      else if (/STAKE|LIMIT|MAX|EXCEED/i.test(why)) {
+        err.stakeTooHigh = true;
+        const selId = hardrockSelectionId(row);
+        stakeSeen.delete(String(selId));
+        const fromAnswer = Number(r?.maxStake ?? r?.maxAllowedStake ?? leg?.maxStake);
+        if (Number.isFinite(fromAnswer) && fromAnswer > 0) err.maxStake = fromAnswer;
+        else {
+          try {
+            const m = await post('recheck', `${apiHost}/sportsbook/v1/api/getMaxAllowedBetStake`, body(betsJson(row, 1, toDecimal(quote.odds)), false));
+            const max = Number(m.json?.Double ?? m.json?.Single);
+            if (Number.isFinite(max) && max > 0) err.maxStake = max;
+          } catch { /* the engine falls back to stake.byBook.hardrock.fallback */ }
+        }
+      }
       throw err;
     },
   };

@@ -1,13 +1,22 @@
-// Fake Gambit feed for dry runs. Produces a few rows per poll, some +EV.
-import { evPct, impliedProb } from '../ev.js';
+// Fake Gambit feed for dry runs. Produces a few rows per poll, some +EV, with sharp and soft-book prices
+// (Pinnacle, DraftKings, FanDuel, Caesars, sometimes a thin Kalshi price) so every rule has something to check.
+import { evPct, impliedProb, decimalToAmerican } from '../ev.js';
 import { fairKey } from '../betlog.js';
 
 const EVENTS = [
-  ['James Madison Dukes @ Southern Miss Golden Eagles', 'Total', 71.5],
-  ['Cal Poly Mustangs @ Arizona Wildcats', 'Total', 180.5],
-  ['Kings @ Lakers', 'Spread', -4.5],
-  ['Leafs @ Canadiens', 'Moneyline', null],
+  ['James Madison Dukes @ Southern Miss Golden Eagles', 'Total', 'total_game_points', 71.5],
+  ['Cal Poly Mustangs @ Arizona Wildcats', 'Total', 'total_game_points', 180.5],
+  ['Kings @ Lakers', 'Spread', 'spread', -4.5],
+  ['Leafs @ Canadiens', 'Moneyline', 'money_line', null],
+  ['Kings @ Lakers', 'Points', 'PLAYER_PROP_POINTS', 24.5],
 ];
+
+/** Both sides of a book with ~4.5% vig around win probability p, nudged by `off` points. */
+function twoSided(p, off = 0, vig = 0.045) {
+  const q = Math.min(0.97, Math.max(0.03, p + off / 100));
+  const a = q * (1 + vig / 2), b = (1 - q) * (1 + vig / 2);
+  return { odds: decimalToAmerican(1 / a), oppOdds: decimalToAmerican(1 / b) };
+}
 
 export function makeMockSource(cfg) {
   let n = 0;
@@ -19,16 +28,29 @@ export function makeMockSource(cfg) {
       const rows = [];
       const count = 36 + Math.floor(Math.random() * 6);
       for (let i = 0; i < count; i++) {
-        const [event, market, line] = EVENTS[i % EVENTS.length];
+        const [event, market, marketKey, line] = EVENTS[i % EVENTS.length];
         const side = i % 2 ? 'Under' : 'Over';
-        const fair = [110, 131, -114, 150, 185][i % 5] * (Math.random() < 0.5 ? 1 : 1);
+        const isProp = marketKey.startsWith('PLAYER_PROP');
+        const fairOdds = [110, 131, -114, 150, 185][i % 5];
         const edge = Math.random() < 0.06 ? 25 + Math.random() * 60 : -Math.random() * 30;
-        const odds = Math.round(fair + (fair > 0 ? edge : edge));
+        const odds = Math.round(fairOdds + edge);
         const book = cfg.books[i % cfg.books.length];
+        const p = impliedProb(fairOdds);
+        const isLive = i % 3 !== 0;
+        const prices = {
+          1014: twoSided(p, Math.random() < 0.7 ? (Math.random() - 0.5) : 0),
+          200: twoSided(p, (Math.random() - 0.5) * 6),
+          100: twoSided(p, (Math.random() - 0.5) * 6),
+          300: twoSided(p, (Math.random() - 0.5) * 6),
+        };
+        if (Math.random() < 0.3) prices[194] = { ...twoSided(p, -1 - Math.random() * 4, 0.04), liq: 100, oppLiq: 120 };
         rows.push({
           id: `${book}|${event}|${market}|${side}|${line}|${n}|${i}`,
-          book, event, market, selection: market === 'Total' ? side : 'Home', line,
-          odds: Math.abs(odds) < 100 ? 100 : odds, fairOdds: fair, fairBooks: 8 + (i % 4),
+          book, event, league: 'MOCK', market, marketKey, isProp, isLive,
+          startDate: isLive ? null : new Date(Date.now() + 2 * 3600e3).toISOString(),
+          selection: market === 'Total' ? side : isProp ? `Trae Young ${side}` : 'Home', line,
+          odds: Math.abs(odds) < 100 ? 100 : odds, fairOdds, fairProb: p, fairSource: 'PS3838', fairBooks: 8 + (i % 4),
+          prices, sharpKey: `${event}|${market}|${side}|${line}`,
           bookRef: `mock-${n}-${i}`,
         });
       }

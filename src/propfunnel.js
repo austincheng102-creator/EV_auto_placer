@@ -10,7 +10,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /** Steps in funnel order. Labels are filled in from the config (EV and timing numbers). */
-export const STAGES = ['gone', 'evLow', 'evNear', 'odds', 'evCap', 'pregameFar', 'noSharp', 'sharpSpread', 'softBooks', 'longConsensus', 'pinnacleOff', 'stale',
+export const STAGES = ['gone', 'evLow', 'evNear', 'noProps', 'liveEvProps', 'odds', 'evCap', 'pregameFar', 'noSharp', 'sharpSpread', 'softBooks', 'longConsensus', 'pinnacleOff',
+  'pinnacleOnlyTotal', 'pmBelow', 'pregamePinnacle', 'stale',
   'group', 'sameEv', 'groupInFlight', 'cooldown', 'perEvent', 'livePropCap', 'playerStats', 'noTab', 'novig', 'held', 'dupInScan', 'sent'];
 
 export function stageLabels(cfg) {
@@ -20,14 +21,19 @@ export function stageLabels(cfg) {
     evLow: `under ${near}% EV`,
     evNear: `${near}-${cfg.minEvPct}% EV`,
     odds: `odds outside ${cfg.minOdds ?? 'any'}..${cfg.maxOdds ?? 'any'}`,
-    evCap: cfg.maxPropEvPct === null ? 'above the EV cap (props: no cap)' : `above ${cfg.maxPropEvPct ?? cfg.maxEvPct}% EV`,
+    evCap: `above the EV cap (${cfg.maxEvPct ?? 'no cap'}${cfg.maxEvPct != null ? '%' : ''}; props ${cfg.maxPropEvPct == null ? 'no cap' : cfg.maxPropEvPct + '%'})`,
     pregameFar: `pre-game, starts more than ${cfg.pregameMaxHours}h away`,
     noSharp: `no ${(cfg.sharp.livePropNeeds || []).join('/')} price (live) or ${(cfg.sharp.pregamePropNeeds || []).join('/')} (pre-game)`,
     sharpSpread: `sharp books more than ${cfg.sharp.maxSpreadPts} pts apart`,
     softBooks: `not above ${cfg.softCheck?.minEvPct ?? 0}% EV on ${cfg.softCheck?.minBooks ?? 2}+ soft books`,
     longConsensus: `over ${cfg.maxOdds ?? 'any'} without ${Object.keys(cfg.longPropConsensus?.books || {}).join('/')} within ${cfg.longPropConsensus?.maxPts} pts`,
     pinnacleOff: `Pinnacle more than ${cfg.marketCheck?.maxPts} pts above the soft-book median`,
-    stale: `live, no ${(cfg.sharp.livePropNeeds || []).join('/')} move in ${cfg.sharp.livePropMaxAgeSec ?? cfg.sharp.liveMaxAgeSec}s`,
+    noProps: 'props off on this book',
+    liveEvProps: 'live +EV-table prop on a book with those off (liveEvProps)',
+    pinnacleOnlyTotal: `total on ${(cfg.pinnacleOnlyTotals?.books || []).join('/')} with a Pinnacle-only fair`,
+    pmBelow: `a prediction market ${cfg.pmBelowFair?.pts ?? 2}+ pts below fair`,
+    pregamePinnacle: `pre-game, Pinnacle not within ${cfg.pregamePinnacleCheck?.maxPts ?? 2} pts of ${Object.keys(cfg.pregamePinnacleCheck?.books || {}).join('/') || 'DraftKings/FanDuel'}${cfg.pregamePinnacleCheck?.missing === 'pass' ? '' : ' (or one not priced)'}`,
+    stale: `live, no sharp move in ${cfg.sharp.liveMaxAgeSec}s (props: ${(cfg.sharp.livePropNeeds || []).join('/')} in ${cfg.sharp.livePropMaxAgeSec ?? cfg.sharp.liveMaxAgeSec}s)`,
     group: 'group already bet',
     sameEv: `same bet already placed at EV within ${cfg.group.repeatMinEvPts} pts`,
     groupInFlight: 'same group being checked',
