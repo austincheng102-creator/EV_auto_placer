@@ -24,7 +24,7 @@ import { makeSessionWatch } from './session.js';
 import { seenBooks } from './sources/gambit-evs.js';
 import { makeBetLog, parseTime } from './betlog.js';
 import { makePriceLog, makeSpreadSkipLog, makeTimingLog } from './skiplog.js';
-import { makePropFunnel } from './propfunnel.js';
+import { makePropFunnel, stageLabels } from './propfunnel.js';
 import { writeSnapshot, serveReport, openInBrowser } from './report.js';
 import { applyFilterDefaults, tooShort, evTooHigh, maxEvFor, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom, groupClash, groupCoolingDown, groupMaxBets, sameEvRepeat, isPropBet, playerStats, tooManyStats, playerKey, statKey, minEvFor, longPropRule, longPropConsensus, fmtLongConsensus, softCheck, fmtSoft, marketCheck, fmtMarket, sharpFair, fairBreakdown } from './filters.js';
 
@@ -258,6 +258,50 @@ const WATCH_MS = Number(cfg.recheckWatchMinutes ?? 5) * 60e3;
 const watch = new Map(); // row.id -> { since, sig }
 const geoSaid = new Map(); // row.id -> when we last said FanDuel's location check is being renewed
 const shown = new Map(); // row.id -> { odds, since }: when our polls first saw Gambit show this price
+// Prop hold (Austin, 2026-11-26): a player prop (+EV or arb table, Gambit or PropProfessor) above
+// propHold.evPct EV (30) that passes every rule isn't bet yet. It has to stay listed for propHold.sec (40)
+// seconds; after that, each scan runs every rule again on that scan's fresh row (fair price, sharp
+// timing, groups, caps), and one that passes goes to the book re-check and its checks, as usual.
+// Once held it waits the full time, even if its EV drops under 30% meanwhile. Dropped when the feed
+// stops listing it. Keyed by book + game + market + selection + line, so a new line starts a new hold.
+// "propHold": false turns it off.
+const holdCfg = cfg.propHold && cfg.propHold.evPct != null ? cfg.propHold : null;
+const holdMs = holdCfg ? Math.max(0, Number(holdCfg.sec) || 0) * 1000 : 0;
+const held = new Map(); // holdKey -> { since, ev, odds, desc, event, book, result: null | 'passed' | 'failed' }
+const holdKey = (r) => `${selKey(r)}|${r.line ?? ''}`;
+const overHoldEv = (r, ev = r.ev) => !!holdCfg && isPropBet(r) && Number.isFinite(ev) && ev > Number(holdCfg.evPct);
+const heldSec = (h, now = Date.now()) => Math.round((now - h.since) / 1000);
+/** Starts a hold for a row that just passed every rule above the hold EV. */
+function startHold(r, ev = r.ev, odds = r.odds, why = 'passed every rule') {
+  const h = { since: Date.now(), ev, odds, desc: desc(r), event: r.event, book: r.book, result: null };
+  held.set(holdKey(r), h);
+  log.info(`HOLD: ${h.desc} ${fmtAmerican(odds)} (${fmtPct(ev)} EV) — ${r.event}: player prop over ${holdCfg.evPct}% EV, ${why}. Waiting ${holdMs / 1000}s, then every rule and check runs again before it's bet`);
+  return h;
+}
+/**
+ * true = this row may go ahead (no hold needed, or its hold is over). false = it's waiting out its hold.
+ * Called only for rows that passed every scan rule, so the first call is the "passed the first time" check.
+ */
+function holdDone(r, now = Date.now()) {
+  if (!holdCfg) return true;
+  const h = held.get(holdKey(r));
+  if (!h) { if (overHoldEv(r)) { startHold(r); return false; } return true; }
+  return now - h.since >= holdMs;
+}
+/** Said when a row whose hold is over is sent to the book (once, again only after it failed in between). */
+function holdPassed(r, now = Date.now()) {
+  const h = held.get(holdKey(r));
+  if (!h || now - h.since < holdMs || h.result === 'passed') return;
+  h.result = 'passed';
+  log.info(`HOLD over: ${h.desc} ${fmtAmerican(r.odds)} (${fmtPct(r.ev)} EV, was ${fmtPct(h.ev)}) — ${r.event}: listed ${heldSec(h, now)}s, second check PASSED every rule, now checking at ${books[r.book]?.label || r.book}`);
+}
+/** A held row whose hold is over but that failed the scan rules: said once (again only after it passes in between). */
+function holdFailed(h, why, now = Date.now(), r = null) {
+  if (h.result === 'failed') return;
+  h.result = 'failed';
+  log.warn(`HOLD over: ${h.desc}${r ? ` now ${fmtAmerican(r.odds)} (${fmtPct(r.ev)} EV, was ${fmtPct(h.ev)})` : ''} — ${h.event}: listed ${heldSec(h, now)}s, second check FAILED (${why}) — not bet; checked again each scan while it's listed`);
+}
+
 const priceLog = makePriceLog(root, { dryRun });
 const timingLog = makeTimingLog(root, { dryRun });
 // Bets waiting for the first Gambit prices fetched after the book accepted them (bets.json atAccept).
@@ -365,6 +409,7 @@ function propStage(r, { groups, perEvent, liveProps, stats, now }) {
   if (tooManyStats(cfg, stats, r)) return 'playerStats';
   if (!dryRun && !bridge.hasTab(r.book)) return 'noTab';
   if (novig && !novig.check(r, r.odds).ok) return 'novig';
+  { const h = held.get(holdKey(r)); if (h && now - h.since < holdMs) return 'held'; }
   return 'dupInScan';
 }
 const warnedNoRows = new Set();
@@ -422,7 +467,8 @@ async function tryBet(row, ctx) {
   ctx.changed = !w || w.sig !== ctx.sig;
   if (w) w.sig = ctx.sig;
   const lg = ctx.lg = ctx.changed ? loudLog : quietLog();
-  lg.header(headerText(row) + (w ? ` (checking again, ${Math.round((Date.now() - w.since) / 1000)}s after it failed)` : ''));
+  const hh = held.get(holdKey(row));
+  lg.header(headerText(row) + (w ? ` (checking again, ${Math.round((Date.now() - w.since) / 1000)}s after it failed)` : '') + (hh && Date.now() - hh.since >= holdMs ? ` (second check after a ${heldSec(hh)}s hold)` : ''));
 
   if (!Number.isFinite(quote.odds)) { ctx.outcome = 'no price'; lg.warn(`${book.label}: re-check returned no price — skipped`); return false; }
   if (quote.suspended) { ctx.outcome = 'suspended'; lg.warn(`${book.label}: market suspended — skipped`); return false; }
@@ -487,6 +533,17 @@ async function placeAt(row, book, quote, ctx, retries = 0) {
   if (tooShort(cfg, quote.odds)) { ctx.outcome = 'odds below min'; lg.warn(`${book.label}: ${fmtAmerican(quote.odds)} is shorter than the ${fmtAmerican(cfg.minOdds)} limit — skipped, nothing placed`); return false; }
   const ev = evPct(quote.odds, row.fairOdds);
   ctx.bookEv = ev;
+  // A prop that's over propHold.evPct at the book's real price (also after a price move) is held too,
+  // unless it has already been listed propHold.sec and passed the rules again.
+  if (holdCfg && overHoldEv(row, ev)) {
+    const h = held.get(holdKey(row));
+    if (!h || Date.now() - h.since < holdMs) {
+      ctx.outcome = 'held';
+      if (!h) startHold(row, ev, quote.odds, `${book.label}'s price is over it`);
+      else lg.info(`${book.label}: ${fmtAmerican(quote.odds)} is ${fmtPct(ev)} EV, still in its ${holdMs / 1000}s hold (${heldSec(h)}s so far) — not bet yet`);
+      return false;
+    }
+  }
   if (evTooHigh(cfg, ev, row)) { ctx.outcome = 'EV above cap'; lg.warn(`${book.label}: ${fmtAmerican(quote.odds)} is ${fmtPct(ev)} EV, above the ${maxEvFor(cfg, row)}% cap (likely a stale or wrong price) — skipped, nothing placed`); return false; }
   const tail = `${fmtAmerican(quote.odds)} vs fair ${fmtAmerican(row.fairOdds)} from ${row.fairBooks ?? '?'} book(s) -> ${fmtPct(ev)} EV` +
     (quote.maxStake ? ` (max stake $${quote.maxStake})` : '');
@@ -674,6 +731,8 @@ function pickBets(rows, { quiet = false } = {}) {
     .filter((r) => !overLivePropCap(r, liveProps) || drop('livePropCap'))
     .filter((r) => !tooManyStats(cfg, stats, r) || drop('playerStats'))
     .filter((r) => dryRun || bridge.hasTab(r.book))
+    // Props over propHold.evPct: held propHold.sec before they can go (they passed every rule above).
+    .filter((r) => holdDone(r, now))
     // New bets first, then ones being watched after a failed price check.
     .sort((a, b) => (watch.has(a.id) - watch.has(b.id)) || b.ev - a.ev);
   const gambitCount = ev.length;
@@ -726,6 +785,8 @@ async function tick() {
   }
 
   rows = rows.filter((r) => books[r.book]);
+  // What the feed lists, before any rule: a held prop missing from here has left the board.
+  const listed = new Set(held.size ? rows.map(holdKey) : []);
   // Per-book de-vig method ("fanduel": {"devigMethod": "power"}): that book's EV from Gambit's
   // Power / Multiplicative / Additive / Shin number, or "best" (highest), instead of the lowest.
   for (const r of rows) {
@@ -817,18 +878,39 @@ async function tick() {
     }
   }
   const { ev, why, farOff, novigDropped, groups, perEvent, liveProps, stats, now } = pickBets(rows);
+  // Holds: dropped once the feed stops listing the prop; a hold that's over but whose prop failed
+  // the rules this scan says why (the first scan rule it failed).
+  if (held.size) {
+    const byKey = new Map(rows.map((r) => [holdKey(r), r]));
+    const sent = new Set(ev.map(holdKey));
+    const labels = stageLabels(cfg);
+    for (const [k, h] of held) {
+      const r = byKey.get(k);
+      if (!r && !listed.has(k)) {
+        log.info(`HOLD dropped: ${h.desc} — ${h.event}: no longer listed after ${heldSec(h, now)}s${h.result === 'passed' ? '' : ', not bet'}`);
+        held.delete(k); continue;
+      }
+      if (now - h.since < holdMs || sent.has(k)) continue;
+      if (!r) { holdFailed(h, `no sharp price for the fair, or ${feedName}'s row isn't confirmed at the book`, now); continue; }
+      const st = propStage(r, { groups, perEvent, liveProps, stats, now });
+      // 'dupInScan' = passed every rule, another row of its group went this scan.
+      if (st !== 'dupInScan') holdFailed(h, labels[st] || st, now, r);
+    }
+  }
   const ageMax = cfg.sharp.liveMaxAgeSec;
   if (propFunnel) {
     const sent = new Set(ev.map((r) => r.id));
     for (const r of rows) if (r.isProp) propFunnel.note(r, sent.has(r.id) ? 'sent' : propStage(r, { groups, perEvent, liveProps, stats, now }));
     propFunnel.tick();
   }
+  const holding = [...held.values()].filter((h) => now - h.since < holdMs).length;
   const whyText = [
     noSharpFair && `${noSharpFair} with no sharp price for the fair (Pinnacle, or a valid Kalshi/Polymarket/Novig/ProphetX price)`,
     ppFallback && `${ppFallback} game lines priced off PropProfessor's fair (no Pinnacle/prediction market)`,
     why.noProps && `${why.noProps} props on a book with props off`,
     why.odds && `${why.odds} outside ${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)} to ${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)}`,
     why.evCap && `${why.evCap} above ${cfg.maxEvPct}% EV (props ${cfg.maxPropEvPct ?? 'no cap'}${cfg.maxPropEvPct != null ? '%' : ''})`,
+    holding && `${holding} props over ${holdCfg.evPct}% EV in their ${holdMs / 1000}s hold`,
     why.noSharp && `${why.noSharp} without the needed sharp book (live, or pre-game props without ${(cfg.sharp.pregamePropNeeds || []).join('/') || 'any'})`,
     why.sharpSpread && `${why.sharpSpread} sharp books more than ${cfg.sharp.maxSpreadPts} pts apart`,
     why.softBooks && `${why.softBooks} not above ${cfg.softCheck.minEvPct}% EV on ${cfg.softCheck.minBooks}+ of ${Object.keys(cfg.softCheck.books).join('/')}`,
@@ -882,6 +964,7 @@ function startBet(row, scanAt, t = {}) {
   // At most 2 bets queued per one-at-a-time book, so they don't fill every in-flight slot; the
   // rest come back next scan with a fresh price.
   if (book.oneAtATime && (bookWaiting.get(row.book) || 0) >= 2) return;
+  holdPassed(row);
   const ctx = { scanAt, pollAt: t.pollAt ?? scanAt, via: t.via || 'scan', startAt: Date.now(), attempts: [] };
   inflight.set(k, row);
   // A book with one shared bet slip (theScore) takes one bet at a time: with two picks on its slip
@@ -912,7 +995,9 @@ function startBet(row, scanAt, t = {}) {
       if (ctx.attempts.length) logTiming(row, book, ctx);
       const now = Date.now();
       const w = watch.get(row.id);
-      if (ok) watch.delete(row.id);
+      if (ok) { watch.delete(row.id); held.delete(holdKey(row)); }
+      // Held at the book's price: no cooldown, later scans run it again once the hold is over.
+      else if (ctx.outcome === 'held') { watch.delete(row.id); cooldown.delete(row.id); }
       else if (ctx.pausedUntil) cooldown.set(row.id, ctx.pausedUntil);
       // A fresh-jump or Gambit-behind skip only waits for Gambit to catch up, so it's watched on every book.
       else if ((book.freePriceCheck || ctx.outcome === 'fresh jump' || ctx.outcome === 'Gambit behind') && WATCH_MS > 0 && ctx.quote && (!ctx.sent || ctx.priceMoved) && (!w || now - w.since < WATCH_MS)) {
@@ -1016,7 +1101,7 @@ async function fastTick() {
 }
 if (Number(fastCfg.everySec) > 0) setInterval(() => { fastTick().catch((e) => log.debug(`fast price check: ${e.message}`)); }, Math.max(250, Number(fastCfg.everySec) * 1000));
 
-log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}%${pregameMinEv != null ? ` (pre-game ${pregameMinEv}%)` : ''}${(cfg.minEvByOdds || []).map((b) => ` (${b.minEvPct}% at ${fmtAmerican(b.from)}..${fmtAmerican(b.to)})`).join('')}${Object.entries(cfg.longOddsProps || {}).map(([bk, r]) => ` (${bk === 'all' ? 'all books' : bk} props over ${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)}${r.maxOdds != null ? ` to ${fmtAmerican(r.maxOdds)}` : ''}: ${r.minEvPct}%${cfg.longPropConsensus.enabled ? `, ${cfg.longPropConsensus.minBooks}+ of ${Object.keys(cfg.longPropConsensus.books).join('/')} within ${cfg.longPropConsensus.maxPts} pts` : ''})`).join('')} softBooks=${cfg.softCheck.enabled ? `${cfg.softCheck.minBooks}+ of ${Object.keys(cfg.softCheck.books).join('/')} >${cfg.softCheck.minEvPct}%` : 'off'} pinnacleVsMarket=${cfg.marketCheck.enabled ? `<=${cfg.marketCheck.maxPts}pts over ${cfg.marketCheck.minBooks}+ soft books` : 'off'} sharpOut=${(cfg.sharp.excludeBooks || []).join(',') || 'none'} predictionMarkets=${cfg.sharp.predictionMarkets.enabled ? `${cfg.sharp.predictionMarkets.books.join('/')} at $${cfg.sharp.predictionMarkets.minLiquidity}+ thinner side, <=${cfg.sharp.predictionMarkets.maxHoldPct}c spread, ${(cfg.sharp.predictionMarkets.agreeBooks || []).join('/')} within ${cfg.sharp.predictionMarkets.agreePts}pts${cfg.sharp.predictionMarkets.inFair ? ' (in fair)' : ''}` : 'off'} novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} odds=${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)}..${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)} maxEV=${cfg.maxEvPct ?? 'off'}% (props ${cfg.maxPropEvPct ?? 'off'}%) sharpSpread<=${cfg.sharp.maxSpreadPts ?? 'off'}pts liveSharpAge<=${cfg.sharp.liveMaxAgeSec ?? 'off'}s (props ${cfg.sharp.livePropMaxAgeSec ?? 'off'}s) group=${cfg.group.maxBets ?? 'any'} bet (pre-game ${cfg.group.pregameMaxBets ?? cfg.group.maxBets ?? 'any'})/$${cfg.group.maxStake ?? 'any'} every ${cfg.group.cooldownSec || 0}s pregame<=${cfg.pregameMaxHours == null ? 'any' : cfg.pregameMaxHours + 'h'} stake=$${cfg.stake.amount} poll=${pollSeconds}s fastPrices=${Number(fastCfg.everySec) > 0 ? `every ${fastCfg.everySec}s within ${fastCfg.marginPts} pts` : 'off'} atOnce=${maxInFlight} recheckWatch=${WATCH_MS / 60e3}min`);
+log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}%${pregameMinEv != null ? ` (pre-game ${pregameMinEv}%)` : ''}${(cfg.minEvByOdds || []).map((b) => ` (${b.minEvPct}% at ${fmtAmerican(b.from)}..${fmtAmerican(b.to)})`).join('')}${Object.entries(cfg.longOddsProps || {}).map(([bk, r]) => ` (${bk === 'all' ? 'all books' : bk} props over ${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)}${r.maxOdds != null ? ` to ${fmtAmerican(r.maxOdds)}` : ''}: ${r.minEvPct}%${cfg.longPropConsensus.enabled ? `, ${cfg.longPropConsensus.minBooks}+ of ${Object.keys(cfg.longPropConsensus.books).join('/')} within ${cfg.longPropConsensus.maxPts} pts` : ''})`).join('')} softBooks=${cfg.softCheck.enabled ? `${cfg.softCheck.minBooks}+ of ${Object.keys(cfg.softCheck.books).join('/')} >${cfg.softCheck.minEvPct}%` : 'off'} pinnacleVsMarket=${cfg.marketCheck.enabled ? `<=${cfg.marketCheck.maxPts}pts over ${cfg.marketCheck.minBooks}+ soft books` : 'off'} sharpOut=${(cfg.sharp.excludeBooks || []).join(',') || 'none'} predictionMarkets=${cfg.sharp.predictionMarkets.enabled ? `${cfg.sharp.predictionMarkets.books.join('/')} at $${cfg.sharp.predictionMarkets.minLiquidity}+ thinner side, <=${cfg.sharp.predictionMarkets.maxHoldPct}c spread, ${(cfg.sharp.predictionMarkets.agreeBooks || []).join('/')} within ${cfg.sharp.predictionMarkets.agreePts}pts${cfg.sharp.predictionMarkets.inFair ? ' (in fair)' : ''}` : 'off'} novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} odds=${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)}..${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)} maxEV=${cfg.maxEvPct ?? 'off'}% (props ${cfg.maxPropEvPct == null ? 'no cap' : cfg.maxPropEvPct + '%'}) propHold=${holdCfg ? `over ${holdCfg.evPct}% EV for ${holdMs / 1000}s` : 'off'} sharpSpread<=${cfg.sharp.maxSpreadPts ?? 'off'}pts liveSharpAge<=${cfg.sharp.liveMaxAgeSec ?? 'off'}s (props ${cfg.sharp.livePropMaxAgeSec ?? 'off'}s) group=${cfg.group.maxBets ?? 'any'} bet (pre-game ${cfg.group.pregameMaxBets ?? cfg.group.maxBets ?? 'any'})/$${cfg.group.maxStake ?? 'any'} every ${cfg.group.cooldownSec || 0}s pregame<=${cfg.pregameMaxHours == null ? 'any' : cfg.pregameMaxHours + 'h'} stake=$${cfg.stake.amount} poll=${pollSeconds}s fastPrices=${Number(fastCfg.everySec) > 0 ? `every ${fastCfg.everySec}s within ${fastCfg.marginPts} pts` : 'off'} atOnce=${maxInFlight} recheckWatch=${WATCH_MS / 60e3}min`);
 if (source.arb) {
   const a = source.arb.cfg;
   log.info(source.arb.books.length

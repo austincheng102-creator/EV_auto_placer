@@ -11,7 +11,7 @@ import path from 'node:path';
 
 /** Steps in funnel order. Labels are filled in from the config (EV and timing numbers). */
 export const STAGES = ['gone', 'evLow', 'evNear', 'odds', 'evCap', 'pregameFar', 'noSharp', 'sharpSpread', 'softBooks', 'longConsensus', 'pinnacleOff', 'stale',
-  'group', 'sameEv', 'groupInFlight', 'cooldown', 'perEvent', 'livePropCap', 'playerStats', 'noTab', 'novig', 'dupInScan', 'sent'];
+  'group', 'sameEv', 'groupInFlight', 'cooldown', 'perEvent', 'livePropCap', 'playerStats', 'noTab', 'novig', 'held', 'dupInScan', 'sent'];
 
 export function stageLabels(cfg) {
   const near = cfg.minEvPct - 3;
@@ -20,7 +20,7 @@ export function stageLabels(cfg) {
     evLow: `under ${near}% EV`,
     evNear: `${near}-${cfg.minEvPct}% EV`,
     odds: `odds outside ${cfg.minOdds ?? 'any'}..${cfg.maxOdds ?? 'any'}`,
-    evCap: `above ${cfg.maxPropEvPct ?? cfg.maxEvPct}% EV`,
+    evCap: cfg.maxPropEvPct === null ? 'above the EV cap (props: no cap)' : `above ${cfg.maxPropEvPct ?? cfg.maxEvPct}% EV`,
     pregameFar: `pre-game, starts more than ${cfg.pregameMaxHours}h away`,
     noSharp: `no ${(cfg.sharp.livePropNeeds || []).join('/')} price (live) or ${(cfg.sharp.pregamePropNeeds || []).join('/')} (pre-game)`,
     sharpSpread: `sharp books more than ${cfg.sharp.maxSpreadPts} pts apart`,
@@ -37,6 +37,7 @@ export function stageLabels(cfg) {
     playerStats: `player already has ${cfg.maxPropStatsPerPlayer} stats bet`,
     noTab: 'book tab not open',
     novig: 'Novig check',
+    held: `over ${cfg.propHold?.evPct}% EV, held ${cfg.propHold?.sec}s before the second check (propHold)`,
     dupInScan: 'other side/row of same group picked',
     sent: 'sent to re-check',
   };

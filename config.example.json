@@ -9,6 +9,11 @@
   "minOdds": -300,
   "maxOdds": 250,
   "maxEvPct": 25,
+  "maxPropEvPct": null,
+  "propHold": {
+    "evPct": 30,
+    "sec": 40
+  },
   "freshJump": {
     "books": [
       "hardrock"

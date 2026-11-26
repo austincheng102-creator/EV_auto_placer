@@ -1,6 +1,9 @@
 // Austin's placement rules on top of the EV and Novig checks:
 //  - odds window: nothing shorter than -300 (minOdds) or longer than +250 (maxOdds)
-//  - EV cap: nothing above 25% EV (maxEvPct), it's usually a stale or wrong price; player props 50% (maxPropEvPct)
+//  - EV cap: nothing above 25% EV (maxEvPct), it's usually a stale or wrong price; player props no cap (maxPropEvPct null,
+//    Austin 2026-11-26; was 50)
+//  - prop hold (propHold, Austin 2026-11-26): a player prop above 30% EV that passes every rule is held 40s,
+//    then every rule runs again on the newest scan and the book re-check runs as usual before it's bet
 //  - sharp books must agree: their no-vig win probabilities within 3 points of each other
 //    (Pinnacle, plus liquid Kalshi/Polymarket; FanDuel left out since 2026-11-19, sharp.spreadBooks)
 //  - Prediction markets (Kalshi, Polymarket, Novig, ProphetX) are sharp books (2026-11-23, sharp.predictionMarkets), but a
@@ -47,8 +50,12 @@ export const DEFAULT_MARKET_BOOKS = {
 export function applyFilterDefaults(cfg) {
   if (cfg.minOdds === undefined) cfg.minOdds = -300;
   if (cfg.maxEvPct === undefined) cfg.maxEvPct = 25;
-  // Player props (+EV and arb-table rows) get their own EV cap (Austin 2026-11-25: 50%). null = no cap.
-  if (cfg.maxPropEvPct === undefined) cfg.maxPropEvPct = 50;
+  // Player props (+EV and arb-table rows) get their own EV cap. null = no cap (Austin 2026-11-26: unlimited;
+  // was 50). A number caps props there again.
+  if (cfg.maxPropEvPct === undefined) cfg.maxPropEvPct = null;
+  // Prop hold (Austin 2026-11-26): player props (+EV and arb-table, both sources) above evPct EV must pass
+  // every rule, stay listed for sec seconds, then pass every rule and check again. false = off.
+  if (cfg.propHold !== false) cfg.propHold = { evPct: 30, sec: 40, ...(cfg.propHold || {}) };
   const s = (cfg.sharp ||= {});
   s.ids = { ...DEFAULT_SHARP_IDS, ...(s.ids || {}) };
   if (s.liveMainlineNeeds === undefined) s.liveMainlineNeeds = ['pinnacle', 'polymarket', 'novig'];
@@ -254,7 +261,7 @@ export const fmtSoft = (sc) => Object.entries(sc.evs).map(([n, e]) => `${n} ${e 
 
 /** -300 is allowed, -310 is not. Positive odds are never "shorter than" a negative limit. */
 export const tooShort = (cfg, odds) => cfg.minOdds != null && odds < 0 && odds < cfg.minOdds;
-/** The EV cap for a row: maxPropEvPct (default 50) for player props, maxEvPct for everything else. */
+/** The EV cap for a row: maxPropEvPct (default null = no cap) for player props, maxEvPct for everything else. */
 export const maxEvFor = (cfg, row) => (row && isPropBet(row) && cfg.maxPropEvPct !== undefined ? cfg.maxPropEvPct : cfg.maxEvPct);
 export const evTooHigh = (cfg, ev, row) => { const m = maxEvFor(cfg, row); return m != null && ev > m; };
 
