@@ -318,6 +318,24 @@ chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
   else tsAuth.at = Date.now();
 }, { urls: ['https://*.thescore.bet/graphql/*'] }, ['requestHeaders', 'extraHeaders']);
 
+// DraftKings: the bet slip's own requests (calculateBets etc. on gaming-us-<state>.draftkings.com) carry
+// the site's version headers (x-client-version, x-client-widget-version, x-api-features). The app's
+// copies went without them and DraftKings' filter refused many with HTTP 403 while the page's own
+// clicks went through (Austin's capture 2026-11-25). We keep the newest values your DraftKings tab sent
+// and add them to the app's DraftKings requests, so they match the site's.
+let dkHdr = { headers: {}, at: 0 };
+store.get('dkHdr').then((v) => { if (v?.dkHdr && !dkHdr.at) dkHdr = v.dkHdr; });
+const DK_KEEP = ['x-client-version', 'x-client-widget-version', 'x-api-features'];
+chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
+  if (d.tabId < 0) return;   // only the page's own requests
+  const got = {};
+  for (const h of d.requestHeaders || []) if (DK_KEEP.includes(h.name.toLowerCase()) && h.value) got[h.name.toLowerCase()] = h.value;
+  if (!Object.keys(got).length) return;
+  const next = { ...dkHdr.headers, ...got };
+  if (JSON.stringify(next) !== JSON.stringify(dkHdr.headers)) { dkHdr = { headers: next, at: Date.now() }; store.set({ dkHdr }); }
+  else dkHdr.at = Date.now();
+}, { urls: ['https://*.draftkings.com/api/wager/*'] }, ['requestHeaders', 'extraHeaders']);
+
 // fd-geo.js / br-geo.js have to be in the FanDuel / BetRivers page from the start to see their
 // location checks.
 async function registerGeoScripts() {
@@ -2133,6 +2151,7 @@ async function handle(msg) {
       msg.request.headers = { ...(bmAuth.headers || {}), ...(msg.request.headers || {}) };
     }
     if (msg.request.useTheScoreAuth) msg.request.headers = { ...(msg.request.headers || {}), ...tsAuth.headers };
+    if (msg.request.useDraftKingsHeaders) msg.request.headers = { ...(msg.request.headers || {}), ...dkHdr.headers };
     if (msg.request.useGambitAuth) {
       if (!gambitAuth) return reply({ error: 'no Gambit login seen yet: refresh your Gambit tab' });
       msg.request.headers = { ...(msg.request.headers || {}), authorization: gambitAuth };
