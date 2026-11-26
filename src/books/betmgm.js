@@ -73,6 +73,20 @@ export function findOption(j, ref) {
   }
   return null;
 }
+/** Why our option isn't in a picks reply: the game, market or option is missing, and what BetMGM
+ *  lists there now (a live total that moved to a new line gets a new option). Plain text. */
+export function whyMissing(j, ref) {
+  const fxs = j?.fixturePage?.fixtures || [];
+  const fx = fxs.find((f) => String(f.id) === String(ref.fixtureId)) || (fxs.length === 1 ? fxs[0] : null);
+  if (!fx) return `BetMGM CO didn't return the game (fixture ${ref.fixtureId}${fxs.length ? `; it returned ${fxs.map((f) => f.id).join(', ')}` : ''}): game over, not offered in CO, or BetMGM is hiding it from this login/location`;
+  const nm = (x) => String(x?.name?.value ?? x?.name ?? x?.id ?? '?');
+  const ms = [...(fx.optionMarkets || []), ...(fx.markets || []), ...(fx.games || [])];
+  const m = ms.find((x) => String(x.id) === String(ref.marketId));
+  if (!m) return `game found, but not market ${ref.marketId} (BetMGM returned ${ms.length} market${ms.length === 1 ? '' : 's'}${ms.length ? `: ${ms.slice(0, 4).map((x) => `${nm(x)} #${x.id}`).join(', ')}` : ''}): market closed or replaced`;
+  const os = m.options || m.results || [];
+  return `market ${nm(m)} found (status ${m.status ?? m.visibility ?? '?'}), but not option ${ref.optionId}; it lists ${os.length ? os.slice(0, 6).map((o) => `${nm(o)} ${bmAmerican(o.price || o) ?? ''} #${o.id}`).join(', ') : 'no options'}: the line moved to a new option`;
+}
+
 /** Older BetMGM market (plain-number fixture id, no "6:"). */
 export const isV1 = (ref) => /^\d+$/.test(String(ref?.fixtureId || ''));
 
@@ -204,7 +218,7 @@ export function makeBetMGM(name, label, cfg, bridge) {
         try { j = await readPicks(part.map(refOf), 'prices'); } catch (e) { if (!st.why) st.why = e.message; continue; }
         for (const r of part) {
           const hit = findOption(j, refOf(r));
-          if (!hit) { st.unmatched++; continue; }   // keeps Gambit's price; the bet's own check decides
+          if (!hit) { st.unmatched++; if (!st.why) st.why = `${r.event} ${r.market || r.marketKey || ''}: ${whyMissing(j, refOf(r))}`; continue; }   // keeps Gambit's price; the bet's own check decides
           const odds = bmAmerican(hit.option.price);
           r.gambitOdds = r.odds; r.gambitEv = r.ev;
           if (odds == null || !visible(hit.option.status) || !visible(hit.market.status) || lineNow(hit, r) !== r.line) { r.direct = 'gone'; r.ev = -Infinity; st.gone++; continue; }
@@ -219,14 +233,22 @@ export function makeBetMGM(name, label, cfg, bridge) {
 
     // The price check: BetMGM's current price for this option (no bet is made).
     async recheck(row) {
-      const { hit } = await readPick(row);
-      if (!hit) return { odds: null, line: row.line, suspended: true };
+      const ref = refOf(row);
+      const no = cantBet(ref, row);
+      if (no) throw new Error(no);
+      const j = await readPicks([ref]);
+      const hit = findOption(j, ref);
+      if (!hit) {
+        const why = whyMissing(j, ref);
+        log.debug(`BetMGM ${row.event} ${row.market || ''}: option not in picks reply (${why}); asked ${JSON.stringify(isV1(ref) ? pick1Of(ref) : pickOf(ref))}, reply ${String(JSON.stringify(j)).slice(0, 1500)}`);
+        return { odds: null, line: row.line, suspended: true, why };
+      }
       const odds = bmAmerican(hit.option.price);
       // BetMGM's main spread/total markets are "rolling lines": the same market and option can
       // move to a new line, so the engine skips one whose line moved.
       const line = lineNow(hit, row);
       return { odds, line, suspended: !visible(hit.option.status) || !visible(hit.market.status) || !hit.option.price,
-        pick: hit, maxStake: null };
+        pick: hit, maxStake: null, why: odds == null ? `option found but BetMGM gave no price (status ${hit.option.status ?? '?'}, market ${hit.market.status ?? '?'})` : undefined };
     },
 
     async place(row, stake, quote) {
