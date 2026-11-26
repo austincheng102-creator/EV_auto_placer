@@ -151,10 +151,33 @@ export function makeDraftKings(name, label, cfg, bridge) {
     return e;
   };
   const refused403 = (msg) => /HTTP 403/.test(String(msg || ''));
-  const noteBlocked = () => {
+  // A 403 is about one selection, not DraftKings as a whole (Austin's log 2026-11-25: every 403 in an
+  // hour was the same Najai Hines rebounds prop, one the odds feed no longer had, while other DraftKings
+  // bets went through; each one paused every DraftKings bet for 1-2 min). So a 403 skips only that
+  // selection for badSelMin (default 30). All of DraftKings pauses only when 2+ different selections
+  // are refused within 5 min, which looks like the bot filter itself.
+  const badSel = new Map();   // selection id -> skipped until (ms)
+  let refusedAt = [];         // [{id, at}] 403s in the last 5 min
+  const selBlocked = (id) => {
+    const until = badSel.get(id) || 0;
+    if (until <= Date.now()) { badSel.delete(id); return null; }
+    const e = new Error(`DraftKings refused this selection's price check with HTTP 403 earlier: skipped until ${new Date(until).toLocaleTimeString()}`);
+    e.paused = true; e.until = until;
+    return e;
+  };
+  const noteBlocked = (id) => {
+    const now = Date.now();
+    refusedAt = refusedAt.filter((x) => now - x.at < 5 * 60e3).concat({ id, at: now });
+    const until = now + Number(k.badSelMin ?? 30) * 60e3;
+    badSel.set(id, until);
+    if (new Set(refusedAt.map((x) => x.id)).size < 2) {
+      log.warn(`DraftKings refused the price check for one bet with HTTP 403 (selection ${id}): that bet is skipped until ${new Date(until).toLocaleTimeString()}; other DraftKings bets go on`);
+      return false;
+    }
     blockMs = Math.min(Math.max(blockMs * 2, 60e3), Number(k.maxPauseMin ?? 2) * 60e3);
-    blockedUntil = Date.now() + blockMs;
-    log.warn(`DraftKings refused a price check with HTTP 403 (its bot filter): no DraftKings price checks or bets for ${Math.round(blockMs / 60e3)} min, until ${new Date(blockedUntil).toLocaleTimeString()}`);
+    blockedUntil = now + blockMs;
+    log.warn(`DraftKings refused price checks for ${new Set(refusedAt.map((x) => x.id)).size} different bets with HTTP 403 within 5 min (its bot filter): no DraftKings price checks or bets for ${Math.round(blockMs / 60e3)} min, until ${new Date(blockedUntil).toLocaleTimeString()}`);
+    return true;
   };
   const why = (j) => [j?.errorCode, j?.errorMessage, j?.message, j?.status, ...(j?.errors || []).map((e) => e?.message || e?.code || e?.errorCode)]
     .filter((x) => x && !OK.test(String(x))).join(', ');
@@ -195,6 +218,8 @@ export function makeDraftKings(name, label, cfg, bridge) {
     async recheck(row) {
       const id = row.bookRef || draftkingsRef(row.link).bookRef;
       if (!id) throw new Error(`no DraftKings selection id in Gambit's link (${String(row.link || 'no link').slice(0, 160)})`);
+      const bad = selBlocked(id);
+      if (bad) throw bad;
       if (k.feedRecheck !== false) {
         const f = await feedCheck(row, id);
         if (f) return f;
@@ -220,12 +245,18 @@ export function makeDraftKings(name, label, cfg, bridge) {
   // calculateBets: the bet slip's price and its token (no bet is made). At most one every minGapSec,
   // and none while DraftKings' bot filter has paused us.
   async function tokenCheck(row, id) {
+    const bad = selBlocked(id);
+    if (bad) throw bad;
     if (Date.now() < blockedUntil) throw paused();
     await takeTurn();
     if (Date.now() < blockedUntil) throw paused();
     try { const q = await check(row, id); blockMs = 0; return q; }
     catch (e) {
-      if (refused403(e.message)) { if (Date.now() >= blockedUntil) noteBlocked(); const p = paused(); p.message = e.message; throw p; }
+      if (refused403(e.message)) {
+        const all = Date.now() >= blockedUntil && noteBlocked(id);
+        const p = all ? paused() : selBlocked(id) || paused();
+        p.message = e.message; throw p;
+      }
       throw e;
     }
   }
