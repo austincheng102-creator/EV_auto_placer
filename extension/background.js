@@ -1444,15 +1444,37 @@ async function keepDkSpan() {
 // Retries every 5 seconds (Austin, 2026-11-23: 2 minutes was too long), slowing to once a minute
 // after 20 tries in a row. But after it actually pressed Log in and BetMGM still refused, it waits
 // 2 minutes (10 after 3 in a row): fast wrong-password tries can lock the account.
-const mgmLogin = { busy: false, triedAt: 0, fails: 0, subFails: 0, submitted: false, last: null, timer: null, saidAt: 0, said: '' };
+const mgmLogin = { busy: false, triedAt: 0, fails: 0, subFails: 0, submitted: false, last: null, timer: null, saidAt: 0, said: '', forceUntil: 0, forceWhy: '', skipSaidAt: 0 };
+// The app's balance check got a logout answer (HTTP 401): log in even when the page shows no
+// "Log in" button we recognize (Austin, 2026-11-25, Mac: the app said LOGGED OUT but the extension
+// never started, because BetMGM's header on that window had no button we matched). In that case the
+// tab is sent to BetMGM's own login page (/en/labelhost/login, which brings you back after). Lasts
+// 10 minutes per app alert; the app repeats it every 2 minutes while it still sees the logout.
+function mgmForceLogin(why) {
+  mgmLogin.forceUntil = Date.now() + 10 * 60e3;
+  mgmLogin.forceWhy = why || 'the app found it logged out';
+  autoLoginBetMGM().catch(() => {});
+}
 const mgmLoginGap = () => (mgmLogin.subFails ? (mgmLogin.subFails >= 3 ? 10 * 60e3 : 2 * 60e3) : mgmLogin.fails >= 20 ? 60e3 : 5e3);
 async function autoLoginBetMGM() {
   // Only while the app is running (Austin, 2026-11-23: it kept trying after he closed the app).
   if (settings.betmgmAutoLogin === false || mgmLogin.busy || ws?.readyState !== 1) return;
+  const force = Date.now() < mgmLogin.forceUntil;
+  // When the app says BetMGM is logged out, say why nothing is happening (at most once a minute).
+  const skip = (why) => {
+    if (!force || Date.now() - mgmLogin.skipSaidAt < 60e3) return;
+    mgmLogin.skipSaidAt = Date.now();
+    if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book: 'betmgm', level: 'warn', text: `BetMGM auto login waiting: ${why}` }));
+  };
   const t = (await bookTabs()).find((x) => x.book === 'betmgm' && /(^|\.)betmgm\.com$/.test(new URL(x.url).hostname));
-  if (!t || t.discarded || dbgBusy.has(t.id) || geoKeepers.betmgm.job || placing.betmgm > 0) return;
+  if (!t) return skip('no BetMGM tab open');
+  if (t.discarded) return skip('Chrome unloaded the BetMGM tab to save memory');
+  if (dbgBusy.has(t.id)) return skip('the BetMGM tab is busy with another automatic click');
+  if (geoKeepers.betmgm.job) return skip('the BetMGM location check is renewing');
+  if (placing.betmgm > 0) return skip('a BetMGM bet is being placed');
   let f = await inPage(t.id, false).catch(() => ({ state: 'no-page' }));
-  if (f.state === 'logged-in' || f.state === 'no-page') return;
+  if (f.state === 'no-page') return skip('couldn\'t read the BetMGM page (still loading?)');
+  if (f.state === 'logged-in' && !force) return;
   if (Date.now() - mgmLogin.triedAt < mgmLoginGap() - 500) return;
   if (!chrome.debugger) return;
   mgmLogin.busy = true; mgmLogin.triedAt = Date.now();
@@ -1461,7 +1483,7 @@ async function autoLoginBetMGM() {
     mgmLogin.last = { at: Date.now(), ok, why };
     mgmLogin.fails = ok ? 0 : mgmLogin.fails + 1;
     mgmLogin.subFails = ok ? 0 : mgmLogin.submitted ? mgmLogin.subFails + 1 : mgmLogin.subFails;
-    if (ok) { mgmLogin.said = ''; return note(`BetMGM: ${why}`, 'good'); }
+    if (ok) { mgmLogin.said = ''; mgmLogin.forceUntil = 0; return note(`BetMGM: ${why}`, 'good'); }
     // The same failure every 5 seconds: say it once a minute.
     if (why === mgmLogin.said && Date.now() - mgmLogin.saidAt < 60e3) return;
     mgmLogin.said = why; mgmLogin.saidAt = Date.now();
@@ -1483,7 +1505,28 @@ async function autoLoginBetMGM() {
     await chrome.tabs.update(t.id, { active: true }).catch(() => {});
     if (tb) await chrome.windows.update(tb.windowId, { focused: true, ...(back.minimized ? { state: 'normal' } : {}) }).catch(() => {});
     await sleep(800);
-    if (!mgmLogin.fails) note('BetMGM is logged out: logging back in', 'info');
+    if (!mgmLogin.fails) note(f.state === 'logged-in' ? `BetMGM is logged out (${mgmLogin.forceWhy}) but its page shows no "Log in" button: opening BetMGM's login page` : 'BetMGM is logged out: logging back in', 'info');
+    if (f.state === 'logged-in') {
+      // No login button we know on this page: go to BetMGM's own login page, which comes back here after.
+      const here = (await chrome.tabs.get(t.id).catch(() => null))?.url || '';
+      const origin = new URL(here || t.url).origin;
+      const rurl = /\/labelhost\/login/.test(here) ? `${origin}/en/sports` : here;
+      await chrome.tabs.update(t.id, { url: `${origin}/en/labelhost/login?rurl=${encodeURIComponent(rurl)}` });
+      for (let i = 0; i < 30; i++) {
+        await sleep(1000);
+        if ((await chrome.tabs.get(t.id).catch(() => null))?.status === 'complete') break;
+      }
+      for (let i = 0; i < 20; i++) {   // the login box draws a moment after the page loads
+        await sleep(500);
+        f = await inPage(t.id, false).catch(() => ({ state: 'no-page' }));
+        if (f.state === 'form') break;
+      }
+      if (f.state === 'logged-in') {
+        // BetMGM sent us straight back: the page itself is logged in, only the app's check is refused.
+        mgmLogin.forceUntil = 0;
+        return done(false, 'BetMGM\'s login page sent us straight back, so the page is still logged in; the app\'s balance check is refused for another reason (reloading the BetMGM tab may fix it)');
+      }
+    }
     f = await inPage(t.id, true);
     if (f.state !== 'form' || !f.pass) return done(false, f.state === 'no-form' ? 'clicked Log In but no login box showed up' : `couldn't find the login box (${f.state})`);
     if (f.captcha) return done(false, 'BetMGM is showing an "are you a robot" check: log in by hand');
@@ -2240,12 +2283,13 @@ function connect() {
     if (m.type === 'fetch') handle(m);
     else if (m.type === 'reload') chrome.runtime.reload(); // engine updated these files on disk
     else if (m.type === 'alert') showAlert(m);
-    else if (m.type === 'clearAlert') clearAlert(m);
+    else if (m.type === 'clearAlert') { if (m.book === 'betmgm') mgmLogin.forceUntil = 0; clearAlert(m); }
     else if (m.type === 'reloadTab') reloadTab(m.book, m.why || 'the app found it logged out');
     else if (m.type === 'mgmGeoRenew') geoKeepers.betmgm.refused(m.why);
     else if (m.type === 'geoRenew' && geoKeepers[m.book]) geoKeepers[m.book].refused(m.why);
     else if (m.type === 'login' && m.book === 'gambit') autoLoginGambit(m.why || 'the app found it logged out').catch(() => {});
     else if (m.type === 'login' && m.book === 'thescore') autoLoginTheScore().catch(() => {});
+    else if (m.type === 'login' && m.book === 'betmgm') mgmForceLogin(m.why);
     else if (m.type === 'settings') { settings = { ...settings, ...m.settings }; chrome.storage.local.set({ settings }).catch(() => {}); }
   };
   ws.onclose = () => { status = 'disconnected'; ws = null; setTimeout(connect, 3000); };
