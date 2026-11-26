@@ -31,6 +31,7 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
   const label = (site) => (site === 'gambit' ? 'Gambit' : site === 'propprofessor' ? 'PropProfessor' : labels[site] || site);
   const howToFix = (site) => site === 'gambit' ? (s.gambitAutoLogin !== false ? 'The extension is logging back in with your Chrome-saved password; if that keeps failing, log in again in the Gambit tab' : 'Log in again in the Gambit tab')
     : site === 'propprofessor' ? 'Log in again in a PropProfessor tab (the extension reads the tables from it)'
+    : site === 'betmgm' && s.betmgmAutoLogin !== false ? 'The extension is logging back in with the password saved in its popup; if that keeps failing, log in again in the BetMGM tab'
     : site === 'thescore' && s.thescoreAutoLogin !== false ? 'The extension is logging back in with your Chrome-saved password; if that keeps failing, log in again in the theScore tab'
     : site === 'hardrock' ? 'Log in again in the Hard Rock tab, then place one small bet by hand for the location check'
     : `Log in again in the ${label(site)} tab`;
@@ -58,11 +59,15 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
       if (site === 'gambit' && gambitAutoLogin) fixGambit(`the app found it logged out (${why})`);
       // theScore: the extension logs back in on its /login page (it checks the page itself too).
       if (site === 'thescore' && s.thescoreAutoLogin !== false) bridge?.tell({ type: 'login', book: 'thescore', why });
+      // BetMGM: the extension logs back in even if the page shows no "Log in" button it knows
+      // (it opens BetMGM's login page then). No tab reload: it would cut the login short.
+      else if (site === 'betmgm' && s.betmgmAutoLogin !== false && !needsGeo(why) && !/no .* tab open/.test(why)) bridge?.tell({ type: 'login', book: 'betmgm', why });
       else if (reloadTabs && !needsGeo(why)) bridge?.tell({ type: 'reloadTab', book: site, why: `the app found it logged out (${why})` });
     } else if (Date.now() - d.remindedAt >= remindMs) {
       d.remindedAt = Date.now(); d.why = why;
       alarm(site, `${why}, for ${Math.round((Date.now() - d.since) / 60e3)} min`);
       if (site === 'gambit' && gambitAutoLogin) fixGambit(`the app found it still logged out (${why})`);
+      else if (site === 'betmgm' && s.betmgmAutoLogin !== false && !needsGeo(why) && !/no .* tab open/.test(why)) bridge?.tell({ type: 'login', book: 'betmgm', why });
       else if (reloadTabs && !needsGeo(why)) bridge?.tell({ type: 'reloadTab', book: site, why: 'still logged out' });   // the extension allows one per 5 min
     }
   }
