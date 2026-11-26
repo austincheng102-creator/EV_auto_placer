@@ -23,7 +23,8 @@
 //  - longOddsProps (Austin 2026-11-25): player props on every book above +250 (maxOdds) are allowed up to
 //    +400, at 18% EV or more, and only when DraftKings or Caesars (not the book we're betting) has a
 //    no-vig win % for our side within 5 points of our fair win % (longPropConsensus). Game lines keep +250.
-//  - live timing: a sharp price for the selection changed within the last 5 seconds (30 for props)
+//  - live timing: a sharp price for the selection changed within the last 5 seconds (30 for props); props over
+//    the propHold EV (30%) skip it (Austin 2026-11-26)
 //  - groups: same game + market (period is part of the market) share group.maxBets bets and group.maxStake $.
 //    Both sides count as one group (Over and Under, either team's spread), unless group.bothSides is true.
 //    Player props: per player, so Over/Under on one player's stat are one group.
