@@ -1,5 +1,5 @@
 // Runs inside your BetMGM tab (page context) from page start. BetMGM only takes bets while your
-// location check is current. The page runs it with the GeoComply app on this PC (127.0.0.1:53280)
+// location check is current. The page runs it with the GeoComply app on this PC (127.0.0.1, port 53280-53282)
 // and BetMGM's location server (geoloc-real-<state>.partygaming.com/rest/gds/...): "init" starts
 // it, "update" sends the result and answers "operation:waitAndCheck|...|timeForNextCall:<ms>"
 // (about 19.5 minutes), and the page is meant to run the next check by then. When it doesn't,
