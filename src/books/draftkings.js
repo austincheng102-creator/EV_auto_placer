@@ -126,11 +126,17 @@ export function makeDraftKings(name, label, cfg, bridge) {
   const site = `dkus${st}`;
   const info = `https://sportsbook-nash.draftkings.com/api/sdinfo/${site}/v1/selectioninfo`;
   const gateway = k.gateway || `https://gateway.northamerica-northeast2.prod.dkapis.com/${site}/betting/v2`;
-  const slipHeaders = { accept: '*/*', 'content-type': 'application/json', clienttype: 'Website', 'x-client-name': 'web',
-    'x-client-feature': 'betslip', 'x-client-page': 'home', 'x-client-widget-name': 'betslip' };
+  // As the bet slip sends them (Austin's capture of his own click, 2026-11-25). The version headers
+  // (x-client-version, x-client-widget-version, x-api-features) are replaced by the extension with the
+  // newest ones your DraftKings tab sent (useDraftKingsHeaders); without them DraftKings' filter refused
+  // many of the app's price checks with HTTP 403 while the same clicks in the tab went through.
+  const slipHeaders = { accept: 'application/json', 'content-type': 'application/json', clienttype: 'Website', 'x-client-name': 'web',
+    'x-client-feature': 'betslip', 'x-client-page': 'league', 'x-client-widget-name': 'betslip',
+    'x-api-features': '{"EnableFullSGPDrivenFlow":true}', 'x-client-version': k.clientVersion || '2648.2.1', 'x-client-widget-version': k.widgetVersion || '2645.5.2' };
   const loginMsg = 'DraftKings didn\'t accept the login: refresh the DraftKings tab and stay logged in';
   const send = (kind, url, method, body, extra = {}, ms = 20000, more = {}) => bridge.send(name, {
-    kind, url, method, headers: { ...extra }, body: body == null ? undefined : JSON.stringify(body), credentials: 'include', ...more }, ms);
+    kind, url, method, headers: { ...extra }, body: body == null ? undefined : JSON.stringify(body), credentials: 'include',
+    useDraftKingsHeaders: url.startsWith(wager), ...more }, ms);
   const authFail = (r) => r.status === 401 || r.status === 403;
   // DraftKings' bot filter answers price checks HTTP 403 when they come too often (Austin, 2026-11-23:
   // "Failed to fetch (Chrome: net::ERR_FAILED after an HTTP 403 answer)"). Price checks go out at most
