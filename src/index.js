@@ -23,10 +23,10 @@ import { makeNovig } from './novig.js';
 import { makeSessionWatch } from './session.js';
 import { seenBooks } from './sources/gambit-evs.js';
 import { makeBetLog, parseTime } from './betlog.js';
-import { makePriceLog, makeSpreadSkipLog, makeTimingLog } from './skiplog.js';
+import { makePriceLog, makeSpreadSkipLog, makeTimingLog, makeSkippedLog, makeShadowLog } from './skiplog.js';
 import { makePropFunnel, stageLabels } from './propfunnel.js';
 import { writeSnapshot, serveReport, openInBrowser } from './report.js';
-import { applyFilterDefaults, tooShort, evTooHigh, maxEvFor, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom, groupClash, groupCoolingDown, groupMaxBets, sameEvRepeat, isPropBet, playerStats, tooManyStats, playerKey, statKey, minEvFor, longPropRule, longPropConsensus, fmtLongConsensus, softCheck, fmtSoft, marketCheck, fmtMarket, sharpFair, fairBreakdown } from './filters.js';
+import { applyFilterDefaults, tooShort, evTooHigh, maxEvFor, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom, groupClash, groupCoolingDown, groupMaxBets, sameEvRepeat, isPropBet, playerStats, tooManyStats, playerKey, statKey, minEvFor, longPropRule, longPropConsensus, fmtLongConsensus, softCheck, fmtSoft, marketCheck, fmtMarket, sharpFair, fairBreakdown, liveEvPropOff, pinnacleOnlyTotal, pmBelowFair, fmtPmBelow, pregamePinnacle, fmtPregamePin, marketKind, pmListed, bookFairProb } from './filters.js';
 
 const root = appDir;
 let args = process.argv.slice(2);
@@ -356,6 +356,157 @@ function logMarketSkip(r, mc) {
 const directWarnAt = {};
 const propFunnel = makePropFunnel(cfg, root, { dryRun, log });
 
+// Skipped-bets log (skipped.csv) and loosened-rules data log (shadow-bets.csv), Austin 2026-11-26.
+// Both are written after a scan's bets have been sent off (setImmediate), never change what's bet, and a
+// problem in them only goes to debug.log. "skippedLog": false / "shadowLog": false turn them off.
+const skippedLog = cfg.skippedLog === false ? null : makeSkippedLog(root, { dryRun });
+const skippedSeen = new Map(); // row id | reason -> { at, odds }
+const shadowCfg = cfg.shadowLog === false ? null : { minEvPct: 3, closeSec: 120, maxListedHours: 6, ...(cfg.shadowLog || {}) };
+const shadowLog = shadowCfg ? makeShadowLog(root, { dryRun }) : null;
+const shadowOpen = new Map(); // holdKey -> open shadow entry
+const tableOf = (r) => (r.arb ? 'arb' : '+EV');
+const feedOf = (r) => r.src || (ppSource ? 'propprofessor' : 'gambit');
+const fairSetBy = (r) => { try { return fairBreakdown(cfg, r).books.filter((b) => b.role === 'fair').map((b) => b.name).join('/'); } catch { return ''; } };
+const pct1 = (p) => (p == null || !Number.isFinite(p) ? null : p * 100);
+/** Plain no-vig win % for our side at the first of these Gambit ids with both sides listed. */
+const noVigAt = (r, idv) => { for (const id of [].concat(idv ?? []).map(Number)) { const pr = r.prices?.[id]; const p = pr && bookFairProb(pr.odds, pr.oppOdds); if (p != null) return p; } return null; };
+
+function noteSkip(r, where, reason, detail, bookOdds, buf) {
+  if (!skippedLog) return;
+  const now = Date.now(), k = `${r.id}|${reason}`, last = skippedSeen.get(k), odds = bookOdds ?? r.odds;
+  if (last && last.odds === odds && now - last.at < 5 * 60e3) return;
+  skippedSeen.set(k, { at: now, odds });
+  if (skippedSeen.size > 20000) for (const [kk, v] of skippedSeen) if (now - v.at > 5 * 60e3) skippedSeen.delete(kk);
+  const line = {
+    time: new Date(now).toISOString(), book: r.book, live: r.isLive ? 'live' : 'pre-game', feed: feedOf(r), table: tableOf(r),
+    league: r.league, event: r.event, startDate: r.startDate, market: r.market, selection: r.selection, line: r.line,
+    odds: r.odds, tableOdds: r.gambitOdds ?? r.odds, bookOdds: bookOdds ?? null, evPct: r.ev, fairOdds: r.fairOdds, fairSetBy: fairSetBy(r),
+    where, reason, detail,
+  };
+  if (buf) buf.push(line); else skippedLog.record(line);
+}
+
+/** What a scan rule saw, for the skipped-bets log. */
+function skipDetail(r, st, labels) {
+  const base = labels[st] || st;
+  try {
+    if (st === 'sharpSpread') { const sp = sharpSpread(cfg, r); return `${base}: ${Object.entries(sp.probs).map(([n, p]) => `${n} ${(p * 100).toFixed(1)}`).join(', ')}`; }
+    if (st === 'softBooks') return `${base}: ${fmtSoft(softCheck(cfg, r))}`;
+    if (st === 'pinnacleOff') return `${base}: ${fmtMarket(marketCheck(cfg, r))}`;
+    if (st === 'pmBelow') return `${base}: ${fmtPmBelow(pmBelowFair(cfg, r))}`;
+    if (st === 'pregamePinnacle') return `${base}: ${fmtPregamePin(pregamePinnacle(cfg, r))}`;
+    if (st === 'longConsensus') return `${base}: ${fmtLongConsensus(longPropConsensus(cfg, r))}`;
+    if (st === 'stale') { const a = sharpClock.ageSec(r); return `${base}: ${a == null ? 'no move seen yet' : `last move ${a.toFixed(0)}s ago`}`; }
+  } catch { /* the label alone */ }
+  return base;
+}
+
+/** Every rule a row fails when checked on its own (not just the first), for shadow-bets.csv. */
+function failedRules(r) {
+  const out = [];
+  const t = (k, ok) => { if (!ok) out.push(k); };
+  t('minEv', Number.isFinite(r.ev) && r.ev >= minEv(r));
+  t('noProps', !(r.isProp && propsOff(cfg, r.book)));
+  t('liveEvProps', !liveEvPropOff(cfg, r));
+  t('odds', !tooLong(r.odds, r) && !tooShort(cfg, r.odds));
+  t('evCap', !evTooHigh(cfg, r.ev, r));
+  t('pregameFar', !tooEarly(r));
+  t('noSharp', freeLive(r) || r.ppFairFallback || !liveSharpMissing(cfg, r));
+  t('sharpSpread', freeLive(r) || sharpSpread(cfg, r).ok);
+  t('softBooks', softCheck(cfg, r).ok);
+  t('longConsensus', longPropConsensus(cfg, r).ok);
+  t('pinnacleOff', marketCheck(cfg, r).ok);
+  t('pinnacleOnlyTotal', !pinnacleOnlyTotal(cfg, r));
+  t('pmBelow', pmBelowFair(cfg, r).ok);
+  t('pregamePinnacle', pregamePinnacle(cfg, r).ok);
+  t('stale', !sharpTooOld(r));
+  return out;
+}
+
+function shadowEntry(r, firstSkip, now) {
+  const sp = sharpSpread(cfg, r), sc = softCheck(cfg, r), mc = marketCheck(cfg, r), pm = pmListed(cfg, r);
+  const pmc = pmBelowFair(cfg, r);
+  const pin = noVigAt(r, cfg.sharp.ids.pinnacle), dk = noVigAt(r, 200), fd = noVigAt(r, 100);
+  const worstPm = Object.values(pm).length ? Math.min(...Object.values(pm)) : null;
+  const start = parseTime(r.startDate);
+  return {
+    first: now, lastSeen: now, odds: r.odds, maxEv: r.ev, closeFair: r.fairOdds, closeOdds: r.gambitOdds ?? r.odds, fair60: null, outcome: '',
+    line: {
+      firstSeen: new Date(now).toISOString(), book: r.book, live: r.isLive ? 'live' : 'pre-game', feed: feedOf(r), table: tableOf(r),
+      league: r.league, event: r.event, startDate: r.startDate, minToStart: r.isLive === false && Number.isFinite(start) ? (start - now) / 60e3 : null,
+      kind: marketKind(r), market: r.market, selection: r.selection, line: r.line, odds: r.odds, tableOdds: r.gambitOdds ?? r.odds,
+      evPct: r.ev, minEvPct: minEv(r), fairOdds: r.fairOdds, fairSetBy: fairSetBy(r), sharpAgeSec: r.isLive ? sharpClock.ageSec(r, now) : null,
+      sharpSpreadPts: sp.spread, pinnacle: pct1(pin), kalshi: pct1(pm.kalshi), polymarket: pct1(pm.polymarket), novig: pct1(pm.novig), prophetx: pct1(pm.prophetx),
+      pmGapPts: worstPm != null && Number.isFinite(r.fairProb) ? (r.fairProb - worstPm) * 100 : null,
+      softDraftkings: sc.evs?.draftkings, softCaesars: sc.evs?.caesars, softFanduel: sc.evs?.fanduel, softPassing: sc.off ? null : sc.pass,
+      pinVsMedianPts: mc.gap, pinVsDraftkingsPts: pin != null && dk != null ? (pin - dk) * 100 : null, pinVsFanduelPts: pin != null && fd != null ? (pin - fd) * 100 : null,
+      failedRules: failedRules(r).join(';'), firstSkip,
+    },
+    pmc,
+  };
+}
+
+function shadowClose(e, out) {
+  out.push({ ...e.line, lastSeen: new Date(e.lastSeen).toISOString(), listedSec: Math.round((e.lastSeen - e.first) / 1000),
+    maxEvPct: e.maxEv, outcome: e.outcome, fair60sOdds: e.fair60, ev60sPct: e.fair60 != null ? evPct(e.odds, e.fair60) : null,
+    closeFairOdds: e.closeFair, closeEvPct: e.closeFair != null ? evPct(e.odds, e.closeFair) : null, closeOdds: e.closeOdds });
+}
+
+function shadowScan(rows, sentIds, pk, labels, now) {
+  const out = [];
+  const byKey = new Map(rows.map((r) => [holdKey(r), r]));
+  for (const [k, e] of shadowOpen) {
+    const r = byKey.get(k);
+    if (r) {
+      e.lastSeen = now;
+      if (Number.isFinite(r.fairOdds)) e.closeFair = r.fairOdds;
+      e.closeOdds = r.gambitOdds ?? r.odds;
+      if (Number.isFinite(r.ev) && r.ev > e.maxEv) e.maxEv = r.ev;
+      if (e.fair60 == null && now - e.first >= 60e3 && Number.isFinite(r.fairOdds)) e.fair60 = r.fairOdds;
+    }
+    if ((!r && now - e.lastSeen > shadowCfg.closeSec * 1000) || now - e.first > shadowCfg.maxListedHours * 3600e3) { shadowClose(e, out); shadowOpen.delete(k); }
+  }
+  for (const r of rows) {
+    if (!Number.isFinite(r.ev) || r.ev < shadowCfg.minEvPct) continue;
+    const k = holdKey(r);
+    if (shadowOpen.has(k)) continue;
+    let first = 'sent';
+    if (!sentIds.has(r.id)) { const st = Number.isFinite(r.ev) && r.ev >= minEv(r) ? propStage(r, pk) : 'evLow'; first = st === 'evNear' ? 'evLow' : st; }
+    shadowOpen.set(k, shadowEntry(r, first, now));
+  }
+  // Too many open (a very busy board): the oldest are written now.
+  if (shadowOpen.size > 20000) for (const [k, e] of shadowOpen) { if (shadowOpen.size <= 15000) break; shadowClose(e, out); shadowOpen.delete(k); }
+  if (out.length) shadowLog.recordMany(out);
+}
+function shadowFlushAll() {
+  if (!shadowLog || !shadowOpen.size) return;
+  const out = [];
+  for (const e of shadowOpen.values()) shadowClose(e, out);
+  shadowOpen.clear();
+  shadowLog.recordMany(out);
+}
+
+/** After a scan's bets are sent: the skipped-bets log and the loosened-rules data log. */
+function afterScan(rows, ev, batch, pk, noFairRows) {
+  const now = Date.now();
+  const sentIds = new Set(batch.map((r) => r.id));
+  const labels = stageLabels(cfg);
+  if (skippedLog) {
+    const buf = [];
+    const picked = new Set(ev.map((r) => r.id));
+    for (const r of noFairRows) if (Number.isFinite(r.ev) && r.ev >= minEv(r)) noteSkip(r, 'scan', 'noSharpFair', 'no sharp price for the fair (Pinnacle, or a counted Kalshi/Polymarket/Novig/ProphetX price)', null, buf);
+    for (const r of rows) {
+      if (sentIds.has(r.id) || !Number.isFinite(r.ev) || r.ev < minEv(r)) continue;
+      if (picked.has(r.id)) { noteSkip(r, 'scan', 'notSent', `passed every rule, not sent this scan (${maxInFlight} bets at once already, or Chrome not connected)`, null, buf); continue; }
+      const st = propStage(r, pk);
+      if (st === 'evLow' || st === 'evNear' || st === 'gone') continue;
+      noteSkip(r, 'scan', st, skipDetail(r, st, labels), null, buf);
+    }
+    if (buf.length) skippedLog.recordMany(buf);
+  }
+  if (shadowLog) shadowScan(rows, sentIds, pk, labels, now);
+}
+
 // maxBetsPerEvent caps game lines (spreads, totals, moneylines) per game. Player props don't count
 // toward it and aren't capped by it: each player + stat is still its own group (one bet, see group).
 // "propsInEventCap": true puts props back under the cap.
@@ -389,11 +540,13 @@ const livePropCounts = (list) => { const n = {}; for (const p of list) if (isLiv
 const overLivePropCap = (r, liveProps) => r.isLive === true && isPropBet(r) && cfg.liveMaxPropsPerEvent != null
   && (liveProps[r.event] || 0) >= Number(cfg.liveMaxPropsPerEvent);
 
-/** First rule a prop row fails in this scan (same order as the scan filters in tick()). */
+/** First rule a row fails in this scan (same order as the scan filters in pickBets()). Used for props and the skipped-bets log. */
 function propStage(r, { groups, perEvent, liveProps, stats, now }) {
   if (r.direct === 'gone') return 'gone';
   if (!Number.isFinite(r.ev) || r.ev < minEv(r) - 3) return 'evLow';
   if (r.ev < minEv(r)) return 'evNear';
+  if (r.isProp && propsOff(cfg, r.book)) return 'noProps';
+  if (liveEvPropOff(cfg, r)) return 'liveEvProps';
   if (tooLong(r.odds, r) || tooShort(cfg, r.odds)) return 'odds';
   if (evTooHigh(cfg, r.ev, r)) return 'evCap';
   if (tooEarly(r)) return 'pregameFar';
@@ -402,6 +555,9 @@ function propStage(r, { groups, perEvent, liveProps, stats, now }) {
   if (!softCheck(cfg, r).ok) return 'softBooks';
   if (!longPropConsensus(cfg, r).ok) return 'longConsensus';
   if (!marketCheck(cfg, r).ok) return 'pinnacleOff';
+  if (pinnacleOnlyTotal(cfg, r)) return 'pinnacleOnlyTotal';
+  if (!pmBelowFair(cfg, r).ok) return 'pmBelow';
+  if (!pregamePinnacle(cfg, r).ok) return 'pregamePinnacle';
   const lim = noLiveTiming(r) ? null : liveAgeLimit(cfg, r);
   if (!freeLive(r) && r.isLive && lim != null && r.prices) { const a = sharpClock.ageSec(r); if (a == null || a > lim) return 'stale'; }
   if (groupRoom(cfg, groups, r) == null) return groupCoolingDown(cfg, groups, r) ? 'groupCooldown' : 'group';
@@ -423,8 +579,18 @@ const desc = (r) => `${BOOK_LABELS[r.book] || r.book} ${r.market} ${r.selection 
 
 const fmtNovig = (nv) => `${fmtAmerican(nv.odds)}${nv.oppOdds != null ? `/${fmtAmerican(nv.oppOdds)}` : ''}`;
 
-function stakeFor(quote) {
-  let s = cfg.stake.amount;
+// Per-book stakes (Austin 2026-11-26): "stake": {"byBook": {"hardrock": {"pregame": 10, "fallback": 5}}}.
+// pregame / live / amount: that book's stake for pre-game / live / any bet (missing = stake.amount).
+// fallback: if the book refuses the stake as too big, the bet goes again at the book's max (it says it),
+// or at this amount when it doesn't say. "byBook": {} = flat stake.amount everywhere.
+if (cfg.stake.byBook === undefined) cfg.stake.byBook = { hardrock: { pregame: 10, fallback: 5 } };
+function stakeAmount(row) {
+  const b = cfg.stake.byBook?.[row.book];
+  const v = b ? (row.isLive === false ? b.pregame : row.isLive === true ? b.live : undefined) ?? b.amount : undefined;
+  return Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : cfg.stake.amount;
+}
+function stakeFor(quote, row) {
+  let s = row ? stakeAmount(row) : cfg.stake.amount;
   if (cfg.stake.capAtMaxStake && quote.maxStake) s = Math.min(s, quote.maxStake);
   return Math.floor(s * 100 + 1e-6) / 100;
 }
@@ -506,10 +672,18 @@ async function tryBet(row, ctx) {
 
 // Config "gambitBehind": { books, maxPts }; false turns it off. Defaults: every book except Hard Rock
 // (its moves away from Gambit's copy were on model: 330 bets), any change (0 points of win chance).
-function gambitBehind(row, quote) {
+// livePriceMatch (Austin 2026-11-26, on by default): any change at all, on every book (Hard Rock too), wins over
+// gambitBehind's books / exceptBooks / maxPts. "livePriceMatch": {"books": [...]} limits it to those books.
+function behindCfg(book) {
+  const lpm = cfg.livePriceMatch && cfg.livePriceMatch.enabled !== false ? cfg.livePriceMatch : null;
+  if (lpm && (!Array.isArray(lpm.books) || lpm.books.includes(book))) return { maxPts: 0, exact: true };
   const g = cfg.gambitBehind === false ? null : { exceptBooks: ['hardrock'], maxPts: 0, ...(cfg.gambitBehind || {}) };
+  if (!g || (Array.isArray(g.books) ? !g.books.includes(book) : (g.exceptBooks || []).includes(book))) return null;
+  return g;
+}
+function gambitBehind(row, quote) {
+  const g = behindCfg(row.book);
   if (!g || !row.isLive) return null;
-  if (Array.isArray(g.books) ? !g.books.includes(row.book) : (g.exceptBooks || []).includes(row.book)) return null;
   const gambitOdds = row.gambitOdds ?? row.odds;
   if (!Number.isFinite(gambitOdds) || !Number.isFinite(quote.odds) || gambitOdds === quote.odds) return null;
   const pts = Math.abs(impliedProb(gambitOdds) - impliedProb(quote.odds)) * 100;
@@ -593,7 +767,10 @@ async function placeAt(row, book, quote, ctx, retries = 0) {
   if (room == null) { ctx.outcome = 'group full'; lg.warn(`group full: ${groupMaxBets(cfg, row) ?? 'any'}${row.isLive === false ? ' pre-game' : ''} bets / $${cfg.group.maxStake ?? 'any'} already on (${row.event}, ${row.market}, ${row.selection}) — skipped`); return false; }
   const sameAt = sameEvRepeat(cfg, groupTotals(state.placed), row, ev);
   if (sameAt != null) { ctx.outcome = 'same EV'; lg.warn(`same bet already placed on ${BOOK_LABELS[row.book]} at ${fmtPct(sameAt)} EV; ${fmtPct(ev)} is within ${cfg.group.repeatMinEvPts} pts — skipped`); return false; }
-  const stake = Math.floor(Math.min(stakeFor(quote), room) * 100 + 1e-6) / 100;
+  // The group's $ cap counts in base-stake units: a $10 Hard Rock pre-game bet (base $1) uses $1 of it.
+  const unit = stakeAmount(row) / (Number(cfg.stake.amount) || 1);
+  let stake = Math.floor(Math.min(stakeFor(quote, row), room * unit) * 100 + 1e-6) / 100;
+  if (ctx.stakeCap != null) stake = Math.min(stake, ctx.stakeCap);
   if (stake <= 0) { ctx.outcome = 'stake 0'; lg.warn('stake is 0 — skipped'); return false; }
   if (cfg.dailyStakeLimit && state.staked + pendingStake + stake > cfg.dailyStakeLimit) {
     ctx.outcome = 'daily limit';
@@ -609,7 +786,8 @@ async function placeAt(row, book, quote, ctx, retries = 0) {
     ctx.outcome = 'placed'; ctx.realOdds = confirmedOdds ?? quote.odds;
     if (detail) lg.debug(`${book.label} ${desc(row)} PLACED — ${detail}`);
     state.placed.push({ at: new Date().toISOString(), key: selKey(row), group: groupKey(row), event: row.event, book: row.book,
-      market: row.market, isProp: !!row.isProp, isLive: row.isLive, gambitBookId: row.gambitBookId, selection: row.selection, line: row.line, odds: quote.odds, fair: row.fairOdds, ev, novigEv: novigEvPct, stake, betId });
+      market: row.market, isProp: !!row.isProp, isLive: row.isLive, gambitBookId: row.gambitBookId, selection: row.selection, line: row.line, odds: quote.odds, fair: row.fairOdds, ev, novigEv: novigEvPct, stake,
+      ...(unit !== 1 ? { groupStake: Math.round(stake / unit * 100) / 100 } : {}), betId });
     state.staked += stake; save();
     // Paper trail: what we checked vs what the book says it accepted, plus Gambit's fair odds.
     // Dry runs: the simulated book "confirms" the price we sent.
@@ -635,6 +813,24 @@ async function placeAt(row, book, quote, ctx, retries = 0) {
       // Re-check at the book's new price (every rule again) up to priceMoveRetries times
       // (default 2): a live price can move again during the book's delay on the retry.
       const maxRetries = Number.isFinite(Number(cfg.priceMoveRetries)) ? Math.max(0, Number(cfg.priceMoveRetries)) : 2;
+      // Live price match (Austin 2026-11-26): the new price has to be the one the table shows now, or it's skipped.
+      if (hasNew && retries < maxRetries && row.isLive === true && cfg.livePriceMatch?.onRetry !== false && behindCfg(row.book)?.exact) {
+        let tableNow = row.gambitOdds ?? row.odds, fresh = null;
+        if (lastScan && lastScan.scanAt > (ctx.scanAt ?? 0)) {
+          fresh = lastScan.rows.find((r) => r.id === row.id) || null;
+          tableNow = lastScan.gambitRows.get(row.id)?.odds ?? (fresh ? fresh.gambitOdds ?? fresh.odds : null);
+        }
+        if (tableNow !== e.newOdds) {
+          ctx.outcome = 'Gambit behind';
+          lg.warn(`${book.label}: price moved ${fmtAmerican(quote.odds)} → ${fmtAmerican(e.newOdds)} while placing, but ${feedName} ${tableNow == null ? 'no longer lists it' : `shows ${fmtAmerican(tableNow)}`} — skipped (live price must match the table), checking again once ${feedName} shows it`);
+          return false;
+        }
+        if (fresh && !book.freshFairOnRetry) {
+          if (sharpTooOld(fresh)) { lg.warn(`${book.label}: price moved ${fmtAmerican(quote.odds)} → ${fmtAmerican(e.newOdds)}; no fresh sharp price to check it against — skipped, nothing placed`); return false; }
+          lg.warn(`${book.label}: price moved ${fmtAmerican(quote.odds)} → ${fmtAmerican(e.newOdds)}, ${feedName} shows it too, checking again with its newest fair ${fmtAmerican(fresh.fairOdds)}`);
+          return placeAt({ ...fresh }, book, { ...quote, ...(e.newQuote || {}), odds: e.newOdds }, ctx, retries + 1);
+        }
+      }
       if (hasNew && retries < maxRetries) {
         // Books that hold a live bet for a long time (theScore ~9-12s): the fair price from before the
         // hold may be stale, so the re-check uses the newest scan's row (fair price, other books'
@@ -659,6 +855,17 @@ async function placeAt(row, book, quote, ctx, retries = 0) {
       ctx.sent = false; ctx.outcome = 'paused'; ctx.pausedUntil = e.until;
       lg.warn(`${book.label}: ${e.message} — nothing placed, checked again after the pause`);
       return false;
+    }
+    // Stake too big for the book (Hard Rock's $10 pre-game stake, Austin 2026-11-26): once more at the book's max.
+    if (e.stakeTooHigh && ctx.stakeCap == null) {
+      const fb = Number(cfg.stake.byBook?.[row.book]?.fallback ?? cfg.stake.amount);
+      const max = Number.isFinite(e.maxStake) && e.maxStake > 0 ? e.maxStake : fb;
+      const next = Math.floor(Math.min(max, stake - 0.01) * 100 + 1e-6) / 100;
+      if (next > 0) {
+        ctx.stakeCap = next;
+        lg.warn(`${book.label}: $${stake} refused as too big (${e.message}), betting its max $${next} instead`);
+        return placeAt(row, book, quote, ctx, retries);
+      }
     }
     if (e.gone) { ctx.outcome = 'no longer offered'; lg.warn(`${book.label}: bet no longer offered — skipped, nothing placed`); return false; }
     // Nothing reached the book / nothing was placed (FanDuel's location check had run out, or
@@ -712,12 +919,14 @@ function pickBets(rows, { quiet = false } = {}) {
   const liveProps = livePropCounts(recent);
   const now = Date.now();
   let farOff = 0;
-  const why = { noProps: 0, odds: 0, evCap: 0, sharpSpread: 0, softBooks: 0, longConsensus: 0, pinnacleOff: 0, noSharp: 0, stale: 0, staleProp: 0, livePropCap: 0, group: 0, groupCooldown: 0, sameEv: 0, playerStats: 0 };
+  const why = { noProps: 0, liveEvProps: 0, pinnacleOnlyTotal: 0, pmBelow: 0, pregamePinnacle: 0, odds: 0, evCap: 0, sharpSpread: 0, softBooks: 0, longConsensus: 0, pinnacleOff: 0, noSharp: 0, stale: 0, staleProp: 0, livePropCap: 0, group: 0, groupCooldown: 0, sameEv: 0, playerStats: 0 };
   const drop = (k) => (why[k]++, false);
   const groups = groupTotals(state.placed);
   let ev = rows
     .filter((r) => Number.isFinite(r.ev) && r.ev >= minEv(r))
     .filter((r) => !(r.isProp && propsOff(cfg, r.book)) || drop('noProps'))
+    // Hard Rock live player props from the +EV table: off (Austin 2026-11-26); its arb-table props still go.
+    .filter((r) => !liveEvPropOff(cfg, r) || drop('liveEvProps'))
     .filter((r) => (!tooLong(r.odds, r) && !tooShort(cfg, r.odds)) || drop('odds'))
     .filter((r) => !evTooHigh(cfg, r.ev, r) || drop('evCap'))
     .filter((r) => !tooEarly(r) || (farOff++, false))
@@ -726,6 +935,12 @@ function pickBets(rows, { quiet = false } = {}) {
     .filter((r) => softCheck(cfg, r).ok || drop('softBooks'))
     .filter((r) => longPropConsensus(cfg, r).ok || drop('longConsensus'))
     .filter((r) => { const mc = marketCheck(cfg, r); if (mc.ok) return true; if (!quiet) logMarketSkip(r, mc); return drop('pinnacleOff'); })
+    // Austin 2026-11-26: live totals on Hard Rock/BetRivers need more than Pinnacle behind the fair; on
+    // moneylines and props no prediction market may sit 2+ pts below our fair; pre-game, Pinnacle within 2 pts
+    // of DraftKings and FanDuel.
+    .filter((r) => !pinnacleOnlyTotal(cfg, r) || drop('pinnacleOnlyTotal'))
+    .filter((r) => pmBelowFair(cfg, r).ok || drop('pmBelow'))
+    .filter((r) => pregamePinnacle(cfg, r).ok || drop('pregamePinnacle'))
     .filter((r) => !sharpTooOld(r) || drop(r.isProp ? 'staleProp' : 'stale'))
     .filter((r) => groupRoom(cfg, groups, r) != null || drop(groupCoolingDown(cfg, groups, r) ? 'groupCooldown' : 'group'))
     .filter((r) => sameEvRepeat(cfg, groups, r) == null || drop('sameEv'))
@@ -806,6 +1021,7 @@ async function tick() {
   // Gambit's "market" fair is replaced (it can include thin prediction-market prices); rows with no
   // sharp book priced are dropped.
   let noSharpFair = 0, ppFallback = 0;
+  const noFairRows = [];
   rows = rows.filter((r) => {
     const sf = sharpFair(cfg, r);
     if (!sf) return true;
@@ -813,7 +1029,7 @@ async function tick() {
       // PropProfessor sends no Pinnacle (2026-11-24), so its game lines would all land here. Austin's
       // choice: those use PropProfessor's own no-vig fair instead ("propprofessor": {"fairFallback": false}
       // turns it off). Props still need FanDuel, as always.
-      if (!ppFallbackOk(r)) { noSharpFair++; return false; }
+      if (!ppFallbackOk(r)) { noSharpFair++; if (skippedLog) noFairRows.push(r); return false; }
       r.ppFairFallback = true; ppFallback++;
       r.fairCalc = { probs: {}, books: [], ppFallback: true };
       r.fairSource = 'PropProfessor (no Pinnacle/prediction market)';
@@ -882,7 +1098,11 @@ async function tick() {
       }
     }
   }
-  const { ev, why, farOff, novigDropped, groups, perEvent, liveProps, stats, now } = pickBets(rows);
+  const pk = pickBets(rows);
+  const { ev, why, farOff, novigDropped, groups, perEvent, liveProps, stats, now } = pk;
+  // The logs run once this scan's bets are on their way (nothing below awaits before they're sent).
+  let batch = [];
+  if (skippedLog || shadowLog) setImmediate(() => { try { afterScan(rows, ev, batch, pk, noFairRows); } catch (e) { log.debug(`skipped/shadow log: ${e.message}`); } });
   // Holds: dropped once the feed stops listing the prop; a hold that's over but whose prop failed
   // the rules this scan says why (the first scan rule it failed).
   if (held.size) {
@@ -921,6 +1141,10 @@ async function tick() {
     why.softBooks && `${why.softBooks} not above ${cfg.softCheck.minEvPct}% EV on ${cfg.softCheck.minBooks}+ of ${Object.keys(cfg.softCheck.books).join('/')}`,
     why.longConsensus && `${why.longConsensus} props over ${fmtAmerican(cfg.maxOdds)} without ${Object.keys(cfg.longPropConsensus.books).join('/')} within ${cfg.longPropConsensus.maxPts} pts of fair`,
     why.pinnacleOff && `${why.pinnacleOff} Pinnacle more than ${cfg.marketCheck.maxPts} pts above the soft-book median`,
+    why.liveEvProps && `${why.liveEvProps} live +EV-table props on ${Object.keys(books).filter((b) => liveEvPropOff(cfg, { book: b, isLive: true, isProp: true })).map((b) => BOOK_LABELS[b] || b).join('/') || 'a book'} (off; arb-table props still bet)`,
+    why.pinnacleOnlyTotal && `${why.pinnacleOnlyTotal} totals on ${cfg.pinnacleOnlyTotals.books.map((b) => BOOK_LABELS[b] || b).join('/')} with a Pinnacle-only fair`,
+    why.pmBelow && `${why.pmBelow} with a prediction market ${cfg.pmBelowFair.pts}+ pts below fair`,
+    why.pregamePinnacle && `${why.pregamePinnacle} pre-game with Pinnacle not within ${cfg.pregamePinnacleCheck.maxPts} pts of ${Object.keys(cfg.pregamePinnacleCheck.books).join('/')}${cfg.pregamePinnacleCheck.missing === 'pass' ? '' : ' (or not priced)'}`,
     why.stale && `${why.stale} live with no sharp move in the last ${ageMax}s`,
     why.staleProp && `${why.staleProp} live props with no FanDuel move in the last ${cfg.sharp.livePropMaxAgeSec}s`,
     why.group && `${why.group} group already bet`,
@@ -955,7 +1179,7 @@ async function tick() {
   if (!dryRun && !bridge.connected()) { log.warn('Chrome extension not connected — not placing'); return; }
 
   // Bets run in the background so the next Gambit poll isn't held up by a slow book.
-  const batch = ev.slice(0, Math.max(0, maxInFlight - inflight.size));
+  batch = ev.slice(0, Math.max(0, maxInFlight - inflight.size));
   const fresh = batch.filter((r) => !watch.has(r.id));
   if (fresh.length) log.autoev(`Next ${fresh.length}: ${fresh.map((r) => `${desc(r)} ${fmtAmerican(r.odds)} (${fmtPct(r.ev)} EV)`).join(', ')}`);
   for (const r of batch) startBet(r, scanAt, { pollAt: tickAt, via: 'scan' });
@@ -997,6 +1221,14 @@ function startBet(row, scanAt, t = {}) {
       inflight.delete(k);
       if (!ctx.doneCalled) book.done?.(row, ctx.quote, ok)?.catch?.(() => {});   // e.g. theScore: take the pick off its bet slip
       if (row.isProp) propFunnel?.outcome(row, ctx.outcome);
+      try {
+        const sh = shadowOpen.get(holdKey(row));
+        if (sh && ctx.outcome && sh.outcome !== 'placed') sh.outcome = ok ? 'placed' : ctx.outcome;
+        if (!ok && ctx.outcome && ctx.outcome !== 'EV too low') {
+          const bo = ctx.realOdds ?? ctx.quote?.odds;
+          noteSkip(row, 'book', ctx.outcome, `${books[row.book]?.label || row.book}: ${ctx.outcome}${bo != null ? `, book price ${fmtAmerican(bo)}` : ''}${row.gambitOdds != null || bo != null ? `, ${feedName} showed ${fmtAmerican(row.gambitOdds ?? row.odds)}` : ''}`, bo);
+        }
+      } catch (e) { log.debug(`skipped log: ${e.message}`); }
       if (ctx.attempts.length) logTiming(row, book, ctx);
       const now = Date.now();
       const w = watch.get(row.id);
@@ -1096,7 +1328,9 @@ async function fastTick() {
     }));
     if (!found.length) return;
     // A watched bet (its last check failed) only goes again once the book's price is different.
-    const fresh = found.filter((r) => { const w = watch.get(r.id); return !w || String(w.sig).split('|')[0] !== String(r.odds); });
+    const fresh = found.filter((r) => { const w = watch.get(r.id); return !w || String(w.sig).split('|')[0] !== String(r.odds); })
+      // Live price match: a live price that isn't the table's is skipped at the book anyway, so it isn't checked.
+      .filter((r) => !(r.isLive && behindCfg(r.book)?.exact && r.gambitOdds != null && r.gambitOdds !== r.odds));
     const { ev } = pickBets(fresh, { quiet: true });
     const batch = ev.slice(0, Math.max(0, maxInFlight - inflight.size));
     if (!batch.length) return;
@@ -1107,6 +1341,17 @@ async function fastTick() {
 if (Number(fastCfg.everySec) > 0) setInterval(() => { fastTick().catch((e) => log.debug(`fast price check: ${e.message}`)); }, Math.max(250, Number(fastCfg.everySec) * 1000));
 
 log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}%${pregameMinEv != null ? ` (pre-game ${pregameMinEv}%)` : ''}${(cfg.minEvByOdds || []).map((b) => ` (${b.minEvPct}% at ${fmtAmerican(b.from)}..${fmtAmerican(b.to)})`).join('')}${Object.entries(cfg.longOddsProps || {}).map(([bk, r]) => ` (${bk === 'all' ? 'all books' : bk} props over ${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)}${r.maxOdds != null ? ` to ${fmtAmerican(r.maxOdds)}` : ''}: ${r.minEvPct}%${cfg.longPropConsensus.enabled ? `, ${cfg.longPropConsensus.minBooks}+ of ${Object.keys(cfg.longPropConsensus.books).join('/')} within ${cfg.longPropConsensus.maxPts} pts` : ''})`).join('')} softBooks=${cfg.softCheck.enabled ? `${cfg.softCheck.minBooks}+ of ${Object.keys(cfg.softCheck.books).join('/')} >${cfg.softCheck.minEvPct}%` : 'off'} pinnacleVsMarket=${cfg.marketCheck.enabled ? `<=${cfg.marketCheck.maxPts}pts over ${cfg.marketCheck.minBooks}+ soft books` : 'off'} sharpOut=${(cfg.sharp.excludeBooks || []).join(',') || 'none'} predictionMarkets=${cfg.sharp.predictionMarkets.enabled ? `${cfg.sharp.predictionMarkets.books.join('/')} at $${cfg.sharp.predictionMarkets.minLiquidity}+ thinner side, <=${cfg.sharp.predictionMarkets.maxHoldPct}c spread, ${(cfg.sharp.predictionMarkets.agreeBooks || []).join('/')} within ${cfg.sharp.predictionMarkets.agreePts}pts${cfg.sharp.predictionMarkets.inFair ? ' (in fair)' : ''}` : 'off'} novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} odds=${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)}..${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)} maxEV=${cfg.maxEvPct ?? 'off'}% (props ${cfg.maxPropEvPct == null ? 'no cap' : cfg.maxPropEvPct + '%'}) propHold=${holdCfg ? `over ${holdCfg.evPct}% EV for ${holdMs / 1000}s${holdCfg.liveTiming === true ? '' : ', no live FanDuel timing rule'}` : 'off'} sharpSpread<=${cfg.sharp.maxSpreadPts ?? 'off'}pts liveSharpAge<=${cfg.sharp.liveMaxAgeSec ?? 'off'}s (props ${cfg.sharp.livePropMaxAgeSec ?? 'off'}s) group=${cfg.group.maxBets ?? 'any'} bet (pre-game ${cfg.group.pregameMaxBets ?? cfg.group.maxBets ?? 'any'})/$${cfg.group.maxStake ?? 'any'} every ${cfg.group.cooldownSec || 0}s pregame<=${cfg.pregameMaxHours == null ? 'any' : cfg.pregameMaxHours + 'h'} stake=$${cfg.stake.amount} poll=${pollSeconds}s fastPrices=${Number(fastCfg.everySec) > 0 ? `every ${fastCfg.everySec}s within ${fastCfg.marginPts} pts` : 'off'} atOnce=${maxInFlight} recheckWatch=${WATCH_MS / 60e3}min`);
+{
+  const lpm = cfg.livePriceMatch && cfg.livePriceMatch.enabled !== false ? cfg.livePriceMatch : null;
+  const ppc = cfg.pregamePinnacleCheck, pmb = cfg.pmBelowFair, pot = cfg.pinnacleOnlyTotals;
+  const byBook = Object.entries(cfg.stake.byBook || {}).map(([b, v]) => `${BOOK_LABELS[b] || b}${v.pregame != null ? ` pre-game $${v.pregame}` : ''}${v.live != null ? ` live $${v.live}` : ''}${v.amount != null ? ` $${v.amount}` : ''}${v.fallback != null ? ` (refused: book max, else $${v.fallback})` : ''}`).join(', ');
+  log.info(`stakes: $${cfg.stake.amount}${byBook ? `, ${byBook}` : ''}; livePrice=${lpm ? `must match the table on ${Array.isArray(lpm.books) ? lpm.books.join('/') : 'every book'}${lpm.onRetry !== false ? ' (also on price moves while placing)' : ''}` : 'gambitBehind rules'}` +
+    ` liveEvProps=${Object.keys(books).filter((b) => liveEvPropOff(cfg, { book: b, isLive: true, isProp: true })).map((b) => `${BOOK_LABELS[b] || b} off`).join(', ') || 'on'}` +
+    ` pinnacleOnlyTotals=${pot && pot.enabled !== false ? `skip on ${(pot.books || []).join('/')}${pot.live === false ? '' : ' live'}${pot.pregame === true ? ' pre-game' : ''}` : 'off'}` +
+    ` predictionMarketBelowFair=${pmb && pmb.enabled !== false ? `skip at ${pmb.pts}+ pts on ${(pmb.markets || []).join('/')}` : 'off'}` +
+    ` pregamePinnacle=${ppc && ppc.enabled !== false ? `within ${ppc.maxPts} pts of ${Object.keys(ppc.books || {}).join(' and ')} (not priced: ${ppc.missing === 'pass' ? 'bet' : 'skip'})` : 'off'}` +
+    ` logs=${[skippedLog && 'skipped.csv', shadowLog && `shadow-bets.csv (${shadowCfg.minEvPct}%+ EV)`].filter(Boolean).join(', ') || 'off'}`);
+}
 if (source.arb) {
   const a = source.arb.cfg;
   log.info(source.arb.books.length
@@ -1134,3 +1379,5 @@ session.start();
 const loop = async () => { await tick(); setTimeout(loop, pollSeconds * 1000); };
 loop();
 process.on('SIGINT', () => { save(); try { propFunnel?.flush(); } catch {} console.log(); process.exit(0); });
+// Bets still listed when the app stops go into shadow-bets.csv with what was seen so far.
+process.on('exit', () => { try { shadowFlushAll(); } catch {} });

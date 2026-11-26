@@ -19,20 +19,24 @@ const cell = (v) => {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
-function makeCsvLog(file, columns) {
+// keepAll: a full file (10 MB) is kept as <name>.<date-time>.csv instead of replacing the one .old.csv.
+function makeCsvLog(file, columns, { keepAll = false } = {}) {
   let pending = [];
+  const write = () => {
+    if (!pending.length) return;
+    try {
+      const head = fs.existsSync(file) ? '' : columns.join(',') + '\n';
+      fs.appendFileSync(file, head + pending.join('\n') + '\n');
+      pending = [];
+      // Keep it under ~10 MB.
+      if (fs.statSync(file).size > 10e6) fs.renameSync(file, file.replace(/\.csv$/, keepAll ? `.${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.csv` : '.old.csv'));
+    } catch { if (pending.length > 2000) pending = pending.slice(-2000); }
+  };
   return {
     file,
-    record(o) {
-      pending.push(columns.map((k) => cell(o[k])).join(','));
-      try {
-        const head = fs.existsSync(file) ? '' : columns.join(',') + '\n';
-        fs.appendFileSync(file, head + pending.join('\n') + '\n');
-        pending = [];
-        // Keep it under ~10 MB.
-        if (fs.statSync(file).size > 10e6) fs.renameSync(file, file.replace(/\.csv$/, '.old.csv'));
-      } catch { if (pending.length > 500) pending = pending.slice(-500); }
-    },
+    record(o) { pending.push(columns.map((k) => cell(o[k])).join(',')); write(); },
+    /** Several lines in one write. */
+    recordMany(list) { for (const o of list) pending.push(columns.map((k) => cell(o[k])).join(',')); write(); },
   };
 }
 
@@ -65,4 +69,35 @@ export const TIMING_COLUMNS = ['time', 'book', 'live', 'event', 'market', 'selec
 
 export function makeTimingLog(dir, { dryRun = false } = {}) {
   return makeCsvLog(path.join(dir, dryRun ? 'bet-timing.dry.csv' : 'bet-timing.csv'), TIMING_COLUMNS);
+}
+
+// Skipped bets (skipped.csv, Austin 2026-11-26): one line for each bet that reached the minimum EV but was
+// skipped for any other reason: a scan rule (sharp books, soft books, groups, caps, timing, ...) or the
+// check at the book (price moved, line moved, suspended, Gambit behind, ...). EV-too-low skips aren't in it.
+//  - where: scan (our rules on the table's numbers) or book (the check at the book before betting)
+//  - reason: short code (same names as props-funnel.csv), detail: what it means / what the book said
+// The same bet and reason is written again only after 5 minutes or when its price changes.
+export const SKIPPED_COLUMNS = ['time', 'book', 'live', 'feed', 'table', 'league', 'event', 'startDate', 'market', 'selection', 'line',
+  'odds', 'tableOdds', 'bookOdds', 'evPct', 'fairOdds', 'fairSetBy', 'where', 'reason', 'detail'];
+
+export function makeSkippedLog(dir, { dryRun = false } = {}) {
+  return makeCsvLog(path.join(dir, dryRun ? 'skipped.dry.csv' : 'skipped.csv'), SKIPPED_COLUMNS, { keepAll: true });
+}
+
+// Loosened-rules data log (shadow-bets.csv, Austin 2026-11-26): every bet the table shows at shadowLog.minEvPct
+// (3%) or more, whatever our rules say, with the numbers behind every rule, so new rules can be built from a few
+// weeks of data. It never changes what gets bet. One line per bet (book + game + market + side + line), written
+// once the table stops listing it (or after it's been listed 6 hours), with how its fair price moved after:
+//  - failedRules: every rule it failed when first seen (each checked on its own, not just the first)
+//  - firstSkip: what the bot did with it then (the first rule it failed, or sent), outcome: the book check's last
+//    result (placed, price moved, ...)
+//  - fair60sOdds / ev60sPct: the fair about a minute later; closeFairOdds / closeEvPct: the last fair seen (CLV)
+export const SHADOW_COLUMNS = ['firstSeen', 'lastSeen', 'listedSec', 'book', 'live', 'feed', 'table', 'league', 'event', 'startDate',
+  'minToStart', 'kind', 'market', 'selection', 'line', 'odds', 'tableOdds', 'evPct', 'minEvPct', 'maxEvPct', 'fairOdds', 'fairSetBy',
+  'sharpAgeSec', 'sharpSpreadPts', 'pinnacle', 'kalshi', 'polymarket', 'novig', 'prophetx', 'pmGapPts',
+  'softDraftkings', 'softCaesars', 'softFanduel', 'softPassing', 'pinVsMedianPts', 'pinVsDraftkingsPts', 'pinVsFanduelPts',
+  'failedRules', 'firstSkip', 'outcome', 'fair60sOdds', 'ev60sPct', 'closeFairOdds', 'closeEvPct', 'closeOdds'];
+
+export function makeShadowLog(dir, { dryRun = false } = {}) {
+  return makeCsvLog(path.join(dir, dryRun ? 'shadow-bets.dry.csv' : 'shadow-bets.csv'), SHADOW_COLUMNS, { keepAll: true });
 }
