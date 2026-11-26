@@ -806,11 +806,15 @@ chrome.downloads?.onCreated.addListener((d) => {
   if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book: 'betmgm', level: 'info', text: `cancelled BetMGM's download of the GeoComply installer (${String(d.finalUrl || d.url || '').split('?')[0].slice(-80)}); the app is already installed` }));
 });
 // Runs in the BetMGM page: is the GeoComply app answering on this PC (the page asks it the same way)?
+// GeoComply's page script tries ports 53280, 53281 and 53282 (Austin's HARs). On Windows the app
+// sits on 53280; on a Mac it can sit on one of the others (Austin's Intel Mac, 2026-11-26: the page
+// found the app, but this check, which only tried 53280, said it was down). Same ports as the page.
 async function mgmGeoAppUp() {
-  for (const port of [53280]) {
-    try { const r = await fetch(`http://127.0.0.1:${port}/check?t=${Date.now()}`, { method: 'HEAD', mode: 'no-cors', cache: 'no-store' }); if (r) return true; } catch {}
-  }
-  return false;
+  const one = async (port) => {
+    try { const r = await fetch(`http://127.0.0.1:${port}/check?t=${Date.now()}`, { method: 'HEAD', mode: 'no-cors', cache: 'no-store' }); if (r) return port; } catch {}
+    throw 0;
+  };
+  try { await Promise.any([53280, 53281, 53282].map(one)); return true; } catch { return false; }
 }
 const mgmPickIn = async (tabId, mode) => (await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: mgmOddsPick, args: [mode] }).catch(() => []))[0]?.result || { found: false };
 
@@ -827,7 +831,7 @@ async function mgmClickRenew(tabId, label, since, waitFresh) {
   // Austin, 2026-11-23: the click made BetMGM download the GeoComply installer, i.e. the GeoComply
   // app wasn't answering. Then a click can't renew anything (and only triggers another download).
   const up = (await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: mgmGeoAppUp }).catch(() => []))[0]?.result;
-  if (up === false) return { ok: false, why: 'the BetMGM page can\'t reach the GeoComply location app on this PC. Either it isn\'t running (start "PlayerLocationCheck"), or Chrome blocks the site from it: click the icon left of the address in the BetMGM tab, Site settings, and set "Local network access" (or "Apps on device") to Allow. No odds were clicked' };
+  if (up === false) return { ok: false, why: 'the BetMGM page can\'t reach the GeoComply location app on this computer (tried ports 53280-53282). Either it isn\'t running (start "PlayerLocationCheck"), or Chrome blocks the site from it: click the icon left of the address in the BetMGM tab, Site settings, and set "Local network access" (or "Apps on device") to Allow. No odds were clicked' };
   const target = { tabId };
   let attached = false, added = false, removed = false, text = '', fronted = false, after = '';
   dbgBusy.add(tabId);
