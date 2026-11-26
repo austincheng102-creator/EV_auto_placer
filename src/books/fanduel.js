@@ -15,6 +15,7 @@
 // reference, so a FanDuel prop would be checked against itself. "fanduel": {"props": true} allows them.
 
 import { decimalToAmerican, americanToDecimal } from '../ev.js';
+import { log } from '../log.js';
 
 const GEO = '{{fdGeo}}';
 
@@ -216,6 +217,27 @@ export function eventTypeFor(league, extra = {}) {
 // FanDuel names tennis, soccer and fight events "A v B" (US leagues "Away @ Home"); same for both.
 export const atName = (s) => String(s || '').replace(/\s+(?:v|vs\.?|versus)\s+/i, ' @ ');
 
+/** Every event in a FanDuel page or search answer: attachments.events, or anywhere deeper
+ *  (the event search's answer shape isn't the pages' one). */
+export function pageEvents(j) {
+  const out = new Map();
+  for (const e of Object.values(j?.attachments?.events || {})) if (e?.eventId != null && e.name) out.set(String(e.eventId), e);
+  const walk = (v, depth) => {
+    if (!v || typeof v !== 'object' || depth > 8) return;
+    if (Array.isArray(v)) { v.forEach((x) => walk(x, depth + 1)); return; }
+    if (v.eventId != null && typeof v.name === 'string' && (v.openDate || / v | @ /.test(v.name)) && !out.has(String(v.eventId))) out.set(String(v.eventId), v);
+    for (const x of Object.values(v)) if (x && typeof x === 'object') walk(x, depth + 1);
+  };
+  walk(j, 0);
+  return [...out.values()];
+}
+/** The few event names closest to ours (shared words), for the not-found message. */
+export function nearestNames(events, event, n = 2) {
+  const want = new Set(words(atName(event)).filter((w) => w.length > 2));
+  return events.map((e) => ({ name: atName(e.name), k: words(e.name).filter((w) => want.has(w)).length }))
+    .filter((x) => x.k > 0).sort((a, b) => b.k - a.k).slice(0, n).map((x) => x.name);
+}
+
 /** Our game among a page's (or search's) events: by team selection id or names and start time. */
 export function matchEvent(rawEvents, markets, row, sel) {
   const event = atName(row.event);
@@ -223,7 +245,8 @@ export function matchEvent(rawEvents, markets, row, sel) {
   const events = rawEvents.map((e) => ({ ...e, name: atName(e.name) })).filter((e) => / @ /.test(e.name || '') && !isVirtual(e.name))
     .map((e) => ({ ...e, name: fdTeamName(e.name) }));
   const start = parseStart(row.startDate);
-  const near = (e) => !Number.isFinite(start) || Math.abs(Date.parse(e.openDate) - start) < 12 * 3600e3;
+  // An event without a start time (some answers leave it out) isn't ruled out by it.
+  const near = (e) => !Number.isFinite(start) || !Number.isFinite(Date.parse(e.openDate)) || Math.abs(Date.parse(e.openDate) - start) < 12 * 3600e3;
   const byTeam = sel == null ? [] : events.filter((e) => near(e) && markets.some((m) => m.eventId === e.eventId && (m.runners || []).some((r) => String(r.selectionId) === String(sel)) && !/OVER|UNDER/i.test(r0(m, sel)?.runnerName || '')));
   const byName = events.filter((e) => near(e) && sameGame(e.name, event));
   // Names FanDuel shortens ("NC State" for North Carolina State): one side matching, the other
@@ -289,16 +312,26 @@ export function makeFanDuel(name, label, cfg, bridge) {
   // first its sport page, then FanDuel's own event search for every game of that sport.
   const sportPage = (t) => `${api}/content-managed-page?page=SPORT&eventTypeId=${t}&pbHorizontal=false&_ak=${appKey}&timezone=America%2FDenver`;
   const facetUrl = `${host('scan')}/api/sports/navigation/facet/v1.0/search`;
-  async function searchSport(t) {
-    const c = cache.get(`facet:${t}`);
+  // Body shapes tried in turn until FanDuel takes one (it answers 400 to a shape it doesn't
+  // like); the one that works is remembered. A big maxValues first: with FanDuel's default only
+  // the first few matches of the sport come back, and tennis has hundreds.
+  let searchShape = null;
+  const shapes = [1000, 500, 200, 100, null];
+  async function searchSport(t, text) {
+    const key = `facet:${t}:${text || ''}`;
+    const c = cache.get(key);
     if (c && Date.now() - c.at < 120e3) return c.json;
     const body = (max) => ({ filter: { eventTypeIds: [Number(t)], contentGroup: { language: 'en', regionCode: 'NAMERICA' },
-      marketLevels: ['AVB_EVENT'], maxResults: 0, productTypes: ['SPORTSBOOK'], selectBy: 'FIRST_TO_START' },
-      facets: [{ type: 'EVENT', ...(max ? { maxValues: 1000 } : {}) }], currencyCode: 'USD' });
-    let res = await send('recheck', facetUrl, 'POST', body(true), {}, 30000, false);
-    if (res.status === 400) res = await send('recheck', facetUrl, 'POST', body(false), {}, 30000, false);
+      marketLevels: ['AVB_EVENT'], maxResults: 0, productTypes: ['SPORTSBOOK'], selectBy: 'FIRST_TO_START', ...(text ? { textQuery: text } : {}) },
+      facets: [{ type: 'EVENT', ...(max ? { maxValues: max } : {}) }], currencyCode: 'USD', locale: 'en_US' });
+    let res = null;
+    for (const max of searchShape != null ? [searchShape] : shapes) {
+      res = await send('recheck', facetUrl, 'POST', body(max), {}, 30000, false);
+      if (res.status !== 400) { if (res.status < 400 && res.json) searchShape = max; break; }
+    }
     if (res.status >= 400 || !res.json) throw new Error(`FanDuel event search HTTP ${res.status}: ${String(res.text || '').slice(0, 120)}`);
-    cache.set(`facet:${t}`, { at: Date.now(), json: res.json });
+    cache.set(key, { at: Date.now(), json: res.json });
+    if (cache.size > 200) cache.delete(cache.keys().next().value);
     return res.json;
   }
 
@@ -311,14 +344,24 @@ export function makeFanDuel(name, label, cfg, bridge) {
     const look = async (what, read) => {
       try {
         const j = await read();
-        const hit = matchEvent(Object.values(j.attachments?.events || {}), Object.values(j.attachments?.markets || {}), row, sel);
-        tried.push(`${what}: ${hit ? 'found' : 'not there'}`);
-        return hit;
+        const evs = pageEvents(j);
+        const hit = matchEvent(evs, Object.values(j.attachments?.markets || {}), row, sel);
+        if (hit) { tried.push(`${what}: found`); return hit; }
+        // Not there: say how many games FanDuel listed and the closest names, so the next
+        // log line shows whether the game is missing or its name is written differently.
+        const near = nearestNames(evs, row.event);
+        tried.push(`${what}: not there (${evs.length} games${near.length ? `, closest: ${near.join(' / ')}` : ''})`);
+        if (!evs.length) log.debug(`FanDuel ${what} for ${row.league} listed no games. Answer: ${JSON.stringify(j).slice(0, 1500)}`);
+        return null;
       } catch (e) { tried.push(`${what}: ${e.message}`); return null; }
     };
+    // FanDuel's search by name: the longest word of each side (a surname, a team's city).
+    const keyWord = (side) => words(side).sort((a, b) => b.length - a.length)[0];
+    const sides = atName(row.event).split(' @ ').map(keyWord).filter(Boolean);
     const hit = (page && await look(`${row.league} page`, () => getJson(`${api}/content-managed-page?page=CUSTOM&customPageId=${page}&pbHorizontal=false&_ak=${appKey}&timezone=America%2FDenver`, 120e3)))
       || (type && await look('sport page', () => getJson(sportPage(type), 120e3)))
-      || (type && await look('event search', () => searchSport(type)));
+      || (type && await look('event search', () => searchSport(type)))
+      || (type && sides[0] && await look(`search "${sides[0]}"`, () => searchSport(type, sides[0])));
     if (!hit) throw new Error(`FanDuel CO: game "${row.event}" not found (${row.league}; ${tried.join(', ')})`);
     return hit.eventId;
   }
@@ -360,6 +403,15 @@ export function makeFanDuel(name, label, cfg, bridge) {
     const key = mapKey(row);
     const c = mapCache.get(key);
     if (c?.out && Date.now() - c.at < 10 * 60e3) return c.out;
+    // Fast path: the market id from the row's own link (PropProfessor's one-click data). If
+    // FanDuel CO has that market with our selection, it is the bet; no game lookup needed.
+    // (Gambit's ids are New Jersey's and won't be there, so those rows go the long way.)
+    if (row.marketRef) {
+      try {
+        const mk = (await marketPrices([String(row.marketRef)])).find((x) => String(x.marketId) === String(row.marketRef));
+        if (mk && runnerOf(mk, sel)) { const out = { marketId: mk.marketId, selectionId: Number(sel), eventId: mk.eventId }; remember(key, { out }); return out; }
+      } catch { /* the long way below */ }
+    }
     const eventId = await findEvent(row, sel);
     const base = `${api}/event-page?_ak=${appKey}&eventId=${eventId}&useCombinedTouchdownsVirtualMarket=true&useQuickBets=true&useQuickBetsMLB=true`;
     const first = await getJson(base, 5 * 60e3);
