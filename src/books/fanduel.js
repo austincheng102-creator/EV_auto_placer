@@ -403,6 +403,15 @@ export function makeFanDuel(name, label, cfg, bridge) {
     const key = mapKey(row);
     const c = mapCache.get(key);
     if (c?.out && Date.now() - c.at < 10 * 60e3) return c.out;
+    // Fast path: the market id from the row's own link (PropProfessor's one-click data). If
+    // FanDuel CO has that market with our selection, it is the bet; no game lookup needed.
+    // (Gambit's ids are New Jersey's and won't be there, so those rows go the long way.)
+    if (row.marketRef) {
+      try {
+        const mk = (await marketPrices([String(row.marketRef)])).find((x) => String(x.marketId) === String(row.marketRef));
+        if (mk && runnerOf(mk, sel)) { const out = { marketId: mk.marketId, selectionId: Number(sel), eventId: mk.eventId }; remember(key, { out }); return out; }
+      } catch { /* the long way below */ }
+    }
     const eventId = await findEvent(row, sel);
     const base = `${api}/event-page?_ak=${appKey}&eventId=${eventId}&useCombinedTouchdownsVirtualMarket=true&useQuickBets=true&useQuickBetsMLB=true`;
     const first = await getJson(base, 5 * 60e3);
