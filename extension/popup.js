@@ -36,6 +36,9 @@ async function render() {
   { const left = s.dkSpanLeft != null ? Math.max(0, Math.round((s.dkSpanLeft - (Date.now() - s.dkSpanAt) / 1000) / 60)) : null;
     $('dkspan').textContent = left == null ? 'not seen yet (open the DraftKings tab)' : `${left} min left (renewed automatically)${s.dkSpanRenewedAt ? `, last renewed ${Math.round((Date.now() - s.dkSpanRenewedAt) / 60000)} min ago` : ''}`;
     $('dkspan').className = left ? 'on' : 'off'; }
+  { const left = s.caesarsLogin ? Math.round((s.caesarsLogin * 1000 - Date.now()) / 3600e3) : null;
+    $('cz').textContent = left == null ? 'not seen yet (refresh the Caesars tab)' : left > 0 ? `seen, good for ${left} h (${(s.caesarsHeaders || []).join(', ')})` : 'ran out (log in again in the Caesars tab)';
+    $('cz').className = left > 0 ? 'on' : 'off'; }
   $('armed').textContent = armed ? 'ARMED' : 'disarmed (re-checks only)'; $('armed').className = armed ? 'on' : 'off';
   $('toggle').textContent = armed ? 'Disarm' : 'Arm (allow real bets)';
 }

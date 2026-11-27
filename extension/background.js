@@ -9,6 +9,7 @@ const BOOK_HOSTS = {
   betmgm: [/(^|\.)betmgm\.com$/],
   draftkings: [/^sportsbook\.draftkings\.com$/],
   thescore: [/^sportsbook\.thescore\.bet$/],
+  caesars: [/^sportsbook\.caesars\.com$/],
   gambit: [/(^|\.)gambitodds\.com$/],
   propprofessor: [/(^|\.)propprofessor\.com$/],
 };
@@ -335,6 +336,23 @@ chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
   if (JSON.stringify(next) !== JSON.stringify(dkHdr.headers)) { dkHdr = { headers: next, at: Date.now() }; store.set({ dkHdr }); }
   else dkHdr.at = Date.now();
 }, { urls: ['https://*.draftkings.com/api/wager/*'] }, ['requestHeaders', 'extraHeaders']);
+
+// Caesars: the page's API requests (api.americanwagering.com) carry its login and device headers
+// (sessionid: a 24h login token, playerid, x-aws-waf-token, x-unique-device-id, x-app-version, ...;
+// Austin's capture 2026-11-26). We keep the newest ones your Caesars tab sent and add them to the app's
+// Caesars requests, so they match the site's own. The cookies go with the in-tab request as usual.
+let czAuth = { headers: {}, at: 0 };
+store.get('czAuth').then((v) => { if (v?.czAuth && !czAuth.at) czAuth = v.czAuth; });
+const CZ_KEEP = ['sessionid', 'playerid', 'x-aws-waf-token', 'x-unique-device-id', 'x-app-version', 'x-platform', 'x-platform-type'];
+chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
+  if (d.tabId < 0) return;   // only the page's own requests
+  const got = {};
+  for (const h of d.requestHeaders || []) if (CZ_KEEP.includes(h.name.toLowerCase()) && h.value) got[h.name.toLowerCase()] = h.value;
+  if (!Object.keys(got).length) return;
+  const next = { ...czAuth.headers, ...got };
+  if (JSON.stringify(next) !== JSON.stringify(czAuth.headers)) { czAuth = { headers: next, at: Date.now() }; store.set({ czAuth }); }
+  else czAuth.at = Date.now();
+}, { urls: ['https://api.americanwagering.com/*'] }, ['requestHeaders', 'extraHeaders']);
 
 // fd-geo.js / br-geo.js have to be in the FanDuel / BetRivers page from the start to see their
 // location checks.
@@ -2199,6 +2217,10 @@ async function handle(msg) {
     }
     if (msg.request.useTheScoreAuth) msg.request.headers = { ...(msg.request.headers || {}), ...tsAuth.headers };
     if (msg.request.useDraftKingsHeaders) msg.request.headers = { ...(msg.request.headers || {}), ...dkHdr.headers };
+    if (msg.request.useCaesarsAuth) {
+      if (!czAuth.headers.sessionid) return reply({ error: 'Caesars login not seen yet: refresh the Caesars tab (stay logged in)', notSent: true });
+      msg.request.headers = { ...czAuth.headers, ...(msg.request.headers || {}) };
+    }
     if (msg.request.useGambitAuth) {
       if (!gambitAuth) return reply({ error: 'no Gambit login seen yet: refresh your Gambit tab' });
       msg.request.headers = { ...(msg.request.headers || {}), authorization: gambitAuth };
@@ -2307,7 +2329,7 @@ chrome.tabs.onRemoved.addListener(sendTabs);
 chrome.runtime.onMessage.addListener((m, _s, respond) => {
   if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth, betriversLogin: !!kambiAuth, betriversRenewedAt: kambiRenewedAt, hardrockLogin: !!hrAuth.session, hardrockGeo: hrAuth.geoAt || 0,
     fanduelExp: jwtExp(fdAuth.auth), fanduelGeoExp: fdGeoExp(fdAuth.geo), fanduelGeoLast: fdGeoLast, betriversGeoExp: brGeo.status === 'ALLOWED' ? brGeo.expires || 0 : 0, betriversGeoSeen: !!(brGeo.at || brGeo.flagAt), betriversGeoLast: brGeoLast, betmgmGeoNext: geoKeepers.betmgm.g.nextAt || 0, betmgmGeoLast: geoKeepers.betmgm.last, thescoreGeoNext: geoKeepers.thescore.g.nextAt || 0, thescoreGeoLast: geoKeepers.thescore.last, thescoreLogin: tsLogin.last,
-    gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, dkSpanLeft: dkSpan.left, dkSpanAt: dkSpan.at, dkSpanRenewedAt: dkSpan.renewedAt, betmgmLogin: !!bmAuth.xsrf, betmgmHeaders: Object.keys(bmAuth.headers || {}), thescoreHeaders: Object.keys(tsAuth.headers), alert: alertText, lastReload, lastLogin, autoLogin: settings.gambitAutoLogin })); return true; }
+    gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, dkSpanLeft: dkSpan.left, dkSpanAt: dkSpan.at, dkSpanRenewedAt: dkSpan.renewedAt, betmgmLogin: !!bmAuth.xsrf, betmgmHeaders: Object.keys(bmAuth.headers || {}), thescoreHeaders: Object.keys(tsAuth.headers), caesarsLogin: jwtExp(czAuth.headers.sessionid), caesarsHeaders: Object.keys(czAuth.headers), alert: alertText, lastReload, lastLogin, autoLogin: settings.gambitAutoLogin })); return true; }
 });
 // Keep the service worker alive while the engine runs.
 chrome.alarms?.create('keepalive', { periodInMinutes: 0.5 });
