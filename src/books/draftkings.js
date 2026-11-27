@@ -166,6 +166,7 @@ export function makeDraftKings(name, label, cfg, bridge) {
   // two of them 4 min apart paused all of DraftKings and lost a +9% Buffalo bet.
   const badSel = new Map();   // selection id -> skipped until (ms)
   const strikes = new Map();  // selection id -> {n refusals, at}
+  let lastBetAt = 0, betting = false;   // when the last DraftKings bet went (betGapSec); one going out now
   let refusedAt = [];         // [{id, at}] 403s in the last 5 min
   const selBlocked = (id) => {
     const until = badSel.get(id) || 0;
@@ -328,6 +329,18 @@ export function makeDraftKings(name, label, cfg, bridge) {
           { ...slipHeaders, accept: 'application/json', 'x-request-client-timestamp': String(Date.now()) }, 30000);
         return answer(res, { ...q, offer: null }, 'acceptPurchase', `accepted DraftKings' counter-offer ${quote.odds > 0 ? '+' : ''}${quote.odds}; `);
       }
+      // One DraftKings bet per betGapSec (default 60): refusals came in 5-30 min waves that started a few
+      // minutes after the app placed 3-4 DraftKings bets within a few minutes (Austin's prices.csv,
+      // 2026-11-27: 5 of 6 waves). A bet that comes sooner sends nothing and waits its turn; then it's
+      // checked again from the start (price and every rule) before it goes. A counter-offer being
+      // accepted (above) is the same bet, so it doesn't wait.
+      const gapMs = Number(k.betGapSec ?? 60) * 1000;
+      if (betting || (gapMs > 0 && Date.now() < lastBetAt + gapMs)) {
+        const e = new Error(betting ? 'waiting its turn: another DraftKings bet is going out' : `waiting its turn: one DraftKings bet per ${Math.round(gapMs / 1000)}s, the last went ${Math.round((Date.now() - lastBetAt) / 1000)}s ago`);
+        e.paused = true; e.notSent = true; e.waitTurn = true; e.until = betting ? Date.now() + 5000 : lastBetAt + gapMs; throw e;
+      }
+      betting = true;   // so two bets checked at once don't both go
+      try {
       // The price token comes from calculateBets, asked for right now (the check before read the odds
       // feed), or again after a price move (the new price came with the old price's token). Bet only
       // if it's still the price every rule was checked at.
@@ -350,8 +363,10 @@ export function makeDraftKings(name, label, cfg, bridge) {
         locale: 'en', oddsStyle: 'american', autoAcceptMode: 'None',
       };
       const sentAt = Date.now();
+      lastBetAt = sentAt;
       const res = await send('place', `${wager}/placeBets`, 'POST', body, { ...slipHeaders, calculationid: uuid(), 'x-request-client-timestamp': String(Date.now()) }, 30000);
       return answer(res, q, 'placeBets', '', sentAt);
+      } finally { betting = false; }
     },
   });
   // One page (25) of My Bets, newest first, over the site's WebSocket. filter: {status: 'All' | 'Open' | 'Settled'}.

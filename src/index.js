@@ -856,8 +856,8 @@ async function placeAt(row, book, quote, ctx, retries = 0) {
     // The book paused its price checks before anything was sent (DraftKings: its bot filter answered
     // the bet slip's price check HTTP 403): the bet waits for the pause to end, then is checked again.
     if (e.paused && e.notSent) {
-      ctx.sent = false; ctx.outcome = 'paused'; ctx.pausedUntil = e.until;
-      lg.warn(`${book.label}: ${e.message} — nothing placed, checked again after the pause`);
+      ctx.sent = false; ctx.outcome = e.waitTurn ? 'waiting turn' : 'paused'; ctx.pausedUntil = e.until;
+      lg.warn(`${book.label}: ${e.message} — nothing placed, checked again ${e.waitTurn ? `at ${new Date(e.until).toLocaleTimeString()}` : 'after the pause'}`);
       return false;
     }
     // Stake too big for the book (Hard Rock's $10 pre-game stake, Austin 2026-11-26): once more at the book's max.
