@@ -1127,11 +1127,13 @@ const geoKeepers = {
     help: 'Is the GeoComply location app running on this PC, and are you logged in to DraftKings?' }),
   // Caesars (Austin's capture 2026-11-27): the page's check (pam/geocomply/transaction) is good for 20
   // minutes and the page runs the next one itself. Like DraftKings: if the page hasn't run it by 45s before
-  // it runs out, the Caesars tab is reloaded (to the front every other try); from 5s before it runs out until
-  // a new one comes, Caesars bets are held (not sent) and checked again next scan. A bet refused over the
-  // location renews it at once. Off with config.json "session": {"caesarsGeoRenew": false}.
+  // it runs out, the Caesars tab is reloaded (to the front every other try). A bet refused over the
+  // location renews it at once. Bets are NOT held when it looks lapsed (unlike DraftKings): the page's own
+  // renewals haven't been seen live yet, and if the page renews some way this doesn't see, holding would
+  // stop every Caesars bet; Caesars refuses a bet itself when the check has really lapsed.
+  // Off with config.json "session": {"caesarsGeoRenew": false}.
   caesars: makeGeoKeeper({ book: 'caesars', label: 'Caesars', key: 'evPlacerCzGeo', host: /^sportsbook\.caesars\.com$/, setting: 'caesarsGeoRenew',
-    renewBeforeMs: 45e3, needSeen: true, holdLapsed: true, showVisible: false, onTime: true,
+    renewBeforeMs: 45e3, needSeen: true, holdLapsed: false, showVisible: false, onTime: true,
     help: 'Is the GeoComply location app running on this PC, and are you logged in to Caesars?' }),
 };
 // DraftKings' location answers, seen on the network (for a DraftKings page loaded before dk-geo.js
