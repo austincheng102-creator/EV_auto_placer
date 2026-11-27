@@ -156,18 +156,19 @@ export function makeCaesars(name, label, cfg, bridge) {
         price: single?.price || x.price || null, closed: x.active === false || (ev.started === true && mk.tradedInPlay === false) };
       known.set(sel, { ...(known.get(sel) || {}), ...k });
       if (known.size > 2000) known.delete(known.keys().next().value);
-      return k;
+      return { k, j };
     }
-    return null;
+    return { k: null, j };
   }
 
   // The price check: POST v2/bets/details for the selection (no bet, nothing kept on the slip).
   async function details(sel, row, kind = 'recheck') {
     let first = null;
     if (!known.get(sel)?.marketId) {
-      const k = await lookup(sel, kind);
-      if (!k) return { j: null, one: null, why: ['Caesars has no such selection in Colorado (gone or settled)'] };
-      if (k.closed) return { j: null, one: null, why: ['Caesars has closed this selection'] };
+      const { k, j: lj } = await lookup(sel, kind);
+      const lk = (w) => ({ j: { lookup: lj }, one: null, why: [w, ...czWhy(lj)] });
+      if (!k) return lk('Caesars has no such selection in Colorado (gone, settled or its line moved)');
+      if (k.closed) return lk('Caesars has closed this selection');
       // First check: send Caesars' own current price from the lookup, as the site's slip does.
       const am = czAmerican(k.price);
       if (am != null) first = czPrice(am, k.price);
@@ -201,7 +202,7 @@ export function makeCaesars(name, label, cfg, bridge) {
       if (!sel) throw new Error(`no Caesars selection id in the link (${String(row.link || 'no link').slice(0, 160)})`);
       const { one, why, j } = await details(sel, row);
       if (!one) return { odds: null, line: row.line, suspended: true, why: why.join(', ') || 'Caesars has no such selection in Colorado',
-        debug: `Caesars price check for ${sel}: ${JSON.stringify(j ?? null).slice(0, 600)}` };
+        debug: `Caesars price check for ${sel}: ${why.join(', ') || 'no selection in the reply'}; reply ${JSON.stringify(j ?? null).slice(0, 1500)}` };
       const odds = czAmerican(one.price);
       return { odds, line: lineOf(one, row), suspended: one.bettable === false || j.bettable === false || odds == null,
         maxStake: null, cz: { sel, one, price: one.price, delay: one.delay },

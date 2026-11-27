@@ -644,8 +644,8 @@ async function tryBet(row, ctx) {
   const hh = held.get(holdKey(row));
   lg.header(headerText(row) + (w ? ` (checking again, ${Math.round((Date.now() - w.since) / 1000)}s after it failed)` : '') + (hh && Date.now() - hh.since >= holdMs ? ` (second check after a ${heldSec(hh)}s hold)` : ''));
 
-  if (!Number.isFinite(quote.odds)) { ctx.outcome = 'no price'; lg.warn(`${book.label}: re-check returned no price — skipped`); return false; }
-  if (quote.suspended) { ctx.outcome = 'suspended'; lg.warn(`${book.label}: market suspended — skipped`); return false; }
+  if (!Number.isFinite(quote.odds)) { ctx.outcome = 'no price'; lg.warn(`${book.label}: re-check returned no price${quote.why ? ` (${String(quote.why).slice(0, 200)})` : ''} — skipped`); return false; }
+  if (quote.suspended) { ctx.outcome = 'suspended'; lg.warn(`${book.label}: market suspended${quote.why ? ` (${String(quote.why).slice(0, 200)})` : ''} — skipped`); return false; }
   if (row.line != null && quote.line != null && quote.line !== row.line) {
     ctx.outcome = 'line moved';
     lg.warn(`${BOOK_LABELS[row.book]}: line moved (${feedName} priced ${row.line}, ${book.label} line is now ${quote.line}) — skipped, nothing placed`);
