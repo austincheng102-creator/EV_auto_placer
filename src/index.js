@@ -15,7 +15,7 @@ import { makeResultSync } from './resultsync.js';
 import { allBets } from './results.js';
 import readline from 'node:readline/promises';
 import { appDir } from './paths.js';
-import { ensureConfig, writeExtension, extensionChanged } from './setup.js';
+import { ensureConfig, findConfig, writeExtension, extensionChanged } from './setup.js';
 import { VERSION } from './version.js';
 import embedded from './embedded.js';
 import { checkForUpdate, cleanupOld } from './update.js';
@@ -54,7 +54,8 @@ if (flag('--help') || flag('-h') || args[0] === 'help') {
   --no-novig             don't require Novig to agree
   --book hardrock        which book to bet today: betrivers or hardrock
   --books betrivers,hardrock   more than one at once
-  --config other.json    use a different config file
+  --config other.json    use this config file (default: the *config*.json next to the app,
+                         e.g. ants_config.json; with several, the newest)
   --dry-run              simulate the book, never place
   --source mock          use the fake Gambit feed
   --no-update            skip the update check at startup
@@ -68,7 +69,7 @@ if (flag('--version') || flag('-v')) { console.log(VERSION); process.exit(0); }
 async function fetchResultsWhileOpen() {
   const dry = flag('--dry-run');
   let cfg = {};
-  try { cfg = JSON.parse(fs.readFileSync(path.join(appDir, opt('--config', 'config.json')), 'utf8')); } catch {}
+  try { cfg = JSON.parse(fs.readFileSync(findConfig(opt('--config')).path, 'utf8')); } catch {}
   const every = (cfg.results?.everyMinutes ?? 10) * 60e3;
   if (dry || every <= 0) return;
   const port = cfg.bridgePort || 8765;
@@ -131,7 +132,10 @@ if (args[0] === 'bets') {
 
 // Always keep the extension folder and a config.json next to the app.
 const extDir = writeExtension();
-const { path: cfgPath, created } = ensureConfig(opt('--config', 'config.json'));
+const { path: cfgPath, created, others } = ensureConfig(opt('--config'));
+// Config file: any *config*.json next to the app (e.g. ants_config.json), so each computer's file
+// can have a name people recognize. Several of them: the newest is used, and the log says so.
+if (!created) console.log(`Config: ${path.basename(cfgPath)}${others.length ? `  (newest of several; also found ${others.join(', ')}, which are NOT used. Keep only one)` : ''}`);
 if (args[0] === 'init' || created) {
   console.log(`Config:    ${cfgPath}${created ? '  (created, fill in the gambit and betrivers sections)' : ''}`);
   console.log(`Extension: ${extDir}  (chrome://extensions > Developer mode > Load unpacked)`);
