@@ -108,6 +108,8 @@ export function makeCaesars(name, label, cfg, bridge) {
     kind, url: `${api}/${path}`, method,
     headers: { accept: '*/*', 'content-type': 'application/json', 'correlation-id': uuid(), ...extra },
     ...(body != null ? { body: JSON.stringify(body) } : {}), credentials: 'include', useCaesarsAuth: true,
+    // As the site: sessionid goes to the price check and open bets, not to place or settled history.
+    ...(/^v2\/bets$|settled/.test(path.split('?')[0]) ? { czNoSession: true } : {}),
   }, ms);
   // HTTP 400 "Cannot retrieve BOP customer session: Missing Auth Token" (Austin's first live run,
   // 2026-11-27) is a login header missing from the request, not a bad request.

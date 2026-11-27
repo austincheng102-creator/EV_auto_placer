@@ -343,12 +343,12 @@ chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
 // Caesars requests, so they match the site's own. The cookies go with the in-tab request as usual.
 let czAuth = { headers: {}, at: 0 };
 store.get('czAuth').then((v) => { if (v?.czAuth && !czAuth.at) czAuth = v.czAuth; });
-// Also authorization and every other x-* header: HAR exports leave authorization out, and Caesars
-// answered the app's requests "Missing Auth Token" with only the headers seen in the HAR (Austin's first
-// live run, 2026-11-27). Per-request ones (correlation-id, idempotency-key, tracing) aren't copied.
-const CZ_KEEP = ['sessionid', 'playerid', 'authorization', 'token', 'auth-token', 'x-auth-token', 'x-api-key'];
-const CZ_SKIP = /^x-(datadog|amzn-trace|b3|request-id|correlation)/;
-const czKeep = (n) => CZ_KEEP.includes(n) || (/^x-/.test(n) && !CZ_SKIP.test(n));
+// Also authorization: HAR exports leave it out, and without it Caesars answered "Missing Auth Token"
+// (Austin's first live run, 2026-11-27). Only the headers the page itself sends to the sportsbook API
+// (Austin's captures): Caesars' CORS check lets through only those, and one extra header made Chrome drop
+// the request after its pre-check ("pre-check passed, then the request got no answer", 2026-11-27).
+const CZ_KEEP = ['authorization', 'sessionid', 'playerid', 'x-app-version', 'x-aws-waf-token', 'x-platform', 'x-platform-type', 'x-unique-device-id'];
+const czKeep = (n) => CZ_KEEP.includes(n);
 chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
   if (d.tabId < 0) return;   // only the page's own requests
   const got = {};
@@ -2133,7 +2133,7 @@ async function ppRead(req) {
 }
 
 async function handle(msg) {
-  const reply = (o) => ws?.readyState === 1 && ws.send(JSON.stringify({ id: msg.id, ...o, ...(msg.czNames ? { czHeaders: msg.czNames } : {}) }));
+  const reply = (o) => ws?.readyState === 1 && ws.send(JSON.stringify({ id: msg.id, ...o, ...(o.error && msg.czNames ? { error: `${o.error} [headers sent: ${msg.czNames.join(', ')}]` } : {}), ...(msg.czNames ? { czHeaders: msg.czNames } : {}) }));
   try {
     const { armed = false } = await chrome.storage.local.get('armed');
     if (msg.request.kind === 'place' && !armed) return reply({ error: 'extension is DISARMED (open the popup to arm)' });
@@ -2246,8 +2246,10 @@ async function handle(msg) {
     if (msg.request.useDraftKingsHeaders) msg.request.headers = { ...(msg.request.headers || {}), ...dkHdr.headers };
     if (msg.request.useCaesarsAuth) {
       if (!czAuth.headers.sessionid) return reply({ error: 'Caesars login not seen yet: refresh the Caesars tab (stay logged in)', notSent: true });
-      msg.request.headers = { ...czAuth.headers, ...(msg.request.headers || {}) };
-      msg.czNames = Object.keys(czAuth.headers);
+      // The page sends sessionid only to some endpoints (price check, open bets), not to place or settled.
+      const base = Object.fromEntries(Object.entries(czAuth.headers).filter(([k]) => CZ_KEEP.includes(k) && !(msg.request.czNoSession && k === 'sessionid')));
+      msg.request.headers = { ...base, ...(msg.request.headers || {}) };
+      msg.czNames = Object.keys(msg.request.headers);
     }
     if (msg.request.useGambitAuth) {
       if (!gambitAuth) return reply({ error: 'no Gambit login seen yet: refresh your Gambit tab' });
