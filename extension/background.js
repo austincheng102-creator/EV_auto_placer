@@ -717,7 +717,7 @@ async function keepBrGeo() {
   const t = await brTab();
   if (!t || t.discarded) return;
   await brVisible(t.id);
-  if (brGeoJob) return;
+  if (brGeoJob || brAuto.state.busy) return;   // not while logging back in (a reload would cut it short)
   const g = await brGeoNow(t.id);
   if (!g.at && !g.flagAt) return;   // nothing seen yet (br-geo.js starts with the next page load)
   if (brGeoGood(g)) return;
@@ -1180,7 +1180,7 @@ const jwtExp = (tok) => {
 // debugger (chrome.debugger), which Chrome treats as real mouse/keyboard input. While it runs
 // (a few seconds) Chrome shows a bar "EV Placer Bridge started debugging this browser"; it goes
 // away by itself. Off with config.json "session": {"gambitAutoLogin": false}.
-let settings = { gambitAutoLogin: true, fanduelGeoRenew: true, betriversGeoRenew: true, betmgmGeoRenew: true, betmgmGeoClick: true, betmgmAutoLogin: true, thescoreGeoRenew: true, thescoreAutoLogin: true, caesarsGeoRenew: true, caesarsAutoLogin: true, draftkingsPlaySpan: true, draftkingsGeoRenew: true, hardrockGeoRenew: true };
+let settings = { gambitAutoLogin: true, fanduelGeoRenew: true, betriversGeoRenew: true, betmgmGeoRenew: true, betmgmGeoClick: true, betmgmAutoLogin: true, thescoreGeoRenew: true, thescoreAutoLogin: true, caesarsGeoRenew: true, caesarsAutoLogin: true, betriversAutoLogin: true, draftkingsPlaySpan: true, draftkingsGeoRenew: true, hardrockGeoRenew: true };
 chrome.storage.local.get('settings').then((v) => { if (v?.settings) settings = { ...settings, ...v.settings }; }).catch(() => {});
 let lastLogin = null;          // { at, ok, why } for the popup
 let loginBusy = false;
@@ -1401,6 +1401,7 @@ async function reloadTab(book, why) {
   if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'reloaded', book, why }));
   // If the reload lands on Gambit's logged-out home page, log back in with Chrome's saved password.
   if (book === 'gambit') setTimeout(() => autoLoginGambit('after reloading the Gambit tab').catch(() => {}), 12e3);
+  if (book === 'betrivers' && Date.now() < brLoginWanted) setTimeout(() => autoLoginBetRivers().catch(() => {}), 15e3);
   return true;
 }
 
@@ -1410,7 +1411,10 @@ async function reloadTab(book, why) {
 // small, harmless sign of use: the pointer moves and Shift is tapped. Nothing is clicked or typed.
 const NUDGE_MS = 4 * 60e3;
 // theScore too: its page logs you out after 15 minutes with no key or mouse press (see autoLoginTheScore).
-const NUDGE_BOOKS = ['hardrock', 'gambit', 'thescore'];
+// BetRivers too: its page only tells the site you're still there (sessions/portal/keepalive) when it
+// sees a mouse move or key press (its idle timer goes "active" again), and the site then warns
+// "You have been inactive for a long time" and logs you out 5 minutes later (see br-geo.js).
+const NUDGE_BOOKS = ['hardrock', 'gambit', 'thescore', 'betrivers'];
 const nudgedAt = {};
 function nudgePage() {
   const x = 40 + Math.round(Math.random() * 300), y = 40 + Math.round(Math.random() * 200);
@@ -1650,15 +1654,16 @@ async function autoLoginBetMGM() {
 // 5 minutes, then 30 minutes after 2 in a row: repeated wrong-password logins can lock the account.
 // The same login flow serves Caesars (makeAutoLogin below): its page shows a "Log In" button when
 // logged out, which opens a login box Chrome fills with the saved username and password.
-function makeAutoLogin({ book, label, setting, storeKey, home, site, passHelp }) {
+function makeAutoLogin({ book, label, setting, storeKey, home, site, passHelp, pickTab, blocked, needed }) {
 const tsLogin = { busy: false, triedAt: 0, fails: 0, subFails: 0, submitted: false, last: null, timer: null, saidAt: 0, said: '' };
 const tsLoginGap = () => (tsLogin.subFails ? (tsLogin.subFails >= 2 ? 30 * 60e3 : 5 * 60e3) : tsLogin.fails >= 20 ? 60e3 : 15e3);
 async function autoLoginTheScore() {
   if (settings[setting] === false || tsLogin.busy || ws?.readyState !== 1) return;
-  const t = (await bookTabs()).find((x) => x.book === book);
-  if (!t || t.discarded || dbgBusy.has(t.id) || geoKeepers[book]?.job || placing[book] > 0) return;
+  const t = (await bookTabs()).find((x) => x.book === book && (!pickTab || pickTab(x)));
+  if (!t || t.discarded || dbgBusy.has(t.id) || geoKeepers[book]?.job || placing[book] > 0 || blocked?.()) return;
   let f = await inPage(t.id, false).catch(() => ({ state: 'no-page' }));
   if (f.state === 'logged-in' || f.state === 'no-page') return;
+  if (needed && !needed()) return;   // the page shows a login button, but nothing says it's logged out
   if (Date.now() - tsLogin.triedAt < tsLoginGap() - 500) return;
   if (!chrome.debugger) return;
   tsLogin.busy = true; tsLogin.triedAt = Date.now();
@@ -1760,6 +1765,51 @@ const autoLoginTheScore = tsAuto.run;
 // Off with config.json "session": {"caesarsAutoLogin": false}.
 const czAuto = makeAutoLogin({ book: 'caesars', label: 'Caesars', setting: 'caesarsAutoLogin', storeKey: 'czLogin', home: null, site: 'caesars.com', passHelp: 'wrong saved password, or Caesars wants a code' });
 const autoLoginCaesars = czAuto.run;
+// BetRivers (Austin, 2026-11-27: logged out while the app ran). Its page shows a "Log In" button when
+// logged out, which opens a login box (screen name or email, password, "Log In") that Chrome fills
+// with the saved login. Not while its location check is being renewed (that may reload the tab).
+// After logging in, the extension picks up the new login headers from the page's own requests and
+// gets a fresh sportsbook (Kambi) token the first time a bet needs one. If BetRivers asks for the
+// code it emails after too many wrong passwords, this stops and says so (it waits 5 / 30 min).
+// Off with config.json "session": {"betriversAutoLogin": false}.
+const brAuto = makeAutoLogin({ book: 'betrivers', label: 'BetRivers', setting: 'betriversAutoLogin', storeKey: 'brLogin', home: null, site: 'betrivers.com',
+  passHelp: 'wrong saved password, or BetRivers wants the code it emails you',
+  pickTab: (x) => { try { const h = new URL(x.url).hostname; return /(^|\.)betrivers\.com$/.test(h) && !/kambi|api/.test(h); } catch { return false; } },
+  blocked: () => !!brGeoJob,
+  // Only once something says it's logged out (the app's login check, or the site's own logout
+  // message): a "Log In" button alone could be the sportsbook's own bet slip button.
+  needed: () => Date.now() < brLoginWanted || (brGeo.logoutAt && Date.now() - brGeo.logoutAt < 15 * 60e3) });
+const autoLoginBetRivers = brAuto.run;
+let brLoginWanted = 0;   // the app said BetRivers is logged out: try logging in until then
+async function brWantLogin(why) {
+  brLoginWanted = Date.now() + 5 * 60e3;
+  // The site refused the login but the page still shows you logged in (no "Log In" button): reload
+  // it so it finds out (at most once per 5 min). Otherwise log in.
+  const t = await brTab();
+  const f = t && !t.discarded && !brAuto.state.busy ? await inPage(t.id, false).catch(() => ({})) : {};
+  if (f.state === 'logged-in') return reloadTab('betrivers', `the app found it logged out (${why || 'login check refused'}) but the page still looks logged in`);
+  return autoLoginBetRivers();
+}
+
+// What the BetRivers page heard from the site about your login (br-geo.js keeps it): the site's
+// "you've been inactive, logging you out in 5 minutes" warning (br-geo.js answers it with a mouse
+// move, which the page counts as you being there) and the site logging you out, with its reason.
+// Said in the app's log once each, so the next logout says why it happened.
+let brSaid = { warn: 0, logout: 0 };
+store.get('brSaid').then((v) => { if (v?.brSaid) brSaid = { ...brSaid, ...v.brSaid }; });
+async function watchBrSession() {
+  const t = await brTab();
+  if (!t || t.discarded) return;
+  const g = await brGeoNow(t.id);
+  if (g.idleWarnAt && g.idleWarnAt > brSaid.warn) {
+    brSaid.warn = g.idleWarnAt; store.set({ brSaid });
+    brNote(`BetRivers warned it would log you out for inactivity${g.idleWarnLeft ? ` in ${g.idleWarnLeft}` : ''}: told the page you're there (mouse move)`, 'info');
+  }
+  if (g.logoutAt && g.logoutAt > brSaid.logout) {
+    brSaid.logout = g.logoutAt; store.set({ brSaid });
+    brNote(`BetRivers' site logged you out${g.logoutWhy ? ` (it said: ${g.logoutWhy})` : ''}${settings.betriversAutoLogin === false ? '' : ': logging back in'}`);
+  }
+}
 
 async function watchLogins() {
   await keepTabsLoaded();
@@ -1770,6 +1820,8 @@ async function watchLogins() {
   await autoLoginBetMGM().catch(() => {});
   await autoLoginTheScore().catch(() => {});
   await autoLoginCaesars().catch(() => {});
+  await watchBrSession().catch(() => {});
+  await autoLoginBetRivers().catch(() => {});
   for (const k of Object.values(geoKeepers)) await k.keep().catch(() => {});
   const now = Date.now() / 1000;
   // A token that ran out over 10 minutes ago means reloading didn't bring the login back: you're
@@ -2341,13 +2393,14 @@ function connect() {
     if (m.type === 'fetch') handle(m);
     else if (m.type === 'reload') chrome.runtime.reload(); // engine updated these files on disk
     else if (m.type === 'alert') showAlert(m);
-    else if (m.type === 'clearAlert') { if (m.book === 'betmgm') mgmLogin.forceUntil = 0; clearAlert(m); }
+    else if (m.type === 'clearAlert') { if (m.book === 'betmgm') mgmLogin.forceUntil = 0; if (m.book === 'betrivers') brLoginWanted = 0; clearAlert(m); }
     else if (m.type === 'reloadTab') reloadTab(m.book, m.why || 'the app found it logged out');
     else if (m.type === 'mgmGeoRenew') geoKeepers.betmgm.refused(m.why);
     else if (m.type === 'geoRenew' && geoKeepers[m.book]) geoKeepers[m.book].refused(m.why);
     else if (m.type === 'login' && m.book === 'gambit') autoLoginGambit(m.why || 'the app found it logged out').catch(() => {});
     else if (m.type === 'login' && m.book === 'thescore') autoLoginTheScore().catch(() => {});
     else if (m.type === 'login' && m.book === 'caesars') autoLoginCaesars().catch(() => {});
+    else if (m.type === 'login' && m.book === 'betrivers') brWantLogin(m.why).catch(() => {});
     else if (m.type === 'login' && m.book === 'betmgm') mgmForceLogin(m.why);
     else if (m.type === 'settings') { settings = { ...settings, ...m.settings }; chrome.storage.local.set({ settings }).catch(() => {}); }
   };
@@ -2361,7 +2414,7 @@ chrome.tabs.onUpdated.addListener((_id, info) => { if (info.url || info.status =
 chrome.tabs.onRemoved.addListener(sendTabs);
 chrome.runtime.onMessage.addListener((m, _s, respond) => {
   if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth, betriversLogin: !!kambiAuth, betriversRenewedAt: kambiRenewedAt, hardrockLogin: !!hrAuth.session, hardrockGeo: hrAuth.geoAt || 0,
-    fanduelExp: jwtExp(fdAuth.auth), fanduelGeoExp: fdGeoExp(fdAuth.geo), fanduelGeoLast: fdGeoLast, betriversGeoExp: brGeo.status === 'ALLOWED' ? brGeo.expires || 0 : 0, betriversGeoSeen: !!(brGeo.at || brGeo.flagAt), betriversGeoLast: brGeoLast, betmgmGeoNext: geoKeepers.betmgm.g.nextAt || 0, betmgmGeoLast: geoKeepers.betmgm.last, thescoreGeoNext: geoKeepers.thescore.g.nextAt || 0, thescoreGeoLast: geoKeepers.thescore.last, thescoreLogin: tsLogin.last, caesarsLoginLast: czAuto.state.last, caesarsGeoNext: geoKeepers.caesars.g.nextAt || 0, caesarsGeoLast: geoKeepers.caesars.last,
+    fanduelExp: jwtExp(fdAuth.auth), fanduelGeoExp: fdGeoExp(fdAuth.geo), fanduelGeoLast: fdGeoLast, betriversGeoExp: brGeo.status === 'ALLOWED' ? brGeo.expires || 0 : 0, betriversGeoSeen: !!(brGeo.at || brGeo.flagAt), betriversGeoLast: brGeoLast, betmgmGeoNext: geoKeepers.betmgm.g.nextAt || 0, betmgmGeoLast: geoKeepers.betmgm.last, thescoreGeoNext: geoKeepers.thescore.g.nextAt || 0, thescoreGeoLast: geoKeepers.thescore.last, thescoreLogin: tsLogin.last, caesarsLoginLast: czAuto.state.last, betriversLoginLast: brAuto.state.last, caesarsGeoNext: geoKeepers.caesars.g.nextAt || 0, caesarsGeoLast: geoKeepers.caesars.last,
     gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, dkSpanLeft: dkSpan.left, dkSpanAt: dkSpan.at, dkSpanRenewedAt: dkSpan.renewedAt, betmgmLogin: !!bmAuth.xsrf, betmgmHeaders: Object.keys(bmAuth.headers || {}), thescoreHeaders: Object.keys(tsAuth.headers), caesarsLogin: jwtExp(czAuth.headers.sessionid), caesarsHeaders: Object.keys(czAuth.headers), alert: alertText, lastReload, lastLogin, autoLogin: settings.gambitAutoLogin })); return true; }
 });
 // Keep the service worker alive while the engine runs.
