@@ -109,7 +109,10 @@ export function makeCaesars(name, label, cfg, bridge) {
     headers: { accept: '*/*', 'content-type': 'application/json', 'correlation-id': uuid(), ...extra },
     ...(body != null ? { body: JSON.stringify(body) } : {}), credentials: 'include', useCaesarsAuth: true,
   }, ms);
-  const authFail = (res) => res.status === 401 || res.status === 403;
+  // HTTP 400 "Cannot retrieve BOP customer session: Missing Auth Token" (Austin's first live run,
+  // 2026-11-27) is a login header missing from the request, not a bad request.
+  const authFail = (res) => res.status === 401 || res.status === 403 || /missing auth|auth token|customer session/i.test(String(JSON.stringify(res.json ?? '') || res.text || ''));
+  const hdrs = (res) => (res.czHeaders ? `; login headers copied from the Caesars tab: ${res.czHeaders.join(', ') || 'none'}` : '');
   const refOf = (row) => (row.bookRef && UUID.test(row.bookRef) ? { bookRef: row.bookRef } : caesarsRef(row.link));
   // What Caesars needs about a selection besides its id (market, event, competition, side, name).
   // Learned from the first price check of a selection and kept, so later checks send what the site sends.
@@ -134,7 +137,7 @@ export function makeCaesars(name, label, cfg, bridge) {
   // The price check: POST v2/bets/details for the selection (no bet, nothing kept on the slip).
   async function details(sel, row, kind = 'recheck') {
     const res = await send(kind, 'v2/bets/details', 'POST', { legs: [legOf(sel, row)], combinationSelections: [], channel: 'mobile', channelDetail: 'sportsbook', includeMultiLine: false });
-    if (authFail(res)) throw new Error(`${loginMsg} (price check HTTP ${res.status})`);
+    if (authFail(res)) throw new Error(`${loginMsg} (price check HTTP ${res.status}${hdrs(res)})`);
     const j = res.json;
     if (res.status >= 400 || !j) throw new Error(`Caesars price check HTTP ${res.status}: ${String(JSON.stringify(j) || res.text || res.error || '').slice(0, 240)}`);
     const one = (j.singles || []).find((s) => s.selectionId === sel || s.id === sel) || (j.singles || [])[0];
@@ -235,7 +238,7 @@ export function makeCaesars(name, label, cfg, bridge) {
     async sessionCheck() {
       const res = await send('session', 'v2/bets/history?status=open&page_size=1', 'GET', null, {}, 15000);
       if (res.status < 400 && Array.isArray(res.json?.bets)) return { ok: true };
-      if (authFail(res)) return { ok: false, why: `Caesars answered HTTP ${res.status} to the open-bets list` };
+      if (authFail(res)) return { ok: false, why: `Caesars answered HTTP ${res.status} to the open-bets list: ${String(JSON.stringify(res.json) || res.text || '').slice(0, 120)}${hdrs(res)}` };
       if (/not seen yet/.test(res.error || '')) return { ok: false, why: res.error };
       throw new Error(`Caesars open-bets check HTTP ${res.status}: ${String(JSON.stringify(res.json) || res.text || res.error || '').slice(0, 120)}`);
     },

@@ -343,11 +343,16 @@ chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
 // Caesars requests, so they match the site's own. The cookies go with the in-tab request as usual.
 let czAuth = { headers: {}, at: 0 };
 store.get('czAuth').then((v) => { if (v?.czAuth && !czAuth.at) czAuth = v.czAuth; });
-const CZ_KEEP = ['sessionid', 'playerid', 'x-aws-waf-token', 'x-unique-device-id', 'x-app-version', 'x-platform', 'x-platform-type'];
+// Also authorization and every other x-* header: HAR exports leave authorization out, and Caesars
+// answered the app's requests "Missing Auth Token" with only the headers seen in the HAR (Austin's first
+// live run, 2026-11-27). Per-request ones (correlation-id, idempotency-key, tracing) aren't copied.
+const CZ_KEEP = ['sessionid', 'playerid', 'authorization', 'token', 'auth-token', 'x-auth-token', 'x-api-key'];
+const CZ_SKIP = /^x-(datadog|amzn-trace|b3|request-id|correlation)/;
+const czKeep = (n) => CZ_KEEP.includes(n) || (/^x-/.test(n) && !CZ_SKIP.test(n));
 chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
   if (d.tabId < 0) return;   // only the page's own requests
   const got = {};
-  for (const h of d.requestHeaders || []) if (CZ_KEEP.includes(h.name.toLowerCase()) && h.value) got[h.name.toLowerCase()] = h.value;
+  for (const h of d.requestHeaders || []) if (czKeep(h.name.toLowerCase()) && h.value) got[h.name.toLowerCase()] = h.value;
   if (!Object.keys(got).length) return;
   const next = { ...czAuth.headers, ...got };
   if (JSON.stringify(next) !== JSON.stringify(czAuth.headers)) { czAuth = { headers: next, at: Date.now() }; store.set({ czAuth }); }
@@ -2128,7 +2133,7 @@ async function ppRead(req) {
 }
 
 async function handle(msg) {
-  const reply = (o) => ws?.readyState === 1 && ws.send(JSON.stringify({ id: msg.id, ...o }));
+  const reply = (o) => ws?.readyState === 1 && ws.send(JSON.stringify({ id: msg.id, ...o, ...(msg.czNames ? { czHeaders: msg.czNames } : {}) }));
   try {
     const { armed = false } = await chrome.storage.local.get('armed');
     if (msg.request.kind === 'place' && !armed) return reply({ error: 'extension is DISARMED (open the popup to arm)' });
@@ -2242,6 +2247,7 @@ async function handle(msg) {
     if (msg.request.useCaesarsAuth) {
       if (!czAuth.headers.sessionid) return reply({ error: 'Caesars login not seen yet: refresh the Caesars tab (stay logged in)', notSent: true });
       msg.request.headers = { ...czAuth.headers, ...(msg.request.headers || {}) };
+      msg.czNames = Object.keys(czAuth.headers);
     }
     if (msg.request.useGambitAuth) {
       if (!gambitAuth) return reply({ error: 'no Gambit login seen yet: refresh your Gambit tab' });
