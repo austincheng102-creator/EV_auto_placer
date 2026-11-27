@@ -165,6 +165,7 @@ export function makeDraftKings(name, label, cfg, bridge) {
   // 2026-11-25..27: after PR 147, 8 refusals in ~40 h, each on its own, against 56 DraftKings bets placed;
   // two of them 4 min apart paused all of DraftKings and lost a +9% Buffalo bet.
   const badSel = new Map();   // selection id -> skipped until (ms)
+  const strikes = new Map();  // selection id -> {n refusals, at}
   let refusedAt = [];         // [{id, at}] 403s in the last 5 min
   const selBlocked = (id) => {
     const until = badSel.get(id) || 0;
@@ -176,7 +177,13 @@ export function makeDraftKings(name, label, cfg, bridge) {
   const noteBlocked = (id) => {
     const now = Date.now();
     refusedAt = refusedAt.filter((x) => now - x.at < Number(k.pauseWindowSec ?? 120) * 1000).concat({ id, at: now });
-    const until = now + Number(k.badSelMin ?? 10) * 60e3;
+    // Austin's own click on a refused bet goes through (2026-11-27), so a refusal is about that one
+    // request, not the bet: the first refusal of a bet waits only retrySec (default 30), a second one
+    // within 30 min waits badSelMin (default 10).
+    const st = strikes.get(id);
+    const n = st && now - st.at < 30 * 60e3 ? st.n + 1 : 1;
+    strikes.set(id, { n, at: now });
+    const until = now + (n === 1 ? Number(k.retrySec ?? 30) * 1000 : Number(k.badSelMin ?? 10) * 60e3);
     badSel.set(id, until);
     if (new Set(refusedAt.map((x) => x.id)).size < Number(k.pauseAfter ?? 3)) {
       log.warn(`DraftKings refused the price check for one bet with HTTP 403 (selection ${id}): that bet is skipped until ${new Date(until).toLocaleTimeString()}; other DraftKings bets go on`);
