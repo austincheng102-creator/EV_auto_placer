@@ -37,12 +37,12 @@ ev-placer --book hardrock   bet Hard Rock this run (or betrivers)
 ev-placer --help     all options (--min-ev 12, --books betrivers,hardrock, --config other.json)
 ```
 
-## Picking the book (BetRivers, Hard Rock Bet, FanDuel, BetMGM, DraftKings or theScore)
+## Picking the book (BetRivers, Hard Rock Bet, FanDuel, BetMGM, DraftKings, theScore or Caesars)
 One app runs either book; the Gambit feed, Novig check, EV math and limits are shared.
 - Double-click **Start BetRivers** or **Start Hard Rock** to bet that book for the day.
   **Start EV Placer** uses `"books"` from `config.json`.
 - Set `"books": "ask"` in `config.json` to be asked which book each time it starts.
-- From a terminal: `ev-placer --book hardrock`, or `--books betrivers,hardrock,fanduel,betmgm,draftkings,thescore` for several at once.
+- From a terminal: `ev-placer --book hardrock`, or `--books betrivers,hardrock,fanduel,betmgm,draftkings,thescore,caesars` for several at once.
   In `config.json`: `"books": ["betrivers", "hardrock", "fanduel"]`.
 - `state.json` and the daily stake limit are shared across books.
 
@@ -136,6 +136,16 @@ One app runs either book; the Gambit feed, Novig check, EV math and limits are s
   Live bets take about 9s.
 - Results come from My Bets > Settled. If theScore updates its site and the app says a query
   wasn't found, the app needs an update.
+
+**Caesars (Colorado, sportsbook.caesars.com)** is wired from a recording of two real $0.10 bets (live and pre-game):
+- PropProfessor "Caesars" rows (link `.../us/co/bet/betslip?selectionIds=<id>`) and Gambit id 300 (its Michigan feed;
+  the selection id is looked up in Colorado). Keep a logged-in Caesars tab open.
+- **Price re-check**: Caesars' bet-slip check (`v2/bets/details`): current price, line and whether it can be bet.
+  It makes no bet and leaves nothing on your slip.
+- **Bet**: places at exactly the checked price (changes are never accepted). Live bets wait Caesars' delay
+  (about 4s) before the answer. A bet refused over the location check reloads the Caesars tab.
+- The extension copies the page's own login headers (popup: "Caesars login"). Results come from My Bets > Settled.
+- Caesars isn't checked against itself in the soft-book, Pinnacle-vs-market and long-odds-props checks.
 
 ## Longest odds: +250
 Bets with odds above +250 are skipped, both when scanning and at the live or new price. Change it

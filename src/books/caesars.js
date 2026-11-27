@@ -116,7 +116,9 @@ export function makeCaesars(name, label, cfg, bridge) {
   function legOf(sel, row, price) {
     const k = known.get(sel) || {};
     const p = price || (Number.isFinite(row.odds) ? czPrice(row.odds) : undefined);
-    const line = k.line ?? (row.line == null || !Number.isFinite(Number(row.line)) ? undefined : Number(row.line));
+    // The line goes in only once Caesars told us it (PropProfessor's lines carry no sign); the first
+    // check sends just the selection id and price, the way a betslip?selectionIds= link starts the slip.
+    const line = k.line;
     return {
       selectionId: sel, ...(k.marketId ? { marketId: k.marketId } : {}), ...(k.eventId ? { eventId: k.eventId } : {}),
       ...(k.competitionId ? { competitionId: k.competitionId } : {}), ...(k.selectionType ? { selectionType: k.selectionType } : {}),
@@ -136,7 +138,9 @@ export function makeCaesars(name, label, cfg, bridge) {
     const one = (j.singles || []).find((s) => s.selectionId === sel || s.id === sel) || (j.singles || [])[0];
     if (one) {
       const leg = (one.legs || [])[0] || {};
-      known.set(sel, { ...(known.get(sel) || {}), marketId: one.marketId || leg.marketId, eventId: one.eventId || leg.eventId });
+      known.set(sel, { ...(known.get(sel) || {}), marketId: one.marketId || leg.marketId, eventId: one.eventId || leg.eventId,
+        ...(Number.isFinite(Number(one.line ?? leg.requestedLine)) ? { line: Number(one.line ?? leg.requestedLine) } : {}) });
+      if (known.size > 2000) known.delete(known.keys().next().value);
     }
     return { j, one, why: czWhy(j) };
   }
