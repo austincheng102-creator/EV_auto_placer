@@ -160,8 +160,10 @@ export function makeDraftKings(name, label, cfg, bridge) {
   // A 403 is about one selection, not DraftKings as a whole (Austin's log 2026-11-25: every 403 in an
   // hour was the same Najai Hines rebounds prop, one the odds feed no longer had, while other DraftKings
   // bets went through; each one paused every DraftKings bet for 1-2 min). So a 403 skips only that
-  // selection for badSelMin (default 30). All of DraftKings pauses only when 2+ different selections
-  // are refused within 5 min, which looks like the bot filter itself.
+  // selection for badSelMin (default 10; was 30). All of DraftKings pauses only when pauseAfter (default 3;
+  // was 2) different selections are refused within pauseWindowSec (default 120; was 300). Austin's log
+  // 2026-11-25..27: after PR 147, 8 refusals in ~40 h, each on its own, against 56 DraftKings bets placed;
+  // two of them 4 min apart paused all of DraftKings and lost a +9% Buffalo bet.
   const badSel = new Map();   // selection id -> skipped until (ms)
   let refusedAt = [];         // [{id, at}] 403s in the last 5 min
   const selBlocked = (id) => {
@@ -173,16 +175,16 @@ export function makeDraftKings(name, label, cfg, bridge) {
   };
   const noteBlocked = (id) => {
     const now = Date.now();
-    refusedAt = refusedAt.filter((x) => now - x.at < 5 * 60e3).concat({ id, at: now });
-    const until = now + Number(k.badSelMin ?? 30) * 60e3;
+    refusedAt = refusedAt.filter((x) => now - x.at < Number(k.pauseWindowSec ?? 120) * 1000).concat({ id, at: now });
+    const until = now + Number(k.badSelMin ?? 10) * 60e3;
     badSel.set(id, until);
-    if (new Set(refusedAt.map((x) => x.id)).size < 2) {
+    if (new Set(refusedAt.map((x) => x.id)).size < Number(k.pauseAfter ?? 3)) {
       log.warn(`DraftKings refused the price check for one bet with HTTP 403 (selection ${id}): that bet is skipped until ${new Date(until).toLocaleTimeString()}; other DraftKings bets go on`);
       return false;
     }
     blockMs = Math.min(Math.max(blockMs * 2, 60e3), Number(k.maxPauseMin ?? 2) * 60e3);
     blockedUntil = now + blockMs;
-    log.warn(`DraftKings refused price checks for ${new Set(refusedAt.map((x) => x.id)).size} different bets with HTTP 403 within 5 min (its bot filter): no DraftKings price checks or bets for ${Math.round(blockMs / 60e3)} min, until ${new Date(blockedUntil).toLocaleTimeString()}`);
+    log.warn(`DraftKings refused price checks for ${new Set(refusedAt.map((x) => x.id)).size} different bets with HTTP 403 within ${Math.round(Number(k.pauseWindowSec ?? 120) / 60)} min (its bot filter): no DraftKings price checks or bets for ${Math.round(blockMs / 60e3)} min, until ${new Date(blockedUntil).toLocaleTimeString()}`);
     return true;
   };
   const why = (j) => [j?.errorCode, j?.errorMessage, j?.message, j?.status, ...(j?.errors || []).map((e) => e?.message || e?.code || e?.errorCode)]
