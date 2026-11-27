@@ -52,9 +52,37 @@
   // flag is set or cleared, and when a bet was blocked for the lack of one.
   const W = window.WebSocket;
   if (!W) return;
+  // It also says when the site is about to log you out for inactivity (TIMEOUT_WARNING: the page
+  // shows "You have been inactive for a long time. You will be logged out automatically in 5
+  // minutes" and logs you out when that runs out, unless it sees a mouse move or key press). The
+  // page's own idle timer resets on mouse moves, so a small mouse move (nothing clicked or typed)
+  // tells it you're there: it closes that warning and tells the site you're active. Also kept: the
+  // site's LOGOUT message and what it gave as the reason, so the app can say why it logged out.
+  const poke = () => {
+    try {
+      const x = 40 + Math.round(Math.random() * 300), y = 40 + Math.round(Math.random() * 200);
+      const o = { bubbles: true, cancelable: true, clientX: x, clientY: y, screenX: x, screenY: y + 80, view: window };
+      document.body?.dispatchEvent(new MouseEvent('mousemove', o));
+      document.documentElement.dispatchEvent(new MouseEvent('mousemove', { ...o, clientX: x + 7 }));
+      document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Shift', code: 'ShiftLeft', shiftKey: true }));
+      document.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Shift', code: 'ShiftLeft' }));
+    } catch {}
+  };
   const listen = (ws) => ws.addEventListener('message', (ev) => {
     try {
       const m = JSON.parse(ev.data);
+      if (m?.type === 'TIMEOUT_WARNING') {
+        const left = Date.parse(m.data?.timeoutTime) - Date.now();
+        write({ idleWarnAt: Date.now(), idleWarnLeft: Number.isFinite(left) && left > 0 ? `${Math.round(left / 60e3)} min` : '' });
+        // The page shows its warning after this message: move the mouse once it's up, and again a bit later.
+        for (const ms of [1500, 4000, 15000]) setTimeout(poke, ms);
+        return;
+      }
+      if (m?.type === 'LOGOUT') {
+        const d = m.data || {};
+        write({ logoutAt: Date.now(), logoutWhy: String(d.reason || d.logoutReason || d.code || d.message || JSON.stringify(d)).slice(0, 120) });
+        return;
+      }
       const code = m?.data?.flagCode || m?.data?.blockingFlag || '';
       if (!/SUCCESSFUL_GEOLOCATION$/.test(code) || /SUPPLEMENTARY/.test(code)) return;
       if (m.type === 'SET_FLAG') write({ flag: 'set', flagAt: Date.now() });

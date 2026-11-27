@@ -6,7 +6,9 @@
 // Why sites log out during a run (from Austin's recordings, 2026-11-17 and 2026-11-19):
 //  - Hard Rock's login token lasts 28 minutes. Its page renews it every 10 seconds (keepAlive).
 //  - BetRivers' page tells the site you're still there (sessions/portal/keepalive), mostly when
-//    you click around, and the site logs you out after a while with no activity.
+//    you click around, and the site logs you out after a while with no activity. The site first
+//    sends a "logging you out in 5 minutes" warning; the extension answers it with a mouse move,
+//    and logs back in (session.betriversAutoLogin) if it logs out anyway.
 //  - Gambit's token lasts about an hour; its page renews it.
 //  If Chrome unloads a tab you haven't looked at (Memory Saver) or the PC sleeps, the page stops
 //  renewing and the login runs out. The extension now keeps these tabs loaded and reloads a
@@ -34,6 +36,7 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
     : site === 'betmgm' && s.betmgmAutoLogin !== false ? 'The extension is logging back in with the password saved in its popup; if that keeps failing, log in again in the BetMGM tab'
     : site === 'thescore' && s.thescoreAutoLogin !== false ? 'The extension is logging back in with your Chrome-saved password; if that keeps failing, log in again in the theScore tab'
     : site === 'caesars' && s.caesarsAutoLogin !== false ? 'The extension is logging back in with your Chrome-saved password; if that keeps failing, log in again in the Caesars tab'
+    : site === 'betrivers' && s.betriversAutoLogin !== false ? 'The extension is logging back in with your Chrome-saved password; if that keeps failing, log in again in the BetRivers tab'
     : site === 'hardrock' ? 'Log in again in the Hard Rock tab, then place one small bet by hand for the location check'
     : `Log in again in the ${label(site)} tab`;
 
@@ -61,6 +64,8 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
       // theScore: the extension logs back in on its /login page (it checks the page itself too).
       if (site === 'thescore' && s.thescoreAutoLogin !== false) bridge?.tell({ type: 'login', book: 'thescore', why });
       else if (site === 'caesars' && s.caesarsAutoLogin !== false && !/not seen yet/.test(why)) bridge?.tell({ type: 'login', book: 'caesars', why });
+      // BetRivers: the extension logs back in on its page (no reload first: the page shows "Log In").
+      else if (site === 'betrivers' && s.betriversAutoLogin !== false && !needsGeo(why) && !/not seen yet/.test(why)) bridge?.tell({ type: 'login', book: 'betrivers', why });
       // BetMGM: the extension logs back in even if the page shows no "Log in" button it knows
       // (it opens BetMGM's login page then). No tab reload: it would cut the login short.
       else if (site === 'betmgm' && s.betmgmAutoLogin !== false && !needsGeo(why) && !/no .* tab open/.test(why)) bridge?.tell({ type: 'login', book: 'betmgm', why });
@@ -71,6 +76,7 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
       if (site === 'gambit' && gambitAutoLogin) fixGambit(`the app found it still logged out (${why})`);
       else if (site === 'betmgm' && s.betmgmAutoLogin !== false && !needsGeo(why) && !/no .* tab open/.test(why)) bridge?.tell({ type: 'login', book: 'betmgm', why });
       else if (site === 'caesars' && s.caesarsAutoLogin !== false && !/not seen yet|no .* tab open/.test(why)) bridge?.tell({ type: 'login', book: 'caesars', why });
+      else if (site === 'betrivers' && s.betriversAutoLogin !== false && !needsGeo(why) && !/not seen yet|no .* tab open/.test(why)) bridge?.tell({ type: 'login', book: 'betrivers', why });
       else if (reloadTabs && !needsGeo(why)) bridge?.tell({ type: 'reloadTab', book: site, why: 'still logged out' });   // the extension allows one per 5 min
     }
   }

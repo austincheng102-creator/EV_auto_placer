@@ -86,6 +86,21 @@ $('czsave').onclick = async () => {
 };
 $('czforget').onclick = async () => { await chrome.storage.local.remove('czLogin'); czPw(); };
 czPw();
+async function brPw() {
+  const { brLogin } = await chrome.storage.local.get('brLogin');
+  const s = await chrome.runtime.sendMessage('status').catch(() => ({}));
+  const l = s?.betriversLoginLast;
+  const last = l ? `last try ${Math.round((Date.now() - l.at) / 60000)} min ago: ${l.ok ? 'worked' : l.why}` : 'uses Chrome\'s saved login';
+  $('brpwst').textContent = `${last}${brLogin?.pass ? ' (backup password saved)' : ''}`; $('brpwst').className = !l || l.ok ? 'on' : 'off';
+}
+$('brsave').onclick = async () => {
+  const pass = $('brpass').value, email = $('bremail').value.trim();
+  if (!pass) return;
+  await chrome.storage.local.set({ brLogin: { pass, email } });
+  $('brpass').value = ''; brPw();
+};
+$('brforget').onclick = async () => { await chrome.storage.local.remove('brLogin'); brPw(); };
+brPw();
 $('toggle').onclick = async () => {
   const { armed = false } = await chrome.storage.local.get('armed');
   await chrome.storage.local.set({ armed: !armed }); render();
