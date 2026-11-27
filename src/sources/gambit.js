@@ -70,7 +70,9 @@ export function makeGambitSource(cfg, bridge, { root = null, log = null } = {}) 
   // Gambit's arbitrage table: player props priced off DraftKings/FanDuel/Caesars (gambit-arbs.js).
   const arb = arbDefaults(cfg);
   const arbBooks = arb ? arb.books.filter((b) => (cfg.books || []).includes(b)) : [];
-  const arbIds = arb ? Object.values(arb.refBooks).flat() : [];
+  // Soft-check books too (Fanatics 722 isn't a reference book): the arbitrage table only prices books named
+  // in sportsbooks_id, so without them arb rows have no Fanatics price for the soft-book check.
+  const arbIds = arb ? [...new Set([...Object.values(arb.refBooks).flat(), ...(cfg.softCheck?.enabled === false ? [] : Object.values(cfg.softCheck?.books || {}).flat())])] : [];
   let arbErrAt = 0;
   const sampled = new Set();   // arbs.json links already saved to a sample file
   const arbState = { error: null, rows: 0 };

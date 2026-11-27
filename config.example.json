@@ -157,7 +157,8 @@
     "books": {
       "draftkings": 200,
       "caesars": 300,
-      "fanduel": 100
+      "fanduel": 100,
+      "fanatics": 722
     },
     "minBooks": 2,
     "minEvPct": 4,

@@ -9,6 +9,7 @@ const BOOK_HOSTS = {
   betmgm: [/(^|\.)betmgm\.com$/],
   draftkings: [/^sportsbook\.draftkings\.com$/],
   thescore: [/^sportsbook\.thescore\.bet$/],
+  caesars: [/^sportsbook\.caesars\.com$/],
   gambit: [/(^|\.)gambitodds\.com$/],
   propprofessor: [/(^|\.)propprofessor\.com$/],
 };
@@ -336,6 +337,28 @@ chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
   else dkHdr.at = Date.now();
 }, { urls: ['https://*.draftkings.com/api/wager/*'] }, ['requestHeaders', 'extraHeaders']);
 
+// Caesars: the page's API requests (api.americanwagering.com) carry its login and device headers
+// (sessionid: a 24h login token, playerid, x-aws-waf-token, x-unique-device-id, x-app-version, ...;
+// Austin's capture 2026-11-26). We keep the newest ones your Caesars tab sent and add them to the app's
+// Caesars requests, so they match the site's own. The cookies go with the in-tab request as usual.
+let czAuth = { headers: {}, at: 0 };
+store.get('czAuth').then((v) => { if (v?.czAuth && !czAuth.at) czAuth = v.czAuth; });
+// Also authorization: HAR exports leave it out, and without it Caesars answered "Missing Auth Token"
+// (Austin's first live run, 2026-11-27). Only the headers the page itself sends to the sportsbook API
+// (Austin's captures): Caesars' CORS check lets through only those, and one extra header made Chrome drop
+// the request after its pre-check ("pre-check passed, then the request got no answer", 2026-11-27).
+const CZ_KEEP = ['authorization', 'sessionid', 'playerid', 'x-app-version', 'x-aws-waf-token', 'x-platform', 'x-platform-type', 'x-unique-device-id'];
+const czKeep = (n) => CZ_KEEP.includes(n);
+chrome.webRequest.onBeforeSendHeaders.addListener((d) => {
+  if (d.tabId < 0) return;   // only the page's own requests
+  const got = {};
+  for (const h of d.requestHeaders || []) if (czKeep(h.name.toLowerCase()) && h.value) got[h.name.toLowerCase()] = h.value;
+  if (!Object.keys(got).length) return;
+  const next = { ...czAuth.headers, ...got };
+  if (JSON.stringify(next) !== JSON.stringify(czAuth.headers)) { czAuth = { headers: next, at: Date.now() }; store.set({ czAuth }); }
+  else czAuth.at = Date.now();
+}, { urls: ['https://api.americanwagering.com/*'] }, ['requestHeaders', 'extraHeaders']);
+
 // fd-geo.js / br-geo.js have to be in the FanDuel / BetRivers page from the start to see their
 // location checks.
 async function registerGeoScripts() {
@@ -345,6 +368,7 @@ async function registerGeoScripts() {
     { id: 'mgm-geo', js: ['mgm-geo.js'], matches: ['https://*.betmgm.com/*'] },
     { id: 'ts-geo', js: ['ts-geo.js'], matches: ['https://sportsbook.thescore.bet/*'] },
     { id: 'dk-geo', js: ['dk-geo.js'], matches: ['https://sportsbook.draftkings.com/*'] },
+    { id: 'cz-geo', js: ['cz-geo.js'], matches: ['https://sportsbook.caesars.com/*'] },
     { id: 'gambit-page', js: ['gambit-page.js'], matches: ['https://gambitodds.com/*', 'https://www.gambitodds.com/*'] },
   ];
   for (const s of want) {
@@ -1101,6 +1125,16 @@ const geoKeepers = {
   draftkings: makeGeoKeeper({ book: 'draftkings', label: 'DraftKings', key: 'evPlacerDkGeo', host: /^sportsbook\.draftkings\.com$/, setting: 'draftkingsGeoRenew',
     renewBeforeMs: 15e3, needSeen: true, holdLapsed: true, showVisible: false, frontFirst: true, onTime: true,
     help: 'Is the GeoComply location app running on this PC, and are you logged in to DraftKings?' }),
+  // Caesars (Austin's capture 2026-11-27): the page's check (pam/geocomply/transaction) is good for 20
+  // minutes and the page runs the next one itself. Like DraftKings: if the page hasn't run it by 45s before
+  // it runs out, the Caesars tab is reloaded (to the front every other try). A bet refused over the
+  // location renews it at once. Bets are NOT held when it looks lapsed (unlike DraftKings): the page's own
+  // renewals haven't been seen live yet, and if the page renews some way this doesn't see, holding would
+  // stop every Caesars bet; Caesars refuses a bet itself when the check has really lapsed.
+  // Off with config.json "session": {"caesarsGeoRenew": false}.
+  caesars: makeGeoKeeper({ book: 'caesars', label: 'Caesars', key: 'evPlacerCzGeo', host: /^sportsbook\.caesars\.com$/, setting: 'caesarsGeoRenew',
+    renewBeforeMs: 45e3, needSeen: true, holdLapsed: false, showVisible: false, onTime: true,
+    help: 'Is the GeoComply location app running on this PC, and are you logged in to Caesars?' }),
 };
 // DraftKings' location answers, seen on the network (for a DraftKings page loaded before dk-geo.js
 // was in it). The answer itself isn't readable here, so: good for 20 minutes from a 200.
@@ -1146,7 +1180,7 @@ const jwtExp = (tok) => {
 // debugger (chrome.debugger), which Chrome treats as real mouse/keyboard input. While it runs
 // (a few seconds) Chrome shows a bar "EV Placer Bridge started debugging this browser"; it goes
 // away by itself. Off with config.json "session": {"gambitAutoLogin": false}.
-let settings = { gambitAutoLogin: true, fanduelGeoRenew: true, betriversGeoRenew: true, betmgmGeoRenew: true, betmgmGeoClick: true, betmgmAutoLogin: true, thescoreGeoRenew: true, thescoreAutoLogin: true, draftkingsPlaySpan: true, draftkingsGeoRenew: true, hardrockGeoRenew: true };
+let settings = { gambitAutoLogin: true, fanduelGeoRenew: true, betriversGeoRenew: true, betmgmGeoRenew: true, betmgmGeoClick: true, betmgmAutoLogin: true, thescoreGeoRenew: true, thescoreAutoLogin: true, caesarsGeoRenew: true, caesarsAutoLogin: true, draftkingsPlaySpan: true, draftkingsGeoRenew: true, hardrockGeoRenew: true };
 chrome.storage.local.get('settings').then((v) => { if (v?.settings) settings = { ...settings, ...v.settings }; }).catch(() => {});
 let lastLogin = null;          // { at, ok, why } for the popup
 let loginBusy = false;
@@ -1614,27 +1648,30 @@ async function autoLoginBetMGM() {
 // Pace: checking the page costs theScore nothing, so a try that never pressed Log In repeats every
 // 15 seconds (once a minute after 20 in a row). Pressing Log In and still being refused waits
 // 5 minutes, then 30 minutes after 2 in a row: repeated wrong-password logins can lock the account.
+// The same login flow serves Caesars (makeAutoLogin below): its page shows a "Log In" button when
+// logged out, which opens a login box Chrome fills with the saved username and password.
+function makeAutoLogin({ book, label, setting, storeKey, home, site, passHelp }) {
 const tsLogin = { busy: false, triedAt: 0, fails: 0, subFails: 0, submitted: false, last: null, timer: null, saidAt: 0, said: '' };
 const tsLoginGap = () => (tsLogin.subFails ? (tsLogin.subFails >= 2 ? 30 * 60e3 : 5 * 60e3) : tsLogin.fails >= 20 ? 60e3 : 15e3);
 async function autoLoginTheScore() {
-  if (settings.thescoreAutoLogin === false || tsLogin.busy || ws?.readyState !== 1) return;
-  const t = (await bookTabs()).find((x) => x.book === 'thescore');
-  if (!t || t.discarded || dbgBusy.has(t.id) || geoKeepers.thescore.job || placing.thescore > 0) return;
+  if (settings[setting] === false || tsLogin.busy || ws?.readyState !== 1) return;
+  const t = (await bookTabs()).find((x) => x.book === book);
+  if (!t || t.discarded || dbgBusy.has(t.id) || geoKeepers[book]?.job || placing[book] > 0) return;
   let f = await inPage(t.id, false).catch(() => ({ state: 'no-page' }));
   if (f.state === 'logged-in' || f.state === 'no-page') return;
   if (Date.now() - tsLogin.triedAt < tsLoginGap() - 500) return;
   if (!chrome.debugger) return;
   tsLogin.busy = true; tsLogin.triedAt = Date.now();
-  const note = (text, level = 'warn') => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book: 'thescore', level, text })); };
+  const note = (text, level = 'warn') => { if (ws?.readyState === 1) ws.send(JSON.stringify({ type: 'note', book, level, text })); };
   const done = (ok, why) => {
     tsLogin.last = { at: Date.now(), ok, why };
     tsLogin.fails = ok ? 0 : tsLogin.fails + 1;
     tsLogin.subFails = ok ? 0 : tsLogin.submitted ? tsLogin.subFails + 1 : tsLogin.subFails;
-    if (ok) { tsLogin.said = ''; return note(`theScore: ${why}`, 'good'); }
+    if (ok) { tsLogin.said = ''; return note(`${label}: ${why}`, 'good'); }
     if (why === tsLogin.said && Date.now() - tsLogin.saidAt < 60e3) return;
     tsLogin.said = why; tsLogin.saidAt = Date.now();
     const gap = tsLoginGap();
-    note(`theScore auto login failed: ${why}. Trying again in ${gap >= 60e3 ? `${gap / 60e3} min` : `${gap / 1000}s`}`);
+    note(`${label} auto login failed: ${why}. Trying again in ${gap >= 60e3 ? `${gap / 60e3} min` : `${gap / 1000}s`}`);
   };
   tsLogin.submitted = false;
   const target = { tabId: t.id };
@@ -1650,10 +1687,10 @@ async function autoLoginTheScore() {
     await chrome.tabs.update(t.id, { active: true }).catch(() => {});
     if (tb) await chrome.windows.update(tb.windowId, { focused: true, ...(back.minimized ? { state: 'normal' } : {}) }).catch(() => {});
     await sleep(800);
-    if (!tsLogin.fails) note('theScore is logged out: logging back in', 'info');
+    if (!tsLogin.fails) note(`${label} is logged out: logging back in`, 'info');
     f = await inPage(t.id, true);   // on another page: presses its "Log In" button, which opens /login
     if (f.state !== 'form' || !f.pass) return done(false, f.state === 'no-form' ? 'pressed Log In but no login box showed up' : `couldn't find the login box (${f.state})`);
-    if (f.captcha) return done(false, 'theScore is showing an "are you a robot" check: log in by hand');
+    if (f.captcha) return done(false, `${label} is showing an "are you a robot" check: log in by hand`);
     await new Promise((res, rej) => chrome.debugger.attach(target, '1.3', () => (chrome.runtime.lastError ? rej(new Error(chrome.runtime.lastError.message)) : res())));
     attached = true;
     await dbgCmd(target, 'Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
@@ -1671,7 +1708,7 @@ async function autoLoginTheScore() {
       await sleep(1000);
       g = await inPage(t.id, true);
     }
-    const saved = (await chrome.storage.local.get('tsLogin').catch(() => ({}))).tsLogin;
+    const saved = (await chrome.storage.local.get(storeKey).catch(() => ({})))[storeKey];
     if (g.state === 'form' && !g.passLen && saved?.pass) {
       // Chrome's list didn't take it: type the login saved in the extension popup.
       if (!g.userLen && saved.email && g.user) { await realClick(target, g.user); await sleep(300); await dbgCmd(target, 'Input.insertText', { text: saved.email }); await sleep(300); }
@@ -1684,7 +1721,7 @@ async function autoLoginTheScore() {
     if (g.state === 'logged-in') return done(true, 'logged back in with Chrome\'s saved password');
     if (g.state !== 'form') return done(false, `the login box closed unexpectedly (${g.state})`);
     if (!g.userLen || !g.passLen) {
-      return done(false, `Chrome didn't fill in the saved ${!g.userLen ? 'email' : 'password'}. Check chrome://password-manager has a login for thescore.bet, or save it in the extension popup ("theScore auto login")`);
+      return done(false, `Chrome didn't fill in the saved ${!g.userLen ? 'email' : 'password'}. Check chrome://password-manager has a login for ${site}, or save it in the extension popup ("${label} auto login")`);
     }
     if (!g.submit) return done(false, 'couldn\'t find the Log In button');
     tsLogin.submitted = true;
@@ -1695,13 +1732,13 @@ async function autoLoginTheScore() {
       if (h.state === 'logged-in') {
         // Still on /login after logging in: go to the sportsbook home page (the location check runs there).
         const now = await chrome.tabs.get(t.id).catch(() => null);
-        if (now && /\/login/.test(new URL(now.url || 'https://x/').pathname)) chrome.tabs.update(t.id, { url: 'https://sportsbook.thescore.bet/' }).catch(() => {});
+        if (home && now && /\/login/.test(new URL(now.url || 'https://x/').pathname)) chrome.tabs.update(t.id, { url: home }).catch(() => {});
         return done(true, 'logged back in with Chrome\'s saved password');
       }
     }
-    done(false, 'pressed Log In but theScore still shows the login box (wrong saved password, or theScore wants a code)');
+    done(false, `pressed Log In but ${label} still shows the login box (${passHelp || 'wrong saved password, or it wants a code'})`);
   } catch (e) {
-    done(false, String(e?.message || e).includes('Another debugger') ? 'Chrome DevTools is open on the theScore tab: close it' : String(e?.message || e));
+    done(false, String(e?.message || e).includes('Another debugger') ? `Chrome DevTools is open on the ${label} tab: close it` : String(e?.message || e));
   } finally {
     if (attached) chrome.debugger.detach(target, () => void chrome.runtime.lastError);
     if (back?.tabId) await chrome.tabs.update(back.tabId, { active: true }).catch(() => {});
@@ -1714,6 +1751,15 @@ async function autoLoginTheScore() {
     }
   }
 }
+return { run: autoLoginTheScore, state: tsLogin };
+}
+const tsAuto = makeAutoLogin({ book: 'thescore', label: 'theScore', setting: 'thescoreAutoLogin', storeKey: 'tsLogin', home: 'https://sportsbook.thescore.bet/', site: 'thescore.bet', passHelp: 'wrong saved password, or theScore wants a code' });
+const tsLogin = tsAuto.state;
+const autoLoginTheScore = tsAuto.run;
+// Caesars (Austin, 2026-11-27): its login token lasts 24 hours, then the page shows "Log In" again.
+// Off with config.json "session": {"caesarsAutoLogin": false}.
+const czAuto = makeAutoLogin({ book: 'caesars', label: 'Caesars', setting: 'caesarsAutoLogin', storeKey: 'czLogin', home: null, site: 'caesars.com', passHelp: 'wrong saved password, or Caesars wants a code' });
+const autoLoginCaesars = czAuto.run;
 
 async function watchLogins() {
   await keepTabsLoaded();
@@ -1723,6 +1769,7 @@ async function watchLogins() {
   await keepBrGeo().catch(() => {});
   await autoLoginBetMGM().catch(() => {});
   await autoLoginTheScore().catch(() => {});
+  await autoLoginCaesars().catch(() => {});
   for (const k of Object.values(geoKeepers)) await k.keep().catch(() => {});
   const now = Date.now() / 1000;
   // A token that ran out over 10 minutes ago means reloading didn't bring the login back: you're
@@ -2088,7 +2135,7 @@ async function ppRead(req) {
 }
 
 async function handle(msg) {
-  const reply = (o) => ws?.readyState === 1 && ws.send(JSON.stringify({ id: msg.id, ...o }));
+  const reply = (o) => ws?.readyState === 1 && ws.send(JSON.stringify({ id: msg.id, ...o, ...(o.error && msg.czNames ? { error: `${o.error} [headers sent: ${msg.czNames.join(', ')}]` } : {}), ...(msg.czNames ? { czHeaders: msg.czNames } : {}) }));
   try {
     const { armed = false } = await chrome.storage.local.get('armed');
     if (msg.request.kind === 'place' && !armed) return reply({ error: 'extension is DISARMED (open the popup to arm)' });
@@ -2199,6 +2246,13 @@ async function handle(msg) {
     }
     if (msg.request.useTheScoreAuth) msg.request.headers = { ...(msg.request.headers || {}), ...tsAuth.headers };
     if (msg.request.useDraftKingsHeaders) msg.request.headers = { ...(msg.request.headers || {}), ...dkHdr.headers };
+    if (msg.request.useCaesarsAuth) {
+      if (!czAuth.headers.sessionid) return reply({ error: 'Caesars login not seen yet: refresh the Caesars tab (stay logged in)', notSent: true });
+      // The page sends sessionid only to some endpoints (price check, open bets), not to place or settled.
+      const base = Object.fromEntries(Object.entries(czAuth.headers).filter(([k]) => CZ_KEEP.includes(k) && !(msg.request.czNoSession && k === 'sessionid')));
+      msg.request.headers = { ...base, ...(msg.request.headers || {}) };
+      msg.czNames = Object.keys(msg.request.headers);
+    }
     if (msg.request.useGambitAuth) {
       if (!gambitAuth) return reply({ error: 'no Gambit login seen yet: refresh your Gambit tab' });
       msg.request.headers = { ...(msg.request.headers || {}), authorization: gambitAuth };
@@ -2293,6 +2347,7 @@ function connect() {
     else if (m.type === 'geoRenew' && geoKeepers[m.book]) geoKeepers[m.book].refused(m.why);
     else if (m.type === 'login' && m.book === 'gambit') autoLoginGambit(m.why || 'the app found it logged out').catch(() => {});
     else if (m.type === 'login' && m.book === 'thescore') autoLoginTheScore().catch(() => {});
+    else if (m.type === 'login' && m.book === 'caesars') autoLoginCaesars().catch(() => {});
     else if (m.type === 'login' && m.book === 'betmgm') mgmForceLogin(m.why);
     else if (m.type === 'settings') { settings = { ...settings, ...m.settings }; chrome.storage.local.set({ settings }).catch(() => {}); }
   };
@@ -2306,8 +2361,8 @@ chrome.tabs.onUpdated.addListener((_id, info) => { if (info.url || info.status =
 chrome.tabs.onRemoved.addListener(sendTabs);
 chrome.runtime.onMessage.addListener((m, _s, respond) => {
   if (m === 'status') { bookTabs().then((tabs) => respond({ status, tabs, gambitLogin: !!gambitAuth, betriversLogin: !!kambiAuth, betriversRenewedAt: kambiRenewedAt, hardrockLogin: !!hrAuth.session, hardrockGeo: hrAuth.geoAt || 0,
-    fanduelExp: jwtExp(fdAuth.auth), fanduelGeoExp: fdGeoExp(fdAuth.geo), fanduelGeoLast: fdGeoLast, betriversGeoExp: brGeo.status === 'ALLOWED' ? brGeo.expires || 0 : 0, betriversGeoSeen: !!(brGeo.at || brGeo.flagAt), betriversGeoLast: brGeoLast, betmgmGeoNext: geoKeepers.betmgm.g.nextAt || 0, betmgmGeoLast: geoKeepers.betmgm.last, thescoreGeoNext: geoKeepers.thescore.g.nextAt || 0, thescoreGeoLast: geoKeepers.thescore.last, thescoreLogin: tsLogin.last,
-    gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, dkSpanLeft: dkSpan.left, dkSpanAt: dkSpan.at, dkSpanRenewedAt: dkSpan.renewedAt, betmgmLogin: !!bmAuth.xsrf, betmgmHeaders: Object.keys(bmAuth.headers || {}), thescoreHeaders: Object.keys(tsAuth.headers), alert: alertText, lastReload, lastLogin, autoLogin: settings.gambitAutoLogin })); return true; }
+    fanduelExp: jwtExp(fdAuth.auth), fanduelGeoExp: fdGeoExp(fdAuth.geo), fanduelGeoLast: fdGeoLast, betriversGeoExp: brGeo.status === 'ALLOWED' ? brGeo.expires || 0 : 0, betriversGeoSeen: !!(brGeo.at || brGeo.flagAt), betriversGeoLast: brGeoLast, betmgmGeoNext: geoKeepers.betmgm.g.nextAt || 0, betmgmGeoLast: geoKeepers.betmgm.last, thescoreGeoNext: geoKeepers.thescore.g.nextAt || 0, thescoreGeoLast: geoKeepers.thescore.last, thescoreLogin: tsLogin.last, caesarsLoginLast: czAuto.state.last, caesarsGeoNext: geoKeepers.caesars.g.nextAt || 0, caesarsGeoLast: geoKeepers.caesars.last,
+    gambitExp: jwtExp(gambitAuth), hardrockAt: hrAuth.sessionAt || 0, dkSpanLeft: dkSpan.left, dkSpanAt: dkSpan.at, dkSpanRenewedAt: dkSpan.renewedAt, betmgmLogin: !!bmAuth.xsrf, betmgmHeaders: Object.keys(bmAuth.headers || {}), thescoreHeaders: Object.keys(tsAuth.headers), caesarsLogin: jwtExp(czAuth.headers.sessionid), caesarsHeaders: Object.keys(czAuth.headers), alert: alertText, lastReload, lastLogin, autoLogin: settings.gambitAutoLogin })); return true; }
 });
 // Keep the service worker alive while the engine runs.
 chrome.alarms?.create('keepalive', { periodInMinutes: 0.5 });

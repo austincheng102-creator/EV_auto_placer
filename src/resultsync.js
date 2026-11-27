@@ -6,6 +6,7 @@ import { makeBetRivers } from './books/betrivers.js';
 import { makeFanDuel } from './books/fanduel.js';
 import { makeBetMGM } from './books/betmgm.js';
 import { makeTheScore } from './books/thescore.js';
+import { makeCaesars } from './books/caesars.js';
 import { makeDraftKings } from './books/draftkings.js';
 import { makeResults, betKey } from './results.js';
 import { BOOK_LABELS } from './books/index.js';
@@ -91,6 +92,7 @@ export function makeResultSync({ cfg, bridge, root, dryRun = false, log, bets, b
     // matched by placement time (within 90s) and stake instead (loose).
     { book: 'draftkings', idRe: /^draftkings:(?:waiting-)?([0-9A-Za-z-]+)$/, loose: true, api: books.draftkings?.settled ? books.draftkings : makeDraftKings('draftkings', 'DraftKings', cfg, bridge) },
     { book: 'betmgm', idRe: /^betmgm:([0-9A-Z]{6,})(?: |$)/, api: books.betmgm?.settled ? books.betmgm : makeBetMGM('betmgm', 'BetMGM', cfg, bridge) },
+    { book: 'caesars', idRe: /^caesars:([0-9a-f-]{36})$/, api: books.caesars?.settled ? books.caesars : makeCaesars('caesars', 'Caesars', cfg, bridge) },
   ];
   const warned = new Set();
   const lastTry = {}, lastOk = {}, toldOld = {}, lastWhere = {};

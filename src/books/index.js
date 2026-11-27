@@ -6,13 +6,14 @@ import { makeFanDuel } from './fanduel.js';
 import { makeBetMGM } from './betmgm.js';
 import { makeDraftKings } from './draftkings.js';
 import { makeTheScore } from './thescore.js';
+import { makeCaesars } from './caesars.js';
 
 /** Books that skip player props unless config "<book>": {"props": true}. FanDuel is the live-prop
  *  sharp reference, so a FanDuel prop would be checked against itself (Austin, 2026-11-21). */
 export const NO_PROPS_DEFAULT = ['fanduel'];
 export const propsOff = (cfg, book) => (cfg[book]?.props ?? !NO_PROPS_DEFAULT.includes(book)) === false;
 
-export const BOOK_LABELS = { betrivers: 'BetRivers', fanduel: 'FanDuel', hardrock: 'Hard Rock Bet', betmgm: 'BetMGM', draftkings: 'DraftKings', thescore: 'theScore' };
+export const BOOK_LABELS = { betrivers: 'BetRivers', fanduel: 'FanDuel', hardrock: 'Hard Rock Bet', betmgm: 'BetMGM', draftkings: 'DraftKings', thescore: 'theScore', caesars: 'Caesars' };
 
 // Names people might type for each book (--book "hard rock", hrb, ...).
 const ALIASES = {
@@ -22,6 +23,7 @@ const ALIASES = {
   betmgm: 'betmgm', mgm: 'betmgm',
   draftkings: 'draftkings', dk: 'draftkings',
   thescore: 'thescore', thescorebet: 'thescore', score: 'thescore', espnbet: 'thescore',
+  caesars: 'caesars', caesarssportsbook: 'caesars', czr: 'caesars', cz: 'caesars', williamhill: 'caesars',
 };
 
 /** "BetRivers, Hard Rock" -> ['betrivers', 'hardrock']. Throws on a name we don't know. */
@@ -48,6 +50,7 @@ export function makeBooks(cfg, bridge, dryRun) {
     else if (name === 'betmgm') out[name] = makeBetMGM(name, label, cfg, bridge);
     else if (name === 'draftkings') out[name] = makeDraftKings(name, label, cfg, bridge);
     else if (name === 'thescore') out[name] = makeTheScore(name, label, cfg, bridge);
+    else if (name === 'caesars') out[name] = makeCaesars(name, label, cfg, bridge);
     else out[name] = makeTemplateBook(name, label, cfg[name], bridge);
   }
   return out;

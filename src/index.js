@@ -15,7 +15,7 @@ import { makeResultSync } from './resultsync.js';
 import { allBets } from './results.js';
 import readline from 'node:readline/promises';
 import { appDir } from './paths.js';
-import { ensureConfig, writeExtension, extensionChanged } from './setup.js';
+import { ensureConfig, findConfig, writeExtension, extensionChanged } from './setup.js';
 import { VERSION } from './version.js';
 import embedded from './embedded.js';
 import { checkForUpdate, cleanupOld } from './update.js';
@@ -54,7 +54,8 @@ if (flag('--help') || flag('-h') || args[0] === 'help') {
   --no-novig             don't require Novig to agree
   --book hardrock        which book to bet today: betrivers or hardrock
   --books betrivers,hardrock   more than one at once
-  --config other.json    use a different config file
+  --config other.json    use this config file (default: the *config*.json next to the app,
+                         e.g. ants_config.json; with several, the newest)
   --dry-run              simulate the book, never place
   --source mock          use the fake Gambit feed
   --no-update            skip the update check at startup
@@ -68,7 +69,7 @@ if (flag('--version') || flag('-v')) { console.log(VERSION); process.exit(0); }
 async function fetchResultsWhileOpen() {
   const dry = flag('--dry-run');
   let cfg = {};
-  try { cfg = JSON.parse(fs.readFileSync(path.join(appDir, opt('--config', 'config.json')), 'utf8')); } catch {}
+  try { cfg = JSON.parse(fs.readFileSync(findConfig(opt('--config')).path, 'utf8')); } catch {}
   const every = (cfg.results?.everyMinutes ?? 10) * 60e3;
   if (dry || every <= 0) return;
   const port = cfg.bridgePort || 8765;
@@ -131,7 +132,10 @@ if (args[0] === 'bets') {
 
 // Always keep the extension folder and a config.json next to the app.
 const extDir = writeExtension();
-const { path: cfgPath, created } = ensureConfig(opt('--config', 'config.json'));
+const { path: cfgPath, created, others } = ensureConfig(opt('--config'));
+// Config file: any *config*.json next to the app (e.g. ants_config.json), so each computer's file
+// can have a name people recognize. Several of them: the newest is used, and the log says so.
+if (!created) console.log(`Config: ${path.basename(cfgPath)}${others.length ? `  (newest of several; also found ${others.join(', ')}, which are NOT used. Keep only one)` : ''}`);
 if (args[0] === 'init' || created) {
   console.log(`Config:    ${cfgPath}${created ? '  (created, fill in the gambit and betrivers sections)' : ''}`);
   console.log(`Extension: ${extDir}  (chrome://extensions > Developer mode > Load unpacked)`);
@@ -220,7 +224,7 @@ const needBridge = !dryRun || usePP || (useGambit && (cfg.gambit?.via || 'extens
 const bridge = needBridge ? startBridge(cfg.bridgePort || 8765, { reloadExtension: extensionChanged,
   hello: { type: 'settings', settings: { gambitAutoLogin: cfg.session?.gambitAutoLogin !== false, fanduelGeoRenew: cfg.session?.fanduelGeoRenew !== false,
     betriversGeoRenew: cfg.session?.betriversGeoRenew !== false, betmgmGeoRenew: cfg.session?.betmgmGeoRenew !== false, betmgmGeoClick: cfg.session?.betmgmGeoClick !== false, betmgmAutoLogin: cfg.session?.betmgmAutoLogin !== false,
-    thescoreGeoRenew: cfg.session?.thescoreGeoRenew !== false, thescoreAutoLogin: cfg.session?.thescoreAutoLogin !== false, draftkingsPlaySpan: cfg.session?.draftkingsPlaySpan !== false, draftkingsGeoRenew: cfg.session?.draftkingsGeoRenew !== false, hardrockGeoRenew: cfg.session?.hardrockGeoRenew !== false } } }) : null;
+    thescoreGeoRenew: cfg.session?.thescoreGeoRenew !== false, thescoreAutoLogin: cfg.session?.thescoreAutoLogin !== false, caesarsGeoRenew: cfg.session?.caesarsGeoRenew !== false, caesarsAutoLogin: cfg.session?.caesarsAutoLogin !== false, draftkingsPlaySpan: cfg.session?.draftkingsPlaySpan !== false, draftkingsGeoRenew: cfg.session?.draftkingsGeoRenew !== false, hardrockGeoRenew: cfg.session?.hardrockGeoRenew !== false } } }) : null;
 const gambitSource = useGambit ? makeGambitSource(cfg, bridge, { root, log }) : null;
 if (gambitSource) Object.assign(gambitSource, { name: 'gambit', label: 'Gambit' });
 const ppSource = usePP ? makePropProfessorSource(cfg, bridge, { root, log }) : null;
@@ -438,7 +442,7 @@ function shadowEntry(r, firstSkip, now) {
       evPct: r.ev, minEvPct: minEv(r), fairOdds: r.fairOdds, fairSetBy: fairSetBy(r), sharpAgeSec: r.isLive ? sharpClock.ageSec(r, now) : null,
       sharpSpreadPts: sp.spread, pinnacle: pct1(pin), kalshi: pct1(pm.kalshi), polymarket: pct1(pm.polymarket), novig: pct1(pm.novig), prophetx: pct1(pm.prophetx),
       pmGapPts: worstPm != null && Number.isFinite(r.fairProb) ? (r.fairProb - worstPm) * 100 : null,
-      softDraftkings: sc.evs?.draftkings, softCaesars: sc.evs?.caesars, softFanduel: sc.evs?.fanduel, softPassing: sc.off ? null : sc.pass,
+      softDraftkings: sc.evs?.draftkings, softCaesars: sc.evs?.caesars, softFanduel: sc.evs?.fanduel, softFanatics: sc.evs?.fanatics, softPassing: sc.off ? null : sc.pass,
       pinVsMedianPts: mc.gap, pinVsDraftkingsPts: pin != null && dk != null ? (pin - dk) * 100 : null, pinVsFanduelPts: pin != null && fd != null ? (pin - fd) * 100 : null,
       failedRules: failedRules(r).join(';'), firstSkip,
     },
@@ -640,8 +644,8 @@ async function tryBet(row, ctx) {
   const hh = held.get(holdKey(row));
   lg.header(headerText(row) + (w ? ` (checking again, ${Math.round((Date.now() - w.since) / 1000)}s after it failed)` : '') + (hh && Date.now() - hh.since >= holdMs ? ` (second check after a ${heldSec(hh)}s hold)` : ''));
 
-  if (!Number.isFinite(quote.odds)) { ctx.outcome = 'no price'; lg.warn(`${book.label}: re-check returned no price${quote.why ? ` (${quote.why})` : ''} — skipped`); return false; }
-  if (quote.suspended) { ctx.outcome = 'suspended'; lg.warn(`${book.label}: market suspended — skipped`); return false; }
+  if (!Number.isFinite(quote.odds)) { ctx.outcome = 'no price'; lg.warn(`${book.label}: re-check returned no price${quote.why ? ` (${String(quote.why).slice(0, 200)})` : ''} — skipped`); return false; }
+  if (quote.suspended) { ctx.outcome = 'suspended'; lg.warn(`${book.label}: market suspended${quote.why ? ` (${String(quote.why).slice(0, 200)})` : ''} — skipped`); return false; }
   if (row.line != null && quote.line != null && quote.line !== row.line) {
     ctx.outcome = 'line moved';
     lg.warn(`${BOOK_LABELS[row.book]}: line moved (${feedName} priced ${row.line}, ${book.label} line is now ${quote.line}) — skipped, nothing placed`);
@@ -728,7 +732,7 @@ async function placeAt(row, book, quote, ctx, retries = 0) {
   if (ev < minEv(row, quote.odds)) { ctx.outcome = 'EV too low'; lg.warn(`${book.label}: re-check FAIL: ${tail}`); return false; }
   lg.bet(`${book.label}: re-check OK: ${tail}`);
 
-  // At least 2 of DraftKings/Caesars/FanDuel must also show this price above 0% EV (softCheck).
+  // At least 2 of the softCheck books (DraftKings/Caesars/FanDuel/Fanatics) must also show this price above 0% EV (softCheck).
   const sc = softCheck(cfg, row, quote.odds);
   if (!sc.ok) {
     ctx.outcome = 'soft books fail';
@@ -1283,7 +1287,7 @@ function logTiming(row, book, ctx) {
   };
   const delay = Number(ctx.quote?.betDelaySec);
   const bookDelaySec = Number.isFinite(delay) && delay > 0 ? delay : null;
-  log.info(`timing: ${desc(row)} (${ctx.outcome || '?'}): found ${secs(t.findMs)} after ${fast ? 'the fast price check started' : `the ${feedName} poll (${feedName} ${secs(t.gambitMs)}, book prices ${secs(t.bookPricesMs)})`}, re-check ${secs(t.checkMs)}, our rules ${secs(t.rulesMs)}, ${book.label} answered ${secs(t.answerMs)} after we sent it${bookDelaySec ? ` (its live bet delay is ${bookDelaySec}s)` : ''}${ctx.attempts.length > 1 ? `, ${ctx.attempts.length - 1} price-moved re-tr${ctx.attempts.length > 2 ? 'ies' : 'y'}` : ''}, total ${secs(t.totalMs)}`);
+  log.info(`timing: ${desc(row)} (${ctx.outcome || '?'}): found ${secs(t.findMs)} after ${fast ? 'the fast price check started' : `the ${feedName} poll (${feedName} ${secs(t.gambitMs)}, book prices ${secs(t.bookPricesMs)})`}, re-check ${secs(t.checkMs)}, our rules ${secs(t.rulesMs)}, ${ctx.sent === false && /^location/.test(ctx.outcome || '') ? `nothing sent to ${book.label} (its location check ${ctx.outcome === 'location renewing' ? 'is being renewed' : 'was just renewed'}; our extension held it, checked again next scan)` : `${book.label} answered ${secs(t.answerMs)} after we sent it`}${bookDelaySec ? ` (its live bet delay is ${bookDelaySec}s)` : ''}${ctx.attempts.length > 1 ? `, ${ctx.attempts.length - 1} price-moved re-tr${ctx.attempts.length > 2 ? 'ies' : 'y'}` : ''}, total ${secs(t.totalMs)}`);
   timingLog.record({
     time: new Date().toISOString(), book: row.book, live: row.isLive ? 'live' : 'pre-game', event: row.event, market: row.market,
     selection: row.selection, line: row.line, odds: a0.odds, outcome: ctx.outcome || '', foundBy: ctx.via,

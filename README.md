@@ -23,6 +23,11 @@ The first run creates `config.json` and an `extension/` folder next to the app. 
 (Gambit and BetRivers sections), then start it again. Each computer keeps its own `config.json`
 and `state.json` (bets already placed, today's stake).
 
+The config file can have any name with `config` in it that ends in `.json`, so each computer's file can
+say whose it is: `ants_config.json`, `ethan_config.json`. The app uses the one next to it (the start line
+says which). If there are several, it uses the most recently saved one and lists the others as not used,
+so keep only one per computer. `--config other.json` picks one by name.
+
 **Mac:** if macOS says it "can't be opened" or the developer can't be verified, right-click
 `Run demo.command` and choose Open once, or run `xattr -dr com.apple.quarantine <folder>` in Terminal.
 **Windows:** if SmartScreen warns about an unrecognized app, click More info, then Run anyway.
@@ -37,12 +42,12 @@ ev-placer --book hardrock   bet Hard Rock this run (or betrivers)
 ev-placer --help     all options (--min-ev 12, --books betrivers,hardrock, --config other.json)
 ```
 
-## Picking the book (BetRivers, Hard Rock Bet, FanDuel, BetMGM, DraftKings or theScore)
+## Picking the book (BetRivers, Hard Rock Bet, FanDuel, BetMGM, DraftKings, theScore or Caesars)
 One app runs either book; the Gambit feed, Novig check, EV math and limits are shared.
 - Double-click **Start BetRivers** or **Start Hard Rock** to bet that book for the day.
   **Start EV Placer** uses `"books"` from `config.json`.
 - Set `"books": "ask"` in `config.json` to be asked which book each time it starts.
-- From a terminal: `ev-placer --book hardrock`, or `--books betrivers,hardrock,fanduel,betmgm,draftkings,thescore` for several at once.
+- From a terminal: `ev-placer --book hardrock`, or `--books betrivers,hardrock,fanduel,betmgm,draftkings,thescore,caesars` for several at once.
   In `config.json`: `"books": ["betrivers", "hardrock", "fanduel"]`.
 - `state.json` and the daily stake limit are shared across books.
 
@@ -137,6 +142,16 @@ One app runs either book; the Gambit feed, Novig check, EV math and limits are s
 - Results come from My Bets > Settled. If theScore updates its site and the app says a query
   wasn't found, the app needs an update.
 
+**Caesars (Colorado, sportsbook.caesars.com)** is wired from a recording of two real $0.10 bets (live and pre-game):
+- PropProfessor "Caesars" rows (link `.../us/co/bet/betslip?selectionIds=<id>`) and Gambit id 300 (its Michigan feed;
+  the selection id is looked up in Colorado). Keep a logged-in Caesars tab open.
+- **Price re-check**: Caesars' bet-slip check (`v2/bets/details`): current price, line and whether it can be bet.
+  It makes no bet and leaves nothing on your slip.
+- **Bet**: places at exactly the checked price (changes are never accepted). Live bets wait Caesars' delay
+  (about 4s) before the answer. A bet refused over the location check reloads the Caesars tab.
+- The extension copies the page's own login headers (popup: "Caesars login"). Results come from My Bets > Settled.
+- Caesars isn't checked against itself in the soft-book, Pinnacle-vs-market and long-odds-props checks.
+
 ## Longest odds: +250
 Bets with odds above +250 are skipped, both when scanning and at the live or new price. Change it
 with `"maxOdds"` in `config.json` (`null` turns it off) or `--max-odds 300`.
@@ -158,7 +173,7 @@ setting in `config.json`; one that isn't there gets the default below, and `null
 | Bets at +201 to +250 need 12% EV (everything else `minEvPct`) | 12% | `"minEvByOdds": [{"from": 201, "to": 250, "minEvPct": 12}]` |
 | Player props above the `maxOdds` cap (+251 and up), on every book, are allowed up to +400 but need 18% EV (arb-table props too). Game lines keep the +250 cap. A book can get its own entry next to `"all"`; `{}` turns the rule off | 18%, up to +400 | `"longOddsProps": {"all": {"minEvPct": 18, "maxOdds": 400}}` |
 | Those +251..+400 props also need DraftKings or Caesars (not the book being bet, both sides listed) with a no-vig win % within 5 points of our fair win %. Neither priced = skipped | 1 of DK/Caesars within 5 pts | `"longPropConsensus": {"books": {"draftkings": 200, "caesars": 300}, "maxPts": 5, "minBooks": 1}` (`"enabled": false` = off) |
-| Soft-book check: the price is above 0% EV against the no-vig price of at least 2 of DraftKings, Caesars, FanDuel. A book that doesn't list both sides doesn't count; fewer than 2 priced = skip. The book being bet isn't checked against itself (a FanDuel bet needs DraftKings and Caesars) | 2 of 3, >0% | `"softCheck": {"enabled", "books", "minBooks", "minEvPct", "skipOwnBook"}` |
+| Soft-book check: the price is above 0% EV against the no-vig price of at least 2 of DraftKings, Caesars, FanDuel, Fanatics (Gambit 722, PropProfessor "Fanatics"; on Gambit's arbitrage table the app adds these ids to sportsbooks_id). A book that doesn't list both sides doesn't count; fewer than 2 priced = skip. The book being bet isn't checked against itself (a FanDuel bet needs 2 of DraftKings, Caesars, Fanatics) | 2 of 4, >4% | `"softCheck": {"enabled", "books", "minBooks", "minEvPct", "skipOwnBook"}` |
 | Pinnacle vs the market: skip when Pinnacle's no-vig win % for our side is more than 3 points above the median no-vig % of the soft books on the row (DraftKings, FanDuel, Caesars, BetMGM, theScore, Hard Rock, BetRivers/Kambi, BetParx, Fliff, bet365, Bovada, BetOnline; each needs both sides; the book being bet is left out, and Kambi too for BetRivers). Needs 3+ soft books priced, otherwise it passes. Live and pre-game +EV rows on every book; Arb-table rows skip it (`"arb": true` adds them). Each skip is logged with both numbers | 3 pts, 3 books | `"marketCheck": {"enabled", "maxPts", "minBooks", "books", "ownAlso", "arb"}` |
 | Prediction markets (Kalshi, Polymarket, Novig, ProphetX) are sharp books. A price counts only when its two sides add up to 103% or less (3 cent spread) and the thinner side has $500+ (Gambit's liquidity number). Its fair is the lower of the mid ((ours + 100 - other) / 2) and the size-weighted mid. If Kalshi and Polymarket both count they must be within 2 points, or neither counts. Ones that don't count are ignored by every sharp rule, the live timing rule and the fair price. They're added to the 3-point rule and the live mainline list even if config.json lists only Pinnacle | on, $500, 3c, 2 pts | `"sharp": {"predictionMarkets": {"enabled", "books", "minLiquidity", "maxHoldPct", "agreeBooks", "agreePts", "inFair"}}` |
 | Fair price (+EV table): the lowest of Pinnacle's no-vig win % and each counted prediction market's fair (FanDuel too on props). Rows where Gambit's fair came from its "market" blend are recomputed from those books (the blend can hold thin prices); with none priced the row is skipped. Arb-table rows keep their own fair | on | `"sharp": {"predictionMarkets": {"inFair"}}` |

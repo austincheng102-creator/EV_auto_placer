@@ -13,7 +13,8 @@
 //    live timing, and fair odds / EV. Ones that count lower the fair price when they're less optimistic than Pinnacle.
 //  - live mainlines need Pinnacle or a liquid Kalshi/Polymarket listed; props (live and pre-game) need FanDuel
 //  - soft-book check (softCheck): our price must be above 0% EV against the no-vig price of at least
-//    2 of DraftKings, Caesars and FanDuel (the book we're betting doesn't count for itself)
+//    2 of DraftKings, Caesars, FanDuel and Fanatics (the book we're betting doesn't count for itself;
+//    Fanatics added 2026-11-26, Gambit id 722, PropProfessor "Fanatics")
 //  - Pinnacle vs the market (marketCheck, 2026-11-23): skip when Pinnacle's no-vig win % for our side is more
 //    than 3 points above the median no-vig of the soft books on the row (DraftKings, FanDuel, Caesars, BetMGM,
 //    theScore, Hard Rock, ...; not the book we're betting). Needs 3+ soft books priced, otherwise it passes.
@@ -46,6 +47,10 @@ export const DEFAULT_MARKET_BOOKS = {
   draftkings: 200, fanduel: 100, caesars: 300, betmgm: [400, 1001], thescore: 700, hardrock: [851, 850, 1008, 1016],
   betrivers: 1004, kambi: 500, betparx: 1005, fliff: 800, bet365: 365, bovada: 1006, betonline: 613,
 };
+
+// Soft-book check books (Gambit ids). Fanatics (722) added 2026-11-26 (Austin) so more lines have two
+// books priced; "need 2" (softCheck.minBooks) unchanged.
+export const DEFAULT_SOFT_BOOKS = { draftkings: 200, caesars: 300, fanduel: 100, fanatics: 722 };
 
 /** Fills in defaults for the new settings, so configs from older versions get Austin's rules. */
 export function applyFilterDefaults(cfg) {
@@ -116,7 +121,7 @@ export function applyFilterDefaults(cfg) {
   // skipOwnBook: the book we're betting isn't checked against itself (its own vig always makes that negative).
   const sc = (cfg.softCheck ||= {});
   if (sc.enabled === undefined) sc.enabled = true;
-  if (sc.books === undefined) sc.books = { draftkings: 200, caesars: 300, fanduel: 100 };
+  if (sc.books === undefined) sc.books = { ...DEFAULT_SOFT_BOOKS };
   if (sc.minBooks === undefined) sc.minBooks = 2;
   // 4 (Austin 2026-11-25): bets that were only 0-4% EV against these books lost -$59 vs +$33 expected.
   if (sc.minEvPct === undefined) sc.minEvPct = 4;

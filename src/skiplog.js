@@ -96,7 +96,9 @@ export const SHADOW_COLUMNS = ['firstSeen', 'lastSeen', 'listedSec', 'book', 'li
   'minToStart', 'kind', 'market', 'selection', 'line', 'odds', 'tableOdds', 'evPct', 'minEvPct', 'maxEvPct', 'fairOdds', 'fairSetBy',
   'sharpAgeSec', 'sharpSpreadPts', 'pinnacle', 'kalshi', 'polymarket', 'novig', 'prophetx', 'pmGapPts',
   'softDraftkings', 'softCaesars', 'softFanduel', 'softPassing', 'pinVsMedianPts', 'pinVsDraftkingsPts', 'pinVsFanduelPts',
-  'failedRules', 'firstSkip', 'outcome', 'fair60sOdds', 'ev60sPct', 'closeFairOdds', 'closeEvPct', 'closeOdds'];
+  'failedRules', 'firstSkip', 'outcome', 'fair60sOdds', 'ev60sPct', 'closeFairOdds', 'closeEvPct', 'closeOdds',
+  // Added at the end (2026-11-26) so shadow-bets.csv files already on disk keep their columns lined up.
+  'softFanatics'];
 
 export function makeShadowLog(dir, { dryRun = false } = {}) {
   return makeCsvLog(path.join(dir, dryRun ? 'shadow-bets.dry.csv' : 'shadow-bets.csv'), SHADOW_COLUMNS, { keepAll: true });
