@@ -223,7 +223,9 @@ export function makeCaesars(name, label, cfg, bridge) {
       const out = [];
       let next = null;
       for (let page = 0; page < 30; page++) {
-        const path = `v2/global/bets/settled/history?page_size=${c.settledPageSize || 50}${next ? `&next=${encodeURIComponent(next)}` : ''}`;
+        // "next" (null when there's no more): a link to the next page, or a cursor to send back.
+        const nx = next && /^(https?:|\/)/.test(next) ? String(next).replace(/^https?:\/\/[^/]+/, '').replace(/^.*?\/czr\/sb\//, '') : null;
+        const path = nx || `v2/global/bets/settled/history?page_size=${c.settledPageSize || 50}${next ? `&next=${encodeURIComponent(next)}` : ''}`;
         const res = await send('history', path, 'GET', null, {}, 30000);
         if (authFail(res)) throw new Error(loginMsg);
         if (res.status >= 400 || !Array.isArray(res.json?.bets)) throw new Error(`Caesars settled bets HTTP ${res.status}: ${String(JSON.stringify(res.json) || res.text || res.error || '').slice(0, 200)}`);

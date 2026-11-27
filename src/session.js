@@ -70,6 +70,7 @@ export function makeSessionWatch({ cfg, bridge, books, log, labels }) {
       alarm(site, `${why}, for ${Math.round((Date.now() - d.since) / 60e3)} min`);
       if (site === 'gambit' && gambitAutoLogin) fixGambit(`the app found it still logged out (${why})`);
       else if (site === 'betmgm' && s.betmgmAutoLogin !== false && !needsGeo(why) && !/no .* tab open/.test(why)) bridge?.tell({ type: 'login', book: 'betmgm', why });
+      else if (site === 'caesars' && s.caesarsAutoLogin !== false && !/not seen yet|no .* tab open/.test(why)) bridge?.tell({ type: 'login', book: 'caesars', why });
       else if (reloadTabs && !needsGeo(why)) bridge?.tell({ type: 'reloadTab', book: site, why: 'still logged out' });   // the extension allows one per 5 min
     }
   }
