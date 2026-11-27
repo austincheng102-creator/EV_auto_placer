@@ -23,6 +23,11 @@ The first run creates `config.json` and an `extension/` folder next to the app. 
 (Gambit and BetRivers sections), then start it again. Each computer keeps its own `config.json`
 and `state.json` (bets already placed, today's stake).
 
+The config file can have any name with `config` in it that ends in `.json`, so each computer's file can
+say whose it is: `ants_config.json`, `ethan_config.json`. The app uses the one next to it (the start line
+says which). If there are several, it uses the most recently saved one and lists the others as not used,
+so keep only one per computer. `--config other.json` picks one by name.
+
 **Mac:** if macOS says it "can't be opened" or the developer can't be verified, right-click
 `Run demo.command` and choose Open once, or run `xattr -dr com.apple.quarantine <folder>` in Terminal.
 **Windows:** if SmartScreen warns about an unrecognized app, click More info, then Run anyway.
