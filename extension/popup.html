@@ -21,6 +21,7 @@
 <div class="row">theScore location: <b id="tsgeo">…</b></div>
 <div class="row">DraftKings play session: <b id="dkspan">…</b></div>
 <div class="row">Caesars login: <b id="cz">…</b></div>
+<div class="row">Caesars location: <b id="czgeo">…</b></div>
 <details class="row" id="mgmpw"><summary>BetMGM auto login: <b id="mgmpwst">…</b></summary>
   <div class="row" style="font-size:12px">Chrome's saved-password list can't be used by the extension, so it types your BetMGM login itself. Kept only in this Chrome on this PC; never sent to the app or anywhere else.</div>
   <input id="mgmemail" type="email" placeholder="BetMGM email (if the box is empty)" autocomplete="off" style="width:100%;box-sizing:border-box;margin:3px 0">
@@ -32,6 +33,12 @@
   <input id="tsemail" type="email" placeholder="theScore email (if the box is empty)" autocomplete="off" style="width:100%;box-sizing:border-box;margin:3px 0">
   <input id="tspass" type="password" placeholder="theScore password" autocomplete="new-password" style="width:100%;box-sizing:border-box;margin:3px 0">
   <button id="tssave" style="margin-top:4px">Save</button><button id="tsforget" style="margin-top:4px">Forget</button>
+</details>
+<details class="row" id="czpw"><summary>Caesars auto login: <b id="czpwst">…</b></summary>
+  <div class="row" style="font-size:12px">Uses the login Chrome has saved for Caesars. Only if Chrome doesn't fill it in: save it here (kept only in this Chrome on this PC; never sent to the app or anywhere else).</div>
+  <input id="czemail" type="text" placeholder="Caesars username/email (if the box is empty)" autocomplete="off" style="width:100%;box-sizing:border-box;margin:3px 0">
+  <input id="czpass" type="password" placeholder="Caesars password" autocomplete="new-password" style="width:100%;box-sizing:border-box;margin:3px 0">
+  <button id="czsave" style="margin-top:4px">Save</button><button id="czforget" style="margin-top:4px">Forget</button>
 </details>
 <div class="row" id="reload" hidden></div>
 <div class="row" id="login" hidden></div>

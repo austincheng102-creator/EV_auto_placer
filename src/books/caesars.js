@@ -12,7 +12,9 @@
 // Money is in cents ("stakePerLine": 10 = $0.10). Gambit's Caesars prices are its Michigan feed
 // (links .../us/mi/bet/betslip?selectionIds=<uuid>); the selection id is looked up in Colorado.
 // Caesars' location check (GeoComply) runs in its page and is kept on Caesars' side, so a bet
-// carries nothing for it; a bet refused over location reloads the Caesars tab so the page runs it again.
+// carries nothing for it. The extension watches the page's check (20 min, cz-geo.js) and reloads the
+// Caesars tab if the page hasn't renewed it in time; a bet refused over location renews it at once.
+// Logged out (the login lasts 24h): the extension logs back in with the Chrome-saved password.
 
 import { americanToDecimal, decimalToAmerican } from '../ev.js';
 
@@ -194,8 +196,8 @@ export function makeCaesars(name, label, cfg, bridge) {
       // Location check lapsed (Caesars' page runs GeoComply and keeps it on Caesars' side): nothing was
       // placed. A reload of the Caesars tab makes the page run it again; checked again next scan.
       if (/geo|locat|jurisdiction|outside|region/i.test(why)) {
-        bridge.tell?.({ type: 'reloadTab', book: name, why: `a bet was refused over the location check (${why.slice(0, 80)})` });
-        const e = new Error(`refused: Caesars' location check had lapsed ("${why.slice(0, 100)}"), nothing was placed; the extension reloads the Caesars tab so the page checks the location again, the bet is checked again next scan`);
+        bridge.tell?.({ type: 'geoRenew', book: name, why: `a bet was refused over the location check (${why.slice(0, 80)})` });
+        const e = new Error(`refused: Caesars' location check had lapsed ("${why.slice(0, 100)}"), nothing was placed; renewing it now (the extension reloads the Caesars tab), the bet is checked again next scan`);
         e.detail = detail; e.notSent = true; e.geoRenewing = true;
         throw e;
       }

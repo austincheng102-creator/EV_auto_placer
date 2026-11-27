@@ -39,6 +39,8 @@ async function render() {
   { const left = s.caesarsLogin ? Math.round((s.caesarsLogin * 1000 - Date.now()) / 3600e3) : null;
     $('cz').textContent = left == null ? 'not seen yet (refresh the Caesars tab)' : left > 0 ? `seen, good for ${left} h (${(s.caesarsHeaders || []).join(', ')})` : 'ran out (log in again in the Caesars tab)';
     $('cz').className = left > 0 ? 'on' : 'off'; }
+  { const n = s.caesarsGeoNext ? Math.round((s.caesarsGeoNext - Date.now()) / 60000) : null; const l = s.caesarsGeoLast ? ` (last renewal: ${s.caesarsGeoLast.ok ? 'worked' : 'failed'})` : '';
+    $('czgeo').textContent = (n == null ? 'not seen yet (refresh the Caesars tab once)' : n >= 0 ? `good for ${n} min (renewed automatically)` : 'ran out (renewing automatically)') + l; $('czgeo').className = n != null && n >= 0 ? 'on' : 'off'; }
   $('armed').textContent = armed ? 'ARMED' : 'disarmed (re-checks only)'; $('armed').className = armed ? 'on' : 'off';
   $('toggle').textContent = armed ? 'Disarm' : 'Arm (allow real bets)';
 }
@@ -69,6 +71,21 @@ $('tssave').onclick = async () => {
 };
 $('tsforget').onclick = async () => { await chrome.storage.local.remove('tsLogin'); tsPw(); };
 tsPw();
+async function czPw() {
+  const { czLogin } = await chrome.storage.local.get('czLogin');
+  const s = await chrome.runtime.sendMessage('status').catch(() => ({}));
+  const l = s?.caesarsLoginLast;
+  const last = l ? `last try ${Math.round((Date.now() - l.at) / 60000)} min ago: ${l.ok ? 'worked' : l.why}` : 'uses Chrome\'s saved login';
+  $('czpwst').textContent = `${last}${czLogin?.pass ? ' (backup password saved)' : ''}`; $('czpwst').className = !l || l.ok ? 'on' : 'off';
+}
+$('czsave').onclick = async () => {
+  const pass = $('czpass').value, email = $('czemail').value.trim();
+  if (!pass) return;
+  await chrome.storage.local.set({ czLogin: { pass, email } });
+  $('czpass').value = ''; czPw();
+};
+$('czforget').onclick = async () => { await chrome.storage.local.remove('czLogin'); czPw(); };
+czPw();
 $('toggle').onclick = async () => {
   const { armed = false } = await chrome.storage.local.get('armed');
   await chrome.storage.local.set({ armed: !armed }); render();
