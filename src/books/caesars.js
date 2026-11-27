@@ -3,6 +3,8 @@
 // is JSON on api.americanwagering.com/regions/us/locations/<st>/brands/czr/sb, sent from inside your
 // Caesars tab with the page's own login headers (sessionid, playerid, ...; the extension copies the
 // newest ones the page sent):
+//  - lookup:      GET v2/possible-bets?selectionIds=<id> -> the selection's market, event, side and
+//                 name (a betslip link carries only the id; the site fills a deep-linked slip this way).
 //  - price check: POST v2/bets/details {legs:[...]} -> the selection's current price, line, whether
 //                 it can be bet, and the live delay. It makes no bet and keeps nothing on your slip.
 //  - place:       POST v2/bets with the price we checked (an idempotency-key, so a retry can never
@@ -40,8 +42,9 @@ export function czAmerican(p) {
 /** A Caesars price object for American odds, the way the site sends it. */
 export function czPrice(am, from = null) {
   if (from && czAmerican(from) === am) {
-    const a = Number(String(from.american ?? from.a).replace(/[^\d+-]/g, ''));
-    const d = Number(from.decimal ?? from.d), f = from.fractional ?? from.f;
+    const a = Number(String(from.american ?? from.a ?? am).replace(/[^\d+-]/g, ''));
+    const own = czPrice(am);
+    const d = Number(from.decimal ?? from.d) > 1 ? Number(from.decimal ?? from.d) : own.d, f = from.fractional ?? from.f ?? own.f;
     return { american: String(from.american ?? (a > 0 ? `+${a}` : a)), decimal: d, fractional: f, a, d, f };
   }
   const d = Math.round(americanToDecimal(am) * 1e5) / 1e5;
@@ -123,22 +126,53 @@ export function makeCaesars(name, label, cfg, bridge) {
   function legOf(sel, row, price) {
     const k = known.get(sel) || {};
     const p = price || (Number.isFinite(row.odds) ? czPrice(row.odds) : undefined);
-    // The line goes in only once Caesars told us it (PropProfessor's lines carry no sign); the first
-    // check sends just the selection id and price, the way a betslip?selectionIds= link starts the slip.
+    // The line goes in only as Caesars told us it (PropProfessor's lines carry no sign).
     const line = k.line;
     return {
       selectionId: sel, ...(k.marketId ? { marketId: k.marketId } : {}), ...(k.eventId ? { eventId: k.eventId } : {}),
-      ...(k.competitionId ? { competitionId: k.competitionId } : {}), ...(k.selectionType ? { selectionType: k.selectionType } : {}),
-      ...(k.name ? { name: k.name } : {}),
+      ...(k.marketId ? { competitionId: k.competitionId || '' } : {}), ...(k.selectionType ? { selectionType: k.selectionType } : {}),
+      ...(k.marketId ? { name: k.name || '' } : {}),
       priceType: 'fp', related: false, stakePerLine: 0, ...(p ? { price: p, origPrice: p } : {}),
       source: 'default', section: 'home', isMovingLineSliderSelection: false, eachWay: false, included: true,
       ...(line != null ? { line } : {}),
     };
   }
 
+  // A betslip link carries only the selection id, and v2/bets/details refuses a leg without its
+  // market, event, side and name (HTTP 400 "There has been an error", Austin's first live attempt
+  // 2026-11-27). The site fills them the way a betslip?selectionIds= link does: GET
+  // v2/possible-bets?selectionIds=<id> -> events[].markets[].selections[] (from the site's own code).
+  async function lookup(sel, kind) {
+    const res = await send(kind, `v2/possible-bets?selectionIds=${encodeURIComponent(sel)}`);
+    if (authFail(res)) throw new Error(`${loginMsg} (selection lookup HTTP ${res.status}${hdrs(res)})`);
+    const j = res.json;
+    if (res.status >= 400 || !j) throw new Error(`Caesars selection lookup HTTP ${res.status}: ${String(JSON.stringify(j) || res.text || res.error || '').slice(0, 240)}`);
+    const single = (j.betDetails?.singles || []).find((x) => x.selectionId === sel);
+    for (const ev of j.events || []) for (const mk of ev.markets || []) for (const x of mk.selections || []) {
+      if (String(x.id).toLowerCase() !== sel) continue;
+      const raw = single?.line ?? single?.requestedLine ?? x.line ?? x.requestedLine;
+      const k = { marketId: mk.id, eventId: ev.id, competitionId: '', selectionType: x.type, name: x.name || '',
+        ...(raw != null && Number.isFinite(Number(raw)) ? { line: Number(raw) } : {}),
+        price: single?.price || x.price || null, closed: x.active === false || (ev.started === true && mk.tradedInPlay === false) };
+      known.set(sel, { ...(known.get(sel) || {}), ...k });
+      if (known.size > 2000) known.delete(known.keys().next().value);
+      return k;
+    }
+    return null;
+  }
+
   // The price check: POST v2/bets/details for the selection (no bet, nothing kept on the slip).
   async function details(sel, row, kind = 'recheck') {
-    const res = await send(kind, 'v2/bets/details', 'POST', { legs: [legOf(sel, row)], combinationSelections: [], channel: 'mobile', channelDetail: 'sportsbook', includeMultiLine: false });
+    let first = null;
+    if (!known.get(sel)?.marketId) {
+      const k = await lookup(sel, kind);
+      if (!k) return { j: null, one: null, why: ['Caesars has no such selection in Colorado (gone or settled)'] };
+      if (k.closed) return { j: null, one: null, why: ['Caesars has closed this selection'] };
+      // First check: send Caesars' own current price from the lookup, as the site's slip does.
+      const am = czAmerican(k.price);
+      if (am != null) first = czPrice(am, k.price);
+    }
+    const res = await send(kind, 'v2/bets/details', 'POST', { legs: [legOf(sel, row, first)], combinationSelections: [], channel: 'mobile', channelDetail: 'sportsbook', includeMultiLine: false });
     if (authFail(res)) throw new Error(`${loginMsg} (price check HTTP ${res.status}${hdrs(res)})`);
     const j = res.json;
     if (res.status >= 400 || !j) throw new Error(`Caesars price check HTTP ${res.status}: ${String(JSON.stringify(j) || res.text || res.error || '').slice(0, 240)}`);
@@ -167,7 +201,7 @@ export function makeCaesars(name, label, cfg, bridge) {
       if (!sel) throw new Error(`no Caesars selection id in the link (${String(row.link || 'no link').slice(0, 160)})`);
       const { one, why, j } = await details(sel, row);
       if (!one) return { odds: null, line: row.line, suspended: true, why: why.join(', ') || 'Caesars has no such selection in Colorado',
-        debug: `Caesars price check for ${sel}: ${JSON.stringify(j).slice(0, 600)}` };
+        debug: `Caesars price check for ${sel}: ${JSON.stringify(j ?? null).slice(0, 600)}` };
       const odds = czAmerican(one.price);
       return { odds, line: lineOf(one, row), suspended: one.bettable === false || j.bettable === false || odds == null,
         maxStake: null, cz: { sel, one, price: one.price, delay: one.delay },
