@@ -220,7 +220,7 @@ const needBridge = !dryRun || usePP || (useGambit && (cfg.gambit?.via || 'extens
 const bridge = needBridge ? startBridge(cfg.bridgePort || 8765, { reloadExtension: extensionChanged,
   hello: { type: 'settings', settings: { gambitAutoLogin: cfg.session?.gambitAutoLogin !== false, fanduelGeoRenew: cfg.session?.fanduelGeoRenew !== false,
     betriversGeoRenew: cfg.session?.betriversGeoRenew !== false, betmgmGeoRenew: cfg.session?.betmgmGeoRenew !== false, betmgmGeoClick: cfg.session?.betmgmGeoClick !== false, betmgmAutoLogin: cfg.session?.betmgmAutoLogin !== false,
-    thescoreGeoRenew: cfg.session?.thescoreGeoRenew !== false, thescoreAutoLogin: cfg.session?.thescoreAutoLogin !== false, draftkingsPlaySpan: cfg.session?.draftkingsPlaySpan !== false, draftkingsGeoRenew: cfg.session?.draftkingsGeoRenew !== false, hardrockGeoRenew: cfg.session?.hardrockGeoRenew !== false } } }) : null;
+    thescoreGeoRenew: cfg.session?.thescoreGeoRenew !== false, thescoreAutoLogin: cfg.session?.thescoreAutoLogin !== false, caesarsGeoRenew: cfg.session?.caesarsGeoRenew !== false, caesarsAutoLogin: cfg.session?.caesarsAutoLogin !== false, draftkingsPlaySpan: cfg.session?.draftkingsPlaySpan !== false, draftkingsGeoRenew: cfg.session?.draftkingsGeoRenew !== false, hardrockGeoRenew: cfg.session?.hardrockGeoRenew !== false } } }) : null;
 const gambitSource = useGambit ? makeGambitSource(cfg, bridge, { root, log }) : null;
 if (gambitSource) Object.assign(gambitSource, { name: 'gambit', label: 'Gambit' });
 const ppSource = usePP ? makePropProfessorSource(cfg, bridge, { root, log }) : null;

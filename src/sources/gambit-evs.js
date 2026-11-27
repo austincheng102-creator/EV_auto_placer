@@ -7,6 +7,7 @@ import { fairKey } from '../betlog.js';
 import { betmgmRef } from '../books/betmgm.js';
 import { draftkingsRef } from '../books/draftkings.js';
 import { thescoreRef } from '../books/thescore.js';
+import { caesarsRef } from '../books/caesars.js';
 
 // Gambit sportsbook ids -> our book names.
 // Hard Rock: Gambit lists it as 850, 851, 1008 and 1016. 851 is Colorado (its bets were accepted
@@ -14,7 +15,7 @@ import { thescoreRef } from '../books/thescore.js';
 // BetMGM: Gambit's 1001 is Michigan (sports.mi.betmgm.com) and 400 is Ontario (betmgm.ca), with
 // no Colorado feed. Gambit's own "BetMGM" choice is 400. Ids are the same in every state, and
 // prices are read from BetMGM CO before EV is judged.
-export const DEFAULT_BOOK_IDS = { betrivers: 1004, fanduel: 100, hardrock: 851, betmgm: 400, draftkings: 200, thescore: 700 };
+export const DEFAULT_BOOK_IDS = { betrivers: 1004, fanduel: 100, hardrock: 851, betmgm: 400, draftkings: 200, thescore: 700, caesars: 300 };
 // Books whose Gambit id we don't know yet: found from their bet links' web address
 // (gambit.bookIds in config.json overrides this).
 // Gambit's Hard Rock links may be app redirect links (AppsFlyer, ...deep_link_value=betslip/<id>),
@@ -122,7 +123,7 @@ export function evsToRows(json, g = {}, fairOut = null, { shadow = [] } = {}) {
       if (p == null || p >= 1) continue;
       const own = (b.comparableBets || []).find((c) => c.sportsbook_id === b.sportsbook_id);
       const link = own?.desktop_link || own?.mobile_link || '';
-      const refs = book === 'betrivers' ? kambiRef(link) : book === 'fanduel' ? fanduelRef(link) : book === 'hardrock' ? hardrockRef(link) : book === 'betmgm' ? betmgmRefs(link) : book === 'draftkings' ? draftkingsRef(link) : book === 'thescore' ? thescoreRef(link) : {};
+      const refs = book === 'betrivers' ? kambiRef(link) : book === 'fanduel' ? fanduelRef(link) : book === 'hardrock' ? hardrockRef(link) : book === 'betmgm' ? betmgmRefs(link) : book === 'draftkings' ? draftkingsRef(link) : book === 'thescore' ? thescoreRef(link) : book === 'caesars' ? caesarsRef(link) : {};
       const novig = (b.comparableBets || []).find((c) => c.sportsbook_id === NOVIG_ID);
       const novigOpp = (b.opposingBets || []).find((c) => c.sportsbook_id === NOVIG_ID);
       const isTotal = /total|PLAYER_PROP/i.test(op.marketName);
@@ -162,7 +163,7 @@ export function evsToRows(json, g = {}, fairOut = null, { shadow = [] } = {}) {
         const sb = shadowIds.get(c.sportsbook_id);
         if (!sb || sb === book || !Number.isFinite(Number(c.odds))) continue;
         const l = c.desktop_link || c.mobile_link || '';
-        const r = sb === 'betrivers' ? kambiRef(l) : sb === 'hardrock' ? hardrockRef(l) : sb === 'betmgm' ? betmgmRefs(l) : sb === 'draftkings' ? draftkingsRef(l) : sb === 'thescore' ? thescoreRef(l) : {};
+        const r = sb === 'betrivers' ? kambiRef(l) : sb === 'hardrock' ? hardrockRef(l) : sb === 'betmgm' ? betmgmRefs(l) : sb === 'draftkings' ? draftkingsRef(l) : sb === 'thescore' ? thescoreRef(l) : sb === 'caesars' ? caesarsRef(l) : {};
         if (!r.bookRef) continue;
         const odds = Number(c.odds);
         shadows.push({ ...base, id: `${sb}:${r.bookRef}`, book: sb, gambitBookId: c.sportsbook_id, shadow: true,
@@ -180,7 +181,7 @@ export function evsToRows(json, g = {}, fairOut = null, { shadow = [] } = {}) {
 export function rowParts(ev, op, b, book) {
   const own = (b.comparableBets || []).find((c) => c.sportsbook_id === b.sportsbook_id);
   const link = b.desktop_link || b.mobile_link || own?.desktop_link || own?.mobile_link || '';
-  const refs = book === 'betrivers' ? kambiRef(link) : book === 'fanduel' ? fanduelRef(link) : book === 'hardrock' ? hardrockRef(link) : book === 'betmgm' ? betmgmRefs(link) : book === 'draftkings' ? draftkingsRef(link) : book === 'thescore' ? thescoreRef(link) : {};
+  const refs = book === 'betrivers' ? kambiRef(link) : book === 'fanduel' ? fanduelRef(link) : book === 'hardrock' ? hardrockRef(link) : book === 'betmgm' ? betmgmRefs(link) : book === 'draftkings' ? draftkingsRef(link) : book === 'thescore' ? thescoreRef(link) : book === 'caesars' ? caesarsRef(link) : {};
   const isTotal = /total|PLAYER_PROP/i.test(op.marketName);
   const side = cap(b.selection_line || (isTotal ? b.selection : ''));
   const selection = b.player_name ? `${b.player_name} ${side}`.trim() : isTotal ? side : b.selection;

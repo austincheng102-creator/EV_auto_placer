@@ -29,9 +29,10 @@ import { arbDefaults, refFair, arbStats } from './gambit-arbs.js';
 import { DEFAULT_BOOK_IDS, kambiRef, betmgmRefs, prettyMarket } from './gambit-evs.js';
 import { draftkingsRef } from '../books/draftkings.js';
 import { thescoreRef } from '../books/thescore.js';
+import { caesarsRef } from '../books/caesars.js';
 
 // PropProfessor book names -> our book names (the ones the app can bet).
-export const PP_BOOKS = { BetRivers: 'betrivers', Hardrock: 'hardrock', FanDuel: 'fanduel', BetMGM: 'betmgm', DraftKings: 'draftkings', theScore: 'thescore' };
+export const PP_BOOKS = { BetRivers: 'betrivers', Hardrock: 'hardrock', FanDuel: 'fanduel', BetMGM: 'betmgm', DraftKings: 'draftkings', theScore: 'thescore', Caesars: 'caesars' };
 // PropProfessor book names -> the Gambit ids the rules know them by. Books Gambit doesn't have get
 // ids of their own (90000+), so they're in the row but no rule counts them.
 export const PP_IDS = {
@@ -135,6 +136,13 @@ export function refsOf(book, link, ad = {}, mobileLink = '') {
   if (book === 'draftkings') return draftkingsRef(link);
   // PropProfessor writes theScore's selection as "MarketSelection:<uuid>"; Gambit's links have the bare uuid.
   if (book === 'thescore') { const l = String(link || '').replace(/MarketSelection:/g, ''); return { ...thescoreRef(l), link: l }; }
+  // Caesars: its betslip link (?selectionIds=<uuid>), else a selection uuid in PropProfessor's extra data.
+  if (book === 'caesars') {
+    const r = caesarsRef(link).bookRef ? caesarsRef(link) : caesarsRef(mobileLink);
+    if (r.bookRef) return r;
+    const id = [ad.selection_id, ad.selectionId, ad.selection_id_string, ad.outcome_id].map((v) => String(v ?? '')).find((v) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v));
+    return id ? { bookRef: id.toLowerCase() } : {};
+  }
   return {};
 }
 
