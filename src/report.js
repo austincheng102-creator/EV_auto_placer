@@ -159,6 +159,9 @@ th { color: var(--text-2); font-weight: 500; font-size: 12px; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 td.what { white-space: normal; min-width: 220px; }
 .pos { color: var(--good); } .neg { color: var(--bad); }
+.nodata { color: var(--text-3); font-style: italic; }
+td.evafter.pos, td.evafter.neg, .tile .v.pos, .tile .v.neg { font-weight: 600; }
+#oddsTip .pos, #oddsTip .neg { font-weight: 600; }
 select { font: inherit; font-size: 12px; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 3px 4px; }
 .note { color: var(--text-2); font-size: 12px; }
 .cal-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
@@ -305,6 +308,16 @@ const cls = (x) => x > 0 ? 'pos' : x < 0 ? 'neg' : '';
 // EV at the price we got, against the first fair seen after the book accepted the bet (bets.json atAccept).
 // null when there is none: older bets, the feed no longer listed it, or no prices within 2 minutes.
 const evAfter = (b) => Number.isFinite(b?.evAfter) ? b.evAfter : Number.isFinite(b?.atAccept?.ev) ? b.atAccept.ev : null;
+// Signed % with a plain minus sign, so negatives can't be mistaken for anything else.
+const pctSigned = (x) => (x > 0 ? '+' : x < 0 ? '-' : '') + Math.abs(x).toFixed(1) + '%';
+// What an EV after cell says when there is no number (shown grey and in italics, never as a dash).
+const evAfterBlank = (b) => {
+  const a = b?.atAccept;
+  if (a?.gone) return ['dropped', 'The feed no longer listed this bet after it was accepted (it may no longer have been +EV), so there is no after price.'];
+  if (a?.none) return ['no price', 'After the bet was accepted: ' + a.none + '.'];
+  if (!a && b?.timing?.acceptedAt && Date.now() - b.timing.acceptedAt < 5 * 60e3) return ['waiting', 'Waiting for the first feed prices after the bet was accepted.'];
+  return ['no price', 'No after-bet price for this bet (older bet, or no prices came in after it was accepted).'];
+};
 const dayKey = (t) => { const d = new Date(t); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
 const dayLabel = (k) => new Date(k + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 const when = (t) => new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
@@ -449,11 +462,12 @@ function compareTable(id, head, groups) {
     const s = stats(list);
     const tr = document.createElement('tr');
     const cells = [[name], [String(s.n)], [money(s.staked)], [s.settled ? s.settled + ' (' + s.record[0] + '-' + s.record[1] + (s.record[2] ? '-' + s.record[2] : '') + ')' : '0'],
-      [money(s.settled ? s.pnl : null, true), s.pnl], [pct(s.roi), s.roi], [money(s.n ? s.expected : null, true)], [pct(s.avgEv)], [pct(s.avgAfter), s.avgAfter != null && s.avgEvAfterSet != null ? s.avgAfter - s.avgEvAfterSet : null], [pct(s.clv), s.clv]];
-    cells.forEach(([t, v], i) => {
+      [money(s.settled ? s.pnl : null, true), s.pnl], [pct(s.roi), s.roi], [money(s.n ? s.expected : null, true)], [pct(s.avgEv)], [s.avgAfter == null ? 'no price' : pctSigned(s.avgAfter), s.avgAfter, s.avgAfter == null ? 'nodata' : null], [pct(s.clv), s.clv]];
+    cells.forEach(([t, v, extra], i) => {
       const td = document.createElement('td');
       if (i) td.className = 'num';
       if (v != null && cls(v)) td.classList.add(cls(v));
+      if (extra) td.classList.add(extra);
       if (!i && badge) td.append(badge); else td.textContent = t;
       tr.append(td);
     });
@@ -484,7 +498,7 @@ function tiles(list) {
     ['Profit (settled)', money(s.pnl, true), s.settled ? s.settled + ' settled · ' + s.record[0] + '-' + s.record[1] + (s.record[2] ? '-' + s.record[2] : '') : 'no results yet', cls(s.pnl)],
     ['ROI (settled)', pct(s.roi), s.settled ? 'expected ' + money(s.expectedSettled, true) + ' on these' : '—', cls(s.roi)],
     ['Expected profit', money(s.expected, true), 'avg EV ' + pct(s.avgEv)],
-    ['Avg EV after', pct(s.avgAfter), s.nAfter ? s.nAfter + ' bets · avg EV ' + pct(s.avgEvAfterSet) + ' on these' : 'no after-bet prices yet', cls(s.avgAfter != null && s.avgEvAfterSet != null ? s.avgAfter - s.avgEvAfterSet : null)],
+    ['Avg EV after', s.avgAfter == null ? 'no price' : pctSigned(s.avgAfter), s.nAfter ? s.nAfter + ' bets · avg EV ' + pct(s.avgEvAfterSet) + ' on these' : 'no after-bet prices yet', s.avgAfter == null ? 'nodata' : cls(s.avgAfter)],
     ['Avg CLV', pct(s.clv), s.nClv ? s.nClv + ' with a close' : 'no closes yet', cls(s.clv)],
     ['Waiting for result', String(s.open), LIVE ? 'mark them below' : 'open Show bets to mark'],
   ];
@@ -645,7 +659,7 @@ function table(list) {
   document.getElementById('tableNote').textContent = LIVE
     ? 'Results fill in by themselves from Hard Rock, BetRivers and FanDuel while the placer runs. You can also pick one by hand; it saves to results.json and the charts update.'
     : 'Read-only copy. Run Show bets to mark results.';
-  const head = '<tr><th>Placed</th><th>Book</th><th>Type</th><th>Market</th><th>Table</th><th>Bet</th><th class="num">Odds</th><th class="num">Stake</th><th class="num">EV</th><th class="num" title="EV at the price we got, against the first fair seen after the book accepted the bet. Green: the fair moved our way; red: against us.">EV after</th><th class="num">CLV</th><th>Result</th><th class="num">Profit</th></tr>';
+  const head = '<tr><th>Placed</th><th>Book</th><th>Type</th><th>Market</th><th>Table</th><th>Bet</th><th class="num">Odds</th><th class="num">Stake</th><th class="num">EV</th><th class="num" title="EV at the price we got, against the first fair seen after the book accepted the bet. Green +: still +EV; red -: the bet was -EV by then; grey: no after price (hover for why). Hover a number to see how far it moved from the EV we bet at.">EV after</th><th class="num">CLV</th><th>Result</th><th class="num">Profit</th></tr>';
   tb.innerHTML = head;
   // Newest first, TABLE_PAGE rows at a time: drawing every row (2,000+ rows, each with its own
   // result picker) made the page heavy. "Show more" / "Show all" add the older ones.
@@ -662,7 +676,7 @@ function table(list) {
   allBtn.onclick = () => { state.rows = Infinity; table(list); };
   for (const b of shown) {
     const tr = document.createElement('tr');
-    const cells = [when(b.placedAt), label(b.book), '', '', SRC[srcOf(b)], '', odds(b.odds), '$' + b.stake, pct(b.ev), pct(evAfter(b)), pct(b.clv), '', money(b.profit, true)];
+    const cells = [when(b.placedAt), label(b.book), '', '', SRC[srcOf(b)], '', odds(b.odds), '$' + b.stake, pct(b.ev), evAfter(b) == null ? evAfterBlank(b)[0] : pctSigned(evAfter(b)), pct(b.clv), '', money(b.profit, true)];
     cells.forEach((c, i) => {
       const td = document.createElement('td');
       if ([6, 7, 8, 9, 10, 12].includes(i)) td.className = 'num';
@@ -686,11 +700,15 @@ function table(list) {
           td.append(sel);
         } else td.textContent = b.result || 'not settled';
       } else td.textContent = c;
-      // EV after: green when the fair moved our way after the bet, red when it moved against us.
-      if (i === 9 && evAfter(b) != null && Number.isFinite(b.ev)) {
-        const d = evAfter(b) - b.ev;
-        if (Math.abs(d) >= 0.05) td.classList.add(cls(d));
-        td.title = (d >= 0 ? '+' : '−') + Math.abs(d).toFixed(1) + ' pts vs EV at the price we got';
+      // EV after: green with + when still +EV, red with - when -EV, grey words when there is no number.
+      if (i === 9) {
+        td.classList.add('evafter');
+        const v = evAfter(b);
+        if (v == null) { td.classList.add('nodata'); td.title = evAfterBlank(b)[1]; }
+        else {
+          if (cls(v)) td.classList.add(cls(v));
+          if (Number.isFinite(b.ev)) { const d = v - b.ev; td.title = (d >= 0 ? '+' : '-') + Math.abs(d).toFixed(1) + ' pts vs the ' + pctSigned(b.ev) + ' EV we bet at (' + (d >= 0 ? 'fair moved our way' : 'fair moved against us') + ')'; }
+        }
       }
       if (i === 12 && b.profit != null) td.classList.add(cls(b.profit) || 'num');
       tr.append(td);
@@ -808,7 +826,7 @@ if (LIVE) {
     if (a?.gone) h += '<div class="tf">First ' + esc(feed) + ' prices after the bet was accepted (' + clock(a.gambitAt) + '): ' + esc(feed) + ' no longer listed it (it may no longer have been +EV).</div>';
     else if (a?.none) h += '<div class="tf">After the bet was accepted: ' + esc(a.none) + '.</div>';
     else if (a) h += '<div class="tf">First ' + esc(feed) + ' prices after the bet was accepted (' + clock(a.gambitAt) + (acc ? ', ' + gap(acc, a.gambitAt) + ' later' : '') + '): fair ' + esc(fmt(a.fairOdds)) + ' (' + pc(a.fairProb) + ')' +
-      (a.setBy?.length ? ' from ' + esc(a.setBy.map((n) => n[0].toUpperCase() + n.slice(1)).join(' + ')) : '') + ', so ' + esc(pct1(Number.isFinite(b.evAfter) ? b.evAfter : a.ev)) + ' EV at our price.</div>';
+      (a.setBy?.length ? ' from ' + esc(a.setBy.map((n) => n[0].toUpperCase() + n.slice(1)).join(' + ')) : '') + ', so <span class="' + (cls(evAfter(b)) || '') + '">' + esc(Number.isFinite(evAfter(b)) ? pctSigned(evAfter(b)) : '?') + '</span> EV at our price.</div>';
     else if (acc) h += '<div class="tf">Waiting for the first ' + esc(feed) + ' prices after the bet was accepted.</div>';
     if (b.sharpNoVig) h += '<div class="tf">' + (b.source === 'arb' ? 'Reference books' : 'Sharp books') + ' simple no-vig win %, for the 3-point agreement check only: ' + esc(b.sharpNoVig) + '</div>';
     return h;
