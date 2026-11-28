@@ -258,6 +258,15 @@ export function makeDraftKings(name, label, cfg, bridge) {
       return { odds: null, line: row.line, suspended: true, why: 'DraftKings no longer offers it (its odds feed: selection not found)',
         maxStake: null, dk: { id, token: null, fromFeed: true, gone: true } };
     }
+    // The feed itself failed (no answer, timeout, or an HTTP error): skip this check and try again on the
+    // next scan, without sending calculateBets in its place. A failed read shouldn't put an extra request
+    // on the bet slip's endpoint, the one behind DraftKings' bot filter (another user's review, Austin
+    // 2026-11-27). Only a feed that answered but had no price for the selection still falls back.
+    if (si.status !== 200 && k.feedFailFallback !== true) {
+      if (!feedFailSaid) { feedFailSaid = true; log.debug(`DraftKings odds feed failed for ${id} (HTTP ${si.status}${si.error ? `, ${si.error}` : ''}): check skipped, no calculateBets sent. Feed answer: ${String(si.text || JSON.stringify(si.json ?? '')).slice(0, 600)}`); }
+      return { odds: null, line: row.line, suspended: false, why: `DraftKings odds feed didn't answer (HTTP ${si.status || 'none'}${si.error ? `, ${String(si.error).slice(0, 80)}` : ''}); tried again next scan, no bet-slip check sent`,
+        maxStake: null, dk: { id, token: null, fromFeed: true } };
+    }
     if (!sel || odds == null) {
       if (!feedMissSaid) { feedMissSaid = true; log.debug(`DraftKings odds feed gave no price for ${id} (HTTP ${si.status}${si.error ? `, ${si.error}` : ''}): checking with calculateBets instead. Feed answer: ${String(si.text || JSON.stringify(si.json ?? '')).slice(0, 600)}`); }
       return null;
@@ -265,7 +274,7 @@ export function makeDraftKings(name, label, cfg, bridge) {
     return { odds, line: lineOf(sel, row), suspended: !!mk?.isSuspended || sel.isSuspended === true || sel.isOpen === false,
       maxStake: null, dk: { id, token: null, trueOdds: sel.trueOdds ?? null, displayOdds: sel.displayOdds?.american ?? sel.displayOdds ?? null, fromFeed: true } };
   }
-  let feedMissSaid = false;
+  let feedMissSaid = false, feedFailSaid = false;
   // calculateBets: the bet slip's price and its token (no bet is made). At most one every minGapSec,
   // and none while DraftKings' bot filter has paused us.
   async function tokenCheck(row, id) {
