@@ -1108,7 +1108,14 @@ const geoKeepers = {
     clickRenew: mgmClickRenew,
     passive: true, passiveHelp: 'BetMGM runs it when you use the site: click any odds in the BetMGM tab (then remove it from the slip) to run it now. Keep the GeoComply app running.',
     help: 'Is the GeoComply location app running on this PC, and are you logged in to BetMGM?' }),
+  // theScore: a reload in a background tab never started a new check (Austin's log 2026-11-27:
+  // 0 of 27 background reloads renewed it, 20 of 27 front reloads did). The keeper tried the
+  // background first, 90s before it ran out, so after that miss and the 2-min wait the check had
+  // lapsed and bets were held ~95 times in a day. So theScore goes straight to the front reload
+  // (then back to the tab you were on), 4 min before it runs out, leaving time for one more try
+  // before it lapses. The old check stays good until it runs out, so bets keep going meanwhile.
   thescore: makeGeoKeeper({ book: 'thescore', label: 'theScore', key: 'evPlacerTsGeo', host: /^sportsbook\.thescore\.bet$/, setting: 'thescoreGeoRenew', clearMatch: '__GEOCOMPLY__$',
+    frontFirst: true, renewBeforeMs: 240e3,
     help: 'Is the GeoComply location app running on this PC, does Chrome allow theScore to use your location, and are you logged in to theScore?' }),
   // DraftKings runs its next check itself 35s before the last one runs out (20 min). In a background
   // tab Chrome runs the page's timers late (up to a minute), so it sometimes ran after the check had
