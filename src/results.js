@@ -111,6 +111,25 @@ export function marketTypeOf(b) {
 }
 
 /**
+ * Sport / league of a bet for the Show bets "By sport" card: the league name the odds feed gave
+ * (bets.json league, e.g. NBA, NCAAB, NFL, Tennis). A few other spellings of the same league are
+ * folded together. Bets with no league saved (very old ones from state.json) are 'Unknown'.
+ */
+const LEAGUE_ALIASES = {
+  ncaam: 'NCAAB', cbb: 'NCAAB', 'ncaa basketball': 'NCAAB', 'college basketball': 'NCAAB', 'ncaa mens basketball': 'NCAAB',
+  cfb: 'NCAAF', 'ncaa football': 'NCAAF', 'college football': 'NCAAF',
+  ncaaw: 'WNCAAB', 'ncaa womens basketball': 'WNCAAB',
+};
+export function leagueOf(b) {
+  const raw = String(b?.league ?? '').trim().replace(/\s+/g, ' ');
+  if (!raw) return 'Unknown';
+  const k = raw.toLowerCase().replace(/['’.]/g, '');
+  if (LEAGUE_ALIASES[k]) return LEAGUE_ALIASES[k];
+  // Short codes (nba, nfl, ncaab) in capitals; names (Tennis, Soccer) as the feed wrote them.
+  return /^[a-z0-9]{2,6}$/i.test(raw) && !/^(tennis|soccer|golf|boxing|cricket|rugby)$/i.test(raw) ? raw.toUpperCase() : raw;
+}
+
+/**
  * Every bet we know about, newest last, with its result and profit filled in.
  * Uses bets.json, plus bets from state.json that were placed before bets.json existed.
  */
@@ -165,6 +184,7 @@ export function loadBets(dir, { dryRun = false } = {}) {
         key, placedAt: b.placedAt, book: b.book, event: b.event, market: b.market, selection: b.selection, line: b.line,
         // Moneyline / spread / total / player prop / other, worked out again on every load (old bets too).
         mkt: marketTypeOf(b),
+        league: leagueOf(b),
         live: b.live, source: betSource(b), feed: b.feed ?? null, otherBooks: b.otherBooks ?? null, sharpNoVig: b.sharpNoVig ?? null,
         // For the hover popup: the fair price and reference prices the EV was judged on, and when.
         fairOdds: b.fairOdds ?? null, fairProb: b.fairProb ?? null, fairSource: b.fairSource ?? null, sentOdds: b.sentOdds ?? null,
