@@ -221,6 +221,7 @@ tr.hasodds:hover td { background: var(--chip); }
     <div class="seg" id="bookSeg" role="group" aria-label="Book"></div>
     <div class="seg" id="kindSeg" role="group" aria-label="Live or pre-game"></div>
     <div class="seg" id="mktSeg" role="group" aria-label="Market type"></div>
+    <div class="seg" id="sportSeg" role="group" aria-label="Sport"></div>
     <div class="seg" id="srcSeg" role="group" aria-label="Odds table"></div>
     <div class="seg" id="rangeSeg" role="group" aria-label="Time range"></div>
     <div class="daychip" id="dayChip"><span id="dayChipText"></span><button type="button" id="dayClear">Show all days</button></div>
@@ -228,17 +229,22 @@ tr.hasodds:hover td { background: var(--chip); }
   <div class="tiles" id="tiles"></div>
   <section class="card" id="kindCard">
     <h2>Live vs pre-game</h2>
-    <p class="desc">Bets placed while the game was on, next to bets placed before it started. Follows the book, market type, table, time range and day picked.</p>
+    <p class="desc">Bets placed while the game was on, next to bets placed before it started. Follows the book, market type, sport, table, time range and day picked.</p>
     <div class="tablewrap"><table id="kindTable"></table></div>
   </section>
   <section class="card" id="mktCard">
     <h2>By market type</h2>
-    <p class="desc">Full-game moneylines, spreads and totals, player props, and everything else (team totals, halves, quarters, periods, sets). Every bet in the log is sorted here, settled ones included. Follows the book, live/pre-game, table, time range and day picked.</p>
+    <p class="desc">Full-game moneylines, spreads and totals, player props, and everything else (team totals, halves, quarters, periods, sets). Every bet in the log is sorted here, settled ones included. Follows the book, live/pre-game, sport, table, time range and day picked.</p>
     <div class="tablewrap"><table id="mktTable"></table></div>
+  </section>
+  <section class="card" id="sportCard">
+    <h2>By sport</h2>
+    <p class="desc">Each league the odds feed named (NBA, NCAAB, NFL, NHL, Tennis, ...), most bets first. Expected is what the bets are worth at the fair price we had; ROI is on settled bets. Follows the book, live/pre-game, market type, table, time range and day picked.</p>
+    <div class="tablewrap"><table id="sportTable"></table></div>
   </section>
   <section class="card" id="srcCard" hidden>
     <h2>By odds table</h2>
-    <p class="desc">Where each bet came from on its odds source (Gambit or PropProfessor): the +EV table or the arbitrage table (player props priced off the reference books). Follows the book, live/pre-game, market type, time range and day picked.</p>
+    <p class="desc">Where each bet came from on its odds source (Gambit or PropProfessor): the +EV table or the arbitrage table (player props priced off the reference books). Follows the book, live/pre-game, market type, sport, time range and day picked.</p>
     <div class="tablewrap"><table id="srcTable"></table></div>
   </section>
   <section class="card" id="calCard">
@@ -277,9 +283,9 @@ let ETAG = __ETAG__;
 // Placed time and local day of each bet, worked out once per load (not on every filter pass).
 const prep = (d) => { for (const b of d.bets) { b._t = Date.parse(b.placedAt); b._day = dayKey(b._t); } return d; };
 const NS = 'http://www.w3.org/2000/svg';
-const state = { book: 'all', range: 'all', src: 'all', kind: 'all', mkt: 'all' };
-try { const v = JSON.parse(localStorage.getItem('evp-view') || '{}'); state.book = v.book || 'all'; state.range = v.range || 'all'; state.src = v.src || 'all'; state.kind = v.kind || 'all'; state.mkt = v.mkt || 'all'; } catch {}
-const saveView = () => { try { localStorage.setItem('evp-view', JSON.stringify({ book: state.book, range: state.range, src: state.src, kind: state.kind, mkt: state.mkt })); } catch {} };
+const state = { book: 'all', range: 'all', src: 'all', kind: 'all', mkt: 'all', sport: 'all' };
+try { const v = JSON.parse(localStorage.getItem('evp-view') || '{}'); state.book = v.book || 'all'; state.range = v.range || 'all'; state.src = v.src || 'all'; state.kind = v.kind || 'all'; state.mkt = v.mkt || 'all'; state.sport = v.sport || 'all'; } catch {}
+const saveView = () => { try { localStorage.setItem('evp-view', JSON.stringify({ book: state.book, range: state.range, src: state.src, kind: state.kind, mkt: state.mkt, sport: state.sport })); } catch {} };
 // Live (placed while the game was on) or pre-game.
 const KIND = { live: 'Live', pre: 'Pre-game' };
 const kindOf = (b) => b.live ? 'live' : 'pre';
@@ -288,6 +294,13 @@ const kindBadge = (b) => { const s = document.createElement('span'); s.className
 const MKT = { ml: 'Moneyline', spread: 'Spread', total: 'Total', prop: 'Player prop', other: 'Other' };
 const MKT_ORDER = ['ml', 'spread', 'total', 'prop', 'other'];
 const mktOf = (b) => MKT[b.mkt] ? b.mkt : 'other';
+// Sport / league (results.js leagueOf), most bets first, 'Unknown' last.
+const sportOf = (b) => b.league || 'Unknown';
+function sportsPresent(list = DATA.bets) {
+  const n = {};
+  for (const b of list) n[sportOf(b)] = (n[sportOf(b)] || 0) + 1;
+  return Object.keys(n).sort((a, b) => (a === 'Unknown') - (b === 'Unknown') || n[b] - n[a] || a.localeCompare(b));
+}
 const mktPill = (k) => { const s = document.createElement('span'); s.className = 'pill mkt-' + k; s.textContent = MKT[k]; return s; };
 // Which Gambit table a bet came from. Bets from before this was logged are all +EV table bets.
 const SRC = { ev: '+EV', arb: 'Arb' };
@@ -325,9 +338,9 @@ const when = (t) => new Date(t).toLocaleString(undefined, { month: 'short', day:
 prep(DATA);
 function booksPresent() { return [...new Set(DATA.bets.map((b) => b.book))].sort((a, b) => ['hardrock', 'betrivers', 'fanduel', 'betmgm', 'draftkings', 'thescore', 'caesars'].indexOf(a) - ['hardrock', 'betrivers', 'fanduel', 'betmgm', 'draftkings', 'thescore', 'caesars'].indexOf(b) || a.localeCompare(b)); }
 // A picked day wins over the time range.
-function filtered(book = state.book, { day = state.day, range = !day, src = state.src, kind = state.kind, mkt = state.mkt } = {}) {
+function filtered(book = state.book, { day = state.day, range = !day, src = state.src, kind = state.kind, mkt = state.mkt, sport = state.sport } = {}) {
   const cut = !range || state.range === 'all' ? 0 : Date.now() - Number(state.range) * 864e5;
-  return DATA.bets.filter((b) => (book === 'all' || b.book === book) && (src === 'all' || srcOf(b) === src) && (kind === 'all' || kindOf(b) === kind) && (mkt === 'all' || mktOf(b) === mkt) && b._t >= cut && (!day || b._day === day));
+  return DATA.bets.filter((b) => (book === 'all' || b.book === book) && (src === 'all' || srcOf(b) === src) && (kind === 'all' || kindOf(b) === kind) && (mkt === 'all' || mktOf(b) === mkt) && (sport === 'all' || sportOf(b) === sport) && b._t >= cut && (!day || b._day === day));
 }
 
 function pickDay(k) {
@@ -489,6 +502,12 @@ function kindTable() {
 function mktTable() {
   const all = filtered(state.book, { mkt: 'all' });
   compareTable('mktTable', 'Market', MKT_ORDER.map((k) => [MKT[k], all.filter((b) => mktOf(b) === k), mktPill(k)]));
+}
+
+// NBA vs NCAAB vs NFL vs ... (every league with bets under the other filters).
+function sportTable() {
+  const all = filtered(state.book, { sport: 'all' });
+  compareTable('sportTable', 'Sport', sportsPresent(all).map((k) => [k, all.filter((b) => sportOf(b) === k)]));
 }
 
 function tiles(list) {
@@ -659,7 +678,7 @@ function table(list) {
   document.getElementById('tableNote').textContent = LIVE
     ? 'Results fill in by themselves from Hard Rock, BetRivers and FanDuel while the placer runs. You can also pick one by hand; it saves to results.json and the charts update.'
     : 'Read-only copy. Run Show bets to mark results.';
-  const head = '<tr><th>Placed</th><th>Book</th><th>Type</th><th>Market</th><th>Table</th><th>Bet</th><th class="num">Odds</th><th class="num">Stake</th><th class="num">EV</th><th class="num" title="EV at the price we got, against the first fair seen after the book accepted the bet. Green +: still +EV; red -: the bet was -EV by then; grey: no after price (hover for why). Hover a number to see how far it moved from the EV we bet at.">EV after</th><th class="num">CLV</th><th>Result</th><th class="num">Profit</th></tr>';
+  const head = '<tr><th>Placed</th><th>Book</th><th>Type</th><th>Market</th><th>Sport</th><th>Table</th><th>Bet</th><th class="num">Odds</th><th class="num">Stake</th><th class="num">EV</th><th class="num" title="EV at the price we got, against the first fair seen after the book accepted the bet. Green +: still +EV; red -: the bet was -EV by then; grey: no after price (hover for why). Hover a number to see how far it moved from the EV we bet at.">EV after</th><th class="num">CLV</th><th>Result</th><th class="num">Profit</th></tr>';
   tb.innerHTML = head;
   // Newest first, TABLE_PAGE rows at a time: drawing every row (2,000+ rows, each with its own
   // result picker) made the page heavy. "Show more" / "Show all" add the older ones.
@@ -676,13 +695,13 @@ function table(list) {
   allBtn.onclick = () => { state.rows = Infinity; table(list); };
   for (const b of shown) {
     const tr = document.createElement('tr');
-    const cells = [when(b.placedAt), label(b.book), '', '', SRC[srcOf(b)], '', odds(b.odds), '$' + b.stake, pct(b.ev), evAfter(b) == null ? evAfterBlank(b)[0] : pctSigned(evAfter(b)), b.clv == null ? 'no close' : pctSigned(b.clv), '', money(b.profit, true)];
+    const cells = [when(b.placedAt), label(b.book), '', '', sportOf(b), SRC[srcOf(b)], '', odds(b.odds), '$' + b.stake, pct(b.ev), evAfter(b) == null ? evAfterBlank(b)[0] : pctSigned(evAfter(b)), b.clv == null ? 'no close' : pctSigned(b.clv), '', money(b.profit, true)];
     cells.forEach((c, i) => {
       const td = document.createElement('td');
-      if ([6, 7, 8, 9, 10, 12].includes(i)) td.className = 'num';
+      if ([7, 8, 9, 10, 11, 13].includes(i)) td.className = 'num';
       if (i === 2) td.append(kindBadge(b));
       else if (i === 3) td.append(mktPill(mktOf(b)));
-      else if (i === 5) {
+      else if (i === 6) {
         td.className = 'what';
         td.textContent = (b.event || '') + ': ' + (b.market || '') + ' ' + (b.selection || '') + (b.line != null ? ' ' + b.line : '');
         // Hover anywhere on the row: every book's odds at the time of the bet (popup below the table code).
@@ -690,7 +709,7 @@ function table(list) {
           const i = document.createElement('span'); i.className = 'info'; i.textContent = 'ⓘ'; td.append(i);
           tr.classList.add('hasodds'); tr.dataset.tip = '1'; tr._bet = b;
         }
-      } else if (i === 11) {
+      } else if (i === 12) {
         if (LIVE) {
           const sel = document.createElement('select');
           for (const [v, t] of [['', 'not settled'], ['won', 'won'], ['lost', 'lost'], ['push', 'push'], ['void', 'void'], ['half-won', 'half won'], ['half-lost', 'half lost'], ['cashout', 'cashed out'], ['not placed', 'not placed']]) {
@@ -701,7 +720,7 @@ function table(list) {
         } else td.textContent = b.result || 'not settled';
       } else td.textContent = c;
       // EV after: green with + when still +EV, red with - when -EV, grey words when there is no number.
-      if (i === 9) {
+      if (i === 10) {
         td.classList.add('evafter');
         const v = evAfter(b);
         if (v == null) { td.classList.add('nodata'); td.title = evAfterBlank(b)[1]; }
@@ -711,12 +730,12 @@ function table(list) {
         }
       }
       // CLV: green with + when we beat the close, red with - when we didn't, grey words when there is no close yet.
-      if (i === 10) {
+      if (i === 11) {
         td.classList.add('clv');
         if (b.clv == null) { td.classList.add('nodata'); td.title = 'No closing price for this bet yet.'; }
         else if (cls(b.clv)) td.classList.add(cls(b.clv));
       }
-      if (i === 12 && b.profit != null) td.classList.add(cls(b.profit) || 'num');
+      if (i === 13 && b.profit != null) td.classList.add(cls(b.profit) || 'num');
       tr.append(td);
     });
     tb.append(tr);
@@ -735,6 +754,10 @@ function render() {
   if (!MKT[state.mkt]) state.mkt = 'all';
   seg(document.getElementById('mktSeg'), [['all', 'All markets'], ...MKT_ORDER.map((k) => [k, MKT[k] + ' (' + filtered(state.book, { mkt: k }).length + ')'])], state.mkt, (v) => { state.mkt = v; saveView(); render(); });
   mktTable();
+  const sports = sportsPresent();
+  if (state.sport !== 'all' && !sports.includes(state.sport)) state.sport = 'all';
+  seg(document.getElementById('sportSeg'), [['all', 'All sports'], ...sports.map((k) => [k, k + ' (' + filtered(state.book, { sport: k }).length + ')'])], state.sport, (v) => { state.sport = v; saveView(); render(); });
+  sportTable();
   const srcEl = document.getElementById('srcSeg');
   srcEl.hidden = !hasArb;
   if (hasArb) seg(srcEl, [['all', 'All tables'], ['ev', '+EV table (' + filtered(state.book, { src: 'ev' }).length + ')'], ['arb', 'Arb table (' + filtered(state.book, { src: 'arb' }).length + ')']], state.src, (v) => { state.src = v; saveView(); render(); });
@@ -747,7 +770,7 @@ function render() {
   document.getElementById('dayClear').onclick = () => { state.day = null; render(); };
   document.getElementById('sub').textContent = (DATA.dryRun ? 'Demo bets (dry run). ' : '') + 'Updated ' + when(DATA.generatedAt) + ' · ' + DATA.bets.length + ' bets in the log';
   const list = filtered();
-  const view = [state.book, state.kind, state.mkt, state.src, state.range, state.day].join('|');
+  const view = [state.book, state.kind, state.mkt, state.sport, state.src, state.range, state.day].join('|');
   if (view !== state.rowsView) { state.rowsView = view; state.rows = TABLE_PAGE; }
   // Bets per day says nothing new once one day is picked.
   document.getElementById('countCard').hidden = !!state.day;
