@@ -160,7 +160,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 td.what { white-space: normal; min-width: 220px; }
 .pos { color: var(--good); } .neg { color: var(--bad); }
 .nodata { color: var(--text-3); font-style: italic; }
-td.evafter.pos, td.evafter.neg, .tile .v.pos, .tile .v.neg { font-weight: 600; }
+td.evafter.pos, td.evafter.neg, td.clv.pos, td.clv.neg, .tile .v.pos, .tile .v.neg { font-weight: 600; }
 #oddsTip .pos, #oddsTip .neg { font-weight: 600; }
 select { font: inherit; font-size: 12px; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 3px 4px; }
 .note { color: var(--text-2); font-size: 12px; }
@@ -462,7 +462,7 @@ function compareTable(id, head, groups) {
     const s = stats(list);
     const tr = document.createElement('tr');
     const cells = [[name], [String(s.n)], [money(s.staked)], [s.settled ? s.settled + ' (' + s.record[0] + '-' + s.record[1] + (s.record[2] ? '-' + s.record[2] : '') + ')' : '0'],
-      [money(s.settled ? s.pnl : null, true), s.pnl], [pct(s.roi), s.roi], [money(s.n ? s.expected : null, true)], [pct(s.avgEv)], [s.avgAfter == null ? 'no price' : pctSigned(s.avgAfter), s.avgAfter, s.avgAfter == null ? 'nodata' : null], [pct(s.clv), s.clv]];
+      [money(s.settled ? s.pnl : null, true), s.pnl], [pct(s.roi), s.roi], [money(s.n ? s.expected : null, true)], [pct(s.avgEv)], [s.avgAfter == null ? 'no price' : pctSigned(s.avgAfter), s.avgAfter, s.avgAfter == null ? 'nodata' : null], [s.clv == null ? 'no close' : pctSigned(s.clv), s.clv, s.clv == null ? 'nodata' : null]];
     cells.forEach(([t, v, extra], i) => {
       const td = document.createElement('td');
       if (i) td.className = 'num';
@@ -499,7 +499,7 @@ function tiles(list) {
     ['ROI (settled)', pct(s.roi), s.settled ? 'expected ' + money(s.expectedSettled, true) + ' on these' : '—', cls(s.roi)],
     ['Expected profit', money(s.expected, true), 'avg EV ' + pct(s.avgEv)],
     ['Avg EV after', s.avgAfter == null ? 'no price' : pctSigned(s.avgAfter), s.nAfter ? s.nAfter + ' bets · avg EV ' + pct(s.avgEvAfterSet) + ' on these' : 'no after-bet prices yet', s.avgAfter == null ? 'nodata' : cls(s.avgAfter)],
-    ['Avg CLV', pct(s.clv), s.nClv ? s.nClv + ' with a close' : 'no closes yet', cls(s.clv)],
+    ['Avg CLV', s.clv == null ? 'no close' : pctSigned(s.clv), s.nClv ? s.nClv + ' with a close' : 'no closes yet', s.clv == null ? 'nodata' : cls(s.clv)],
     ['Waiting for result', String(s.open), LIVE ? 'mark them below' : 'open Show bets to mark'],
   ];
   document.getElementById('tiles').replaceChildren(...t.map(([k, v, n, c]) => {
@@ -676,7 +676,7 @@ function table(list) {
   allBtn.onclick = () => { state.rows = Infinity; table(list); };
   for (const b of shown) {
     const tr = document.createElement('tr');
-    const cells = [when(b.placedAt), label(b.book), '', '', SRC[srcOf(b)], '', odds(b.odds), '$' + b.stake, pct(b.ev), evAfter(b) == null ? evAfterBlank(b)[0] : pctSigned(evAfter(b)), pct(b.clv), '', money(b.profit, true)];
+    const cells = [when(b.placedAt), label(b.book), '', '', SRC[srcOf(b)], '', odds(b.odds), '$' + b.stake, pct(b.ev), evAfter(b) == null ? evAfterBlank(b)[0] : pctSigned(evAfter(b)), b.clv == null ? 'no close' : pctSigned(b.clv), '', money(b.profit, true)];
     cells.forEach((c, i) => {
       const td = document.createElement('td');
       if ([6, 7, 8, 9, 10, 12].includes(i)) td.className = 'num';
@@ -709,6 +709,12 @@ function table(list) {
           if (cls(v)) td.classList.add(cls(v));
           if (Number.isFinite(b.ev)) { const d = v - b.ev; td.title = (d >= 0 ? '+' : '-') + Math.abs(d).toFixed(1) + ' pts vs the ' + pctSigned(b.ev) + ' EV we bet at (' + (d >= 0 ? 'fair moved our way' : 'fair moved against us') + ')'; }
         }
+      }
+      // CLV: green with + when we beat the close, red with - when we didn't, grey words when there is no close yet.
+      if (i === 10) {
+        td.classList.add('clv');
+        if (b.clv == null) { td.classList.add('nodata'); td.title = 'No closing price for this bet yet.'; }
+        else if (cls(b.clv)) td.classList.add(cls(b.clv));
       }
       if (i === 12 && b.profit != null) td.classList.add(cls(b.profit) || 'num');
       tr.append(td);
