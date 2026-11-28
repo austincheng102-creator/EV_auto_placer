@@ -166,6 +166,20 @@ export function applyFilterDefaults(cfg) {
   // both sides means skip; "pass" = then the rule doesn't apply. false = off.
   if (cfg.pregamePinnacleCheck === undefined) cfg.pregamePinnacleCheck = {};
   if (cfg.pregamePinnacleCheck) cfg.pregamePinnacleCheck = { maxPts: 2, books: { draftkings: 200, fanduel: 100 }, missing: 'skip', ...cfg.pregamePinnacleCheck };
+  // Pre-game book check (Austin 2026-11-28). Only when the fair was set by Pinnacle or a prediction market
+  // (fairBy). Each reference book with the same line (both sides listed, never the book being bet) gives
+  // its simple no-vig win % for our side; any one more than maxPts (2.0) from our fair, either way = skip.
+  // None of them listed = nothing to check, bet as normal. PropProfessor's own fair (and FanDuel's, on
+  // props) is not checked. It replaces pregamePinnacleCheck, which then doesn't run. false = off (and
+  // pregamePinnacleCheck back as configured).
+  if (cfg.pregameBookCheck === undefined) cfg.pregameBookCheck = {};
+  if (cfg.pregameBookCheck) cfg.pregameBookCheck = {
+    maxPts: 2, books: { draftkings: 200, fanduel: 100, caesars: 300, thescore: 700 },
+    fairBy: ['pinnacle', 'kalshi', 'polymarket', 'novig', 'prophetx'], ...cfg.pregameBookCheck };
+  if (cfg.pregameBookCheck && cfg.pregameBookCheck.enabled !== false && cfg.pregamePinnacleCheck) {
+    cfg.pregamePinnacleReplaced = true;
+    cfg.pregamePinnacleCheck = false;
+  }
   // Live (Austin 2026-11-26): skip when the book's real price is different at all from the price the table
   // (Gambit / PropProfessor) quoted, better or worse, on every book (Hard Rock too). onRetry: a price that
   // moves while placing (or a DraftKings counter-offer) is held to the same rule. false = back to gambitBehind.
@@ -264,6 +278,43 @@ export function pregamePinnacle(cfg, row) {
   const ok = c.maxPts == null || Object.values(gaps).every((g) => Math.abs(g) <= Number(c.maxPts) + 1e-9);
   return { ok, pin, probs, gaps, missing };
 }
+
+/** Names of the books that set a row's fair (fairBreakdown role 'fair'). */
+export function fairSetters(cfg, row) {
+  try { return fairBreakdown(cfg, row).books.filter((b) => b.role === 'fair').map((b) => String(b.name).toLowerCase()); } catch { return []; }
+}
+
+/**
+ * Pre-game book check. Returns { ok, off, fair, probs: {draftkings: 0.505}, gaps: {draftkings: -1.5}, worst }.
+ * gaps = book win % minus our fair, in points. ok unless any listed book is more than maxPts away.
+ */
+export function pregameBooks(cfg, row) {
+  const c = cfg.pregameBookCheck;
+  const off = { ok: true, off: true, probs: {}, gaps: {} };
+  if (!c || c.enabled === false || row.isLive !== false || (row.arb && c.arb === false) || (isPropBet(row) && c.props === false)) return off;
+  if (row.ppFairFallback || row.fairCalc?.ppFallback) return off;
+  const by = new Set((c.fairBy || []).map((n) => String(n).toLowerCase()));
+  if (!fairSetters(cfg, row).some((n) => by.has(n))) return off;
+  const fair = row.fairProb;
+  if (!Number.isFinite(fair)) return off;
+  const probs = {}, gaps = {};
+  for (const [name, idv] of Object.entries(c.books || {})) {
+    const idList = [].concat(idv ?? []).map(Number);
+    if (name === row.book || idList.includes(Number(row.gambitBookId))) continue;
+    for (const id of idList) {
+      const pr = row.prices?.[id];
+      const p = pr && bookFairProb(pr.odds, pr.oppOdds);
+      if (p != null) { probs[name] = p; gaps[name] = (p - fair) * 100; break; }
+    }
+  }
+  const vals = Object.values(gaps);
+  const worst = vals.length ? Math.max(...vals.map(Math.abs)) : null;
+  const ok = c.maxPts == null || worst == null || worst <= Number(c.maxPts) + 1e-9;
+  return { ok, fair, probs, gaps, worst };
+}
+
+/** "fair 52.0%: draftkings 50.5 (-1.5), caesars 49.5 (-2.5)" for logs. */
+export const fmtPregameBooks = (c) => `fair ${Number.isFinite(c.fair) ? (c.fair * 100).toFixed(1) : '?'}%: ${Object.entries(c.probs).map(([n, p]) => `${n} ${(p * 100).toFixed(1)} (${c.gaps[n] >= 0 ? '+' : ''}${c.gaps[n].toFixed(1)})`).join(', ') || 'no reference book listed'}`;
 
 /** "Pinnacle 52.0%: draftkings 50.1 (+1.9), fanduel 49.2 (+2.8)" for logs. */
 export const fmtPregamePin = (c) => `Pinnacle ${c.pin == null ? 'not priced' : (c.pin * 100).toFixed(1) + '%'}: ${[
