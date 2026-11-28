@@ -26,7 +26,7 @@ import { makeBetLog, parseTime } from './betlog.js';
 import { makePriceLog, makeSpreadSkipLog, makeTimingLog, makeSkippedLog, makeShadowLog } from './skiplog.js';
 import { makePropFunnel, stageLabels } from './propfunnel.js';
 import { writeSnapshot, serveReport, openInBrowser } from './report.js';
-import { applyFilterDefaults, tooShort, evTooHigh, maxEvFor, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom, groupClash, groupCoolingDown, groupMaxBets, sameEvRepeat, isPropBet, playerStats, tooManyStats, playerKey, statKey, minEvFor, longPropRule, longPropConsensus, fmtLongConsensus, softCheck, fmtSoft, marketCheck, fmtMarket, sharpFair, fairBreakdown, liveEvPropOff, pinnacleOnlyTotal, pmBelowFair, fmtPmBelow, pregamePinnacle, fmtPregamePin, marketKind, pmListed, bookFairProb } from './filters.js';
+import { applyFilterDefaults, tooShort, evTooHigh, maxEvFor, sharpSpread, liveSharpMissing, makeSharpClock, liveAgeLimit, groupKey, groupTotals, groupRoom, groupClash, groupCoolingDown, groupMaxBets, sameEvRepeat, isPropBet, playerStats, tooManyStats, playerKey, statKey, minEvFor, longPropRule, longPropConsensus, fmtLongConsensus, softCheck, fmtSoft, marketCheck, fmtMarket, sharpFair, fairBreakdown, liveEvPropOff, pinnacleOnlyTotal, pmBelowFair, fmtPmBelow, pregamePinnacle, fmtPregamePin, pregameBooks, fmtPregameBooks, marketKind, pmListed, bookFairProb } from './filters.js';
 
 const root = appDir;
 let args = process.argv.slice(2);
@@ -399,6 +399,7 @@ function skipDetail(r, st, labels) {
     if (st === 'pinnacleOff') return `${base}: ${fmtMarket(marketCheck(cfg, r))}`;
     if (st === 'pmBelow') return `${base}: ${fmtPmBelow(pmBelowFair(cfg, r))}`;
     if (st === 'pregamePinnacle') return `${base}: ${fmtPregamePin(pregamePinnacle(cfg, r))}`;
+    if (st === 'pregameBooks') return `${base}: ${fmtPregameBooks(pregameBooks(cfg, r))}`;
     if (st === 'longConsensus') return `${base}: ${fmtLongConsensus(longPropConsensus(cfg, r))}`;
     if (st === 'stale') { const a = sharpClock.ageSec(r); return `${base}: ${a == null ? 'no move seen yet' : `last move ${a.toFixed(0)}s ago`}`; }
   } catch { /* the label alone */ }
@@ -423,6 +424,7 @@ function failedRules(r) {
   t('pinnacleOnlyTotal', !pinnacleOnlyTotal(cfg, r));
   t('pmBelow', pmBelowFair(cfg, r).ok);
   t('pregamePinnacle', pregamePinnacle(cfg, r).ok);
+  t('pregameBooks', pregameBooks(cfg, r).ok);
   t('stale', !sharpTooOld(r));
   return out;
 }
@@ -562,6 +564,7 @@ function propStage(r, { groups, perEvent, liveProps, stats, now }) {
   if (pinnacleOnlyTotal(cfg, r)) return 'pinnacleOnlyTotal';
   if (!pmBelowFair(cfg, r).ok) return 'pmBelow';
   if (!pregamePinnacle(cfg, r).ok) return 'pregamePinnacle';
+  if (!pregameBooks(cfg, r).ok) return 'pregameBooks';
   const lim = noLiveTiming(r) ? null : liveAgeLimit(cfg, r);
   if (!freeLive(r) && r.isLive && lim != null && r.prices) { const a = sharpClock.ageSec(r); if (a == null || a > lim) return 'stale'; }
   if (groupRoom(cfg, groups, r) == null) return groupCoolingDown(cfg, groups, r) ? 'groupCooldown' : 'group';
@@ -923,7 +926,7 @@ function pickBets(rows, { quiet = false } = {}) {
   const liveProps = livePropCounts(recent);
   const now = Date.now();
   let farOff = 0;
-  const why = { noProps: 0, liveEvProps: 0, pinnacleOnlyTotal: 0, pmBelow: 0, pregamePinnacle: 0, odds: 0, evCap: 0, sharpSpread: 0, softBooks: 0, longConsensus: 0, pinnacleOff: 0, noSharp: 0, stale: 0, staleProp: 0, livePropCap: 0, group: 0, groupCooldown: 0, sameEv: 0, playerStats: 0 };
+  const why = { noProps: 0, liveEvProps: 0, pinnacleOnlyTotal: 0, pmBelow: 0, pregamePinnacle: 0, pregameBooks: 0, odds: 0, evCap: 0, sharpSpread: 0, softBooks: 0, longConsensus: 0, pinnacleOff: 0, noSharp: 0, stale: 0, staleProp: 0, livePropCap: 0, group: 0, groupCooldown: 0, sameEv: 0, playerStats: 0 };
   const drop = (k) => (why[k]++, false);
   const groups = groupTotals(state.placed);
   let ev = rows
@@ -945,6 +948,9 @@ function pickBets(rows, { quiet = false } = {}) {
     .filter((r) => !pinnacleOnlyTotal(cfg, r) || drop('pinnacleOnlyTotal'))
     .filter((r) => pmBelowFair(cfg, r).ok || drop('pmBelow'))
     .filter((r) => pregamePinnacle(cfg, r).ok || drop('pregamePinnacle'))
+    // Austin 2026-11-28: pre-game, fair set by Pinnacle or a prediction market must be within 2 pts of
+    // every one of DraftKings/FanDuel/Caesars/theScore that lists the line (not the book bet).
+    .filter((r) => pregameBooks(cfg, r).ok || drop('pregameBooks'))
     .filter((r) => !sharpTooOld(r) || drop(r.isProp ? 'staleProp' : 'stale'))
     .filter((r) => groupRoom(cfg, groups, r) != null || drop(groupCoolingDown(cfg, groups, r) ? 'groupCooldown' : 'group'))
     .filter((r) => sameEvRepeat(cfg, groups, r) == null || drop('sameEv'))
@@ -1149,6 +1155,7 @@ async function tick() {
     why.pinnacleOnlyTotal && `${why.pinnacleOnlyTotal} totals on ${cfg.pinnacleOnlyTotals.books.map((b) => BOOK_LABELS[b] || b).join('/')} with a Pinnacle-only fair`,
     why.pmBelow && `${why.pmBelow} with a prediction market ${cfg.pmBelowFair.pts}+ pts below fair`,
     why.pregamePinnacle && `${why.pregamePinnacle} pre-game with Pinnacle not within ${cfg.pregamePinnacleCheck.maxPts} pts of ${Object.keys(cfg.pregamePinnacleCheck.books).join('/')}${cfg.pregamePinnacleCheck.missing === 'pass' ? '' : ' (or not priced)'}`,
+    why.pregameBooks && `${why.pregameBooks} pre-game with a book more than ${cfg.pregameBookCheck.maxPts} pts from the Pinnacle/prediction-market fair`,
     why.stale && `${why.stale} live with no sharp move in the last ${ageMax}s`,
     why.staleProp && `${why.staleProp} live props with no FanDuel move in the last ${cfg.sharp.livePropMaxAgeSec}s`,
     why.group && `${why.group} group already bet`,
@@ -1347,13 +1354,14 @@ if (Number(fastCfg.everySec) > 0) setInterval(() => { fastTick().catch((e) => lo
 log.info(`${dryRun ? 'DRY RUN — nothing is sent to a sportsbook. ' : ''}books=${cfg.books.join(',')} minEV=${cfg.minEvPct}%${pregameMinEv != null ? ` (pre-game ${pregameMinEv}%)` : ''}${(cfg.minEvByOdds || []).map((b) => ` (${b.minEvPct}% at ${fmtAmerican(b.from)}..${fmtAmerican(b.to)})`).join('')}${Object.entries(cfg.longOddsProps || {}).map(([bk, r]) => ` (${bk === 'all' ? 'all books' : bk} props over ${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)}${r.maxOdds != null ? ` to ${fmtAmerican(r.maxOdds)}` : ''}: ${r.minEvPct}%${cfg.longPropConsensus.enabled ? `, ${cfg.longPropConsensus.minBooks}+ of ${Object.keys(cfg.longPropConsensus.books).join('/')} within ${cfg.longPropConsensus.maxPts} pts` : ''})`).join('')} softBooks=${cfg.softCheck.enabled ? `${cfg.softCheck.minBooks}+ of ${Object.keys(cfg.softCheck.books).join('/')} >${cfg.softCheck.minEvPct}%` : 'off'} pinnacleVsMarket=${cfg.marketCheck.enabled ? `<=${cfg.marketCheck.maxPts}pts over ${cfg.marketCheck.minBooks}+ soft books` : 'off'} sharpOut=${(cfg.sharp.excludeBooks || []).join(',') || 'none'} predictionMarkets=${cfg.sharp.predictionMarkets.enabled ? `${cfg.sharp.predictionMarkets.books.join('/')} at $${cfg.sharp.predictionMarkets.minLiquidity}+ thinner side, <=${cfg.sharp.predictionMarkets.maxHoldPct}c spread, ${(cfg.sharp.predictionMarkets.agreeBooks || []).join('/')} within ${cfg.sharp.predictionMarkets.agreePts}pts${cfg.sharp.predictionMarkets.inFair ? ' (in fair)' : ''}` : 'off'} novig=${novig ? `>=${novig.minEvPct}% (${novig.mode})` : 'off'} odds=${cfg.minOdds == null ? 'any' : fmtAmerican(cfg.minOdds)}..${cfg.maxOdds == null ? 'any' : fmtAmerican(cfg.maxOdds)} maxEV=${cfg.maxEvPct ?? 'off'}% (props ${cfg.maxPropEvPct == null ? 'no cap' : cfg.maxPropEvPct + '%'}) propHold=${holdCfg ? `over ${holdCfg.evPct}% EV for ${holdMs / 1000}s${holdCfg.liveTiming === true ? '' : ', no live FanDuel timing rule'}` : 'off'} sharpSpread<=${cfg.sharp.maxSpreadPts ?? 'off'}pts liveSharpAge<=${cfg.sharp.liveMaxAgeSec ?? 'off'}s (props ${cfg.sharp.livePropMaxAgeSec ?? 'off'}s) group=${cfg.group.maxBets ?? 'any'} bet (pre-game ${cfg.group.pregameMaxBets ?? cfg.group.maxBets ?? 'any'})/$${cfg.group.maxStake ?? 'any'} every ${cfg.group.cooldownSec || 0}s pregame<=${cfg.pregameMaxHours == null ? 'any' : cfg.pregameMaxHours + 'h'} stake=$${cfg.stake.amount} poll=${pollSeconds}s fastPrices=${Number(fastCfg.everySec) > 0 ? `every ${fastCfg.everySec}s within ${fastCfg.marginPts} pts` : 'off'} atOnce=${maxInFlight} recheckWatch=${WATCH_MS / 60e3}min`);
 {
   const lpm = cfg.livePriceMatch && cfg.livePriceMatch.enabled !== false ? cfg.livePriceMatch : null;
-  const ppc = cfg.pregamePinnacleCheck, pmb = cfg.pmBelowFair, pot = cfg.pinnacleOnlyTotals;
+  const ppc = cfg.pregamePinnacleCheck, pbc = cfg.pregameBookCheck, pmb = cfg.pmBelowFair, pot = cfg.pinnacleOnlyTotals;
   const byBook = Object.entries(cfg.stake.byBook || {}).map(([b, v]) => `${BOOK_LABELS[b] || b}${v.pregame != null ? ` pre-game $${v.pregame}` : ''}${v.live != null ? ` live $${v.live}` : ''}${v.amount != null ? ` $${v.amount}` : ''}${v.fallback != null ? ` (refused: book max, else $${v.fallback})` : ''}`).join(', ');
   log.info(`stakes: $${cfg.stake.amount}${byBook ? `, ${byBook}` : ''}; livePrice=${lpm ? `must match the table on ${Array.isArray(lpm.books) ? lpm.books.join('/') : 'every book'}${lpm.onRetry !== false ? ' (also on price moves while placing)' : ''}` : 'gambitBehind rules'}` +
     ` liveEvProps=${Object.keys(books).filter((b) => liveEvPropOff(cfg, { book: b, isLive: true, isProp: true })).map((b) => `${BOOK_LABELS[b] || b} off`).join(', ') || 'on'}` +
     ` pinnacleOnlyTotals=${pot && pot.enabled !== false ? `skip on ${(pot.books || []).join('/')}${pot.live === false ? '' : ' live'}${pot.pregame === true ? ' pre-game' : ''}` : 'off'}` +
     ` predictionMarketBelowFair=${pmb && pmb.enabled !== false ? `skip at ${pmb.pts}+ pts on ${(pmb.markets || []).join('/')}` : 'off'}` +
-    ` pregamePinnacle=${ppc && ppc.enabled !== false ? `within ${ppc.maxPts} pts of ${Object.keys(ppc.books || {}).join(' and ')} (not priced: ${ppc.missing === 'pass' ? 'bet' : 'skip'})` : 'off'}` +
+    ` pregameBooks=${pbc && pbc.enabled !== false ? `fair (${(pbc.fairBy || []).join('/')}) within ${pbc.maxPts} pts of each of ${Object.keys(pbc.books || {}).join('/')} that lists the line` : 'off'}` +
+    ` pregamePinnacle=${cfg.pregamePinnacleReplaced ? 'replaced by pregameBooks' : ppc && ppc.enabled !== false ? `within ${ppc.maxPts} pts of ${Object.keys(ppc.books || {}).join(' and ')} (not priced: ${ppc.missing === 'pass' ? 'bet' : 'skip'})` : 'off'}` +
     ` logs=${[skippedLog && 'skipped.csv', shadowLog && `shadow-bets.csv (${shadowCfg.minEvPct}%+ EV)`].filter(Boolean).join(', ') || 'off'}`);
 }
 if (source.arb) {
